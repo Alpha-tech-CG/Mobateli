@@ -10,7 +10,18 @@ const envSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(4000),
 
   DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url().optional(),
+  REDIS_URL: z.string().url().default("redis://127.0.0.1:6380"),
+
+  // ─── GitHub App ───────────────────────────────────────
+  // Optional so the API boots in dev without a configured App. The webhook
+  // route and installation auth refuse to operate until these are set.
+  GITHUB_APP_ID: z.string().optional(),
+  // PEM. In .env, newlines are written as literal "\n" and unescaped here.
+  GITHUB_APP_PRIVATE_KEY: z
+    .string()
+    .optional()
+    .transform((v) => v?.replace(/\\n/g, "\n")),
+  GITHUB_WEBHOOK_SECRET: z.string().optional(),
 
   JWT_SECRET: z.string().min(32, "JWT_SECRET doit faire au moins 32 caractères"),
   // 32-byte key, base64-encoded, for AES-256-GCM at-rest encryption of secrets.

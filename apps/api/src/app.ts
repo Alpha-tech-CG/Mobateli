@@ -8,6 +8,8 @@ import authPlugin from "./plugins/auth.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { organizationRoutes } from "./routes/organizations.js";
+import { webhookRoutes } from "./routes/webhooks.js";
+import { getRedis } from "./lib/redis.js";
 
 export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   const app = Fastify({
@@ -46,11 +48,17 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     return reply.code(500).send({ error: "internal_error" });
   });
 
+  const connection = getRedis(config.REDIS_URL);
+
   await app.register(healthRoutes);
   await app.register(async (instance) => {
     await authRoutes(instance, config);
   });
   await app.register(organizationRoutes);
+  // Encapsulated scope: the raw-body parser applies to webhooks only.
+  await app.register(async (instance) => {
+    await webhookRoutes(instance, config, connection);
+  });
 
   return app;
 }

@@ -10,6 +10,9 @@ allowBuilds:
   '@prisma/engines': true
   argon2: true
   esbuild: true
+  # Optional native accelerator for BullMQ's msgpackr — pure-JS fallback is
+  # fine, so we keep it blocked.
+  msgpackr-extract: false
   prisma: true
 onlyBuiltDependencies:
   - "@prisma/client"

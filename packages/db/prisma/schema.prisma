@@ -94,10 +94,11 @@ model Organization {
   region    String   @default("eu")
   createdAt DateTime @default(now())
 
-  users        User[]
-  repositories Repository[]
-  policies     Policy[]
-  auditEvents  AuditEvent[]
+  users         User[]
+  repositories  Repository[]
+  policies      Policy[]
+  auditEvents   AuditEvent[]
+  installations GithubInstallation[]
 
   @@map("organizations")
 }
@@ -130,6 +131,8 @@ model Repository {
   name            String
   defaultBranch   String          @default("main")
   protectionLevel ProtectionLevel @default(observe)
+  // GitHub App installation that grants access to this repo (for token minting).
+  installationId  BigInt?
   createdAt       DateTime        @default(now())
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -217,6 +220,21 @@ model SecretFinding {
 
   @@index([pullRequestId])
   @@map("secret_findings")
+}
+
+/// Maps a GitHub App installation to a CodeGate organization. Created during
+/// the connect flow; webhooks use it to attribute events to the right tenant.
+model GithubInstallation {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  installationId BigInt   @unique
+  accountLogin   String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("github_installations")
 }
 
 // ─── Policy & audit ─────────────────────────────────────
