@@ -12,7 +12,7 @@ function main() {
   const log = pino({ level: config.NODE_ENV === "production" ? "info" : "debug" });
   const connection = getRedis(config.REDIS_URL);
 
-  const worker = createPrAnalysisWorker(connection);
+  const worker = createPrAnalysisWorker(connection, config);
 
   worker.on("completed", (job) => log.info({ jobId: job.id }, "pr-analysis completed"));
   worker.on("failed", (job, err) =>
