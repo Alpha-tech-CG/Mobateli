@@ -8,7 +8,8 @@ services:
       POSTGRES_PASSWORD: codegate
       POSTGRES_DB: codegate
     ports:
-      - "5432:5432"
+      # Host 5434 to avoid clashing with other local Postgres instances.
+      - "5434:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +23,8 @@ services:
     container_name: codegate-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Host 6380 to avoid clashing with other local Redis instances.
+      - "6380:6379"
     volumes:
       - ./data/redis:/data
     healthcheck:

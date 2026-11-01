@@ -1,0 +1,256 @@
+// CodeGate data model — cf. cahier des charges §13.2
+// PostgreSQL. Enums mirror packages/shared/src/enums.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────
+
+enum Role {
+  owner
+  admin
+  security_manager
+  developer
+  auditor
+  viewer
+}
+
+enum ScmProvider {
+  github
+  gitlab
+}
+
+enum ProtectionLevel {
+  observe
+  warn
+  block
+}
+
+enum PullRequestStatus {
+  pending
+  analyzing
+  passed
+  warning
+  blocked
+  escalated
+}
+
+enum Severity {
+  info
+  low
+  medium
+  high
+  critical
+}
+
+enum FindingType {
+  secret
+  dependency
+  sast
+  config
+  auth
+  prompt_injection
+}
+
+enum FindingStatus {
+  open
+  acknowledged
+  resolved
+  false_positive
+}
+
+enum DependencyRisk {
+  low
+  medium
+  high
+  critical
+}
+
+enum PolicyAction {
+  allow
+  warn
+  block
+  require_approval
+}
+
+enum ActorType {
+  user
+  ai_agent
+  system
+}
+
+// ─── Core tenancy ───────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  plan      String   @default("free")
+  region    String   @default("eu")
+  createdAt DateTime @default(now())
+
+  users        User[]
+  repositories Repository[]
+  policies     Policy[]
+  auditEvents  AuditEvent[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  email          String   @unique
+  name           String
+  passwordHash   String
+  role           Role     @default(developer)
+  mfaEnabled     Boolean  @default(false)
+  // TOTP secret, encrypted at rest (AES-256-GCM). Null until MFA is set up.
+  mfaSecret      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+// ─── Repositories & pull requests ───────────────────────
+
+model Repository {
+  id              String          @id @default(uuid()) @db.Uuid
+  organizationId  String          @db.Uuid
+  provider        ScmProvider
+  externalId      String
+  name            String
+  defaultBranch   String          @default("main")
+  protectionLevel ProtectionLevel @default(observe)
+  createdAt       DateTime        @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pullRequests PullRequest[]
+  policies     Policy[]
+
+  @@unique([provider, externalId])
+  @@index([organizationId])
+  @@map("repositories")
+}
+
+model PullRequest {
+  id           String            @id @default(uuid()) @db.Uuid
+  repositoryId String            @db.Uuid
+  externalId   String
+  number       Int
+  title        String
+  author       String
+  aiGenerated  Boolean           @default(false)
+  riskScore    Int?
+  status       PullRequestStatus @default(pending)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  repository      Repository      @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  findings        Finding[]
+  dependencies    Dependency[]
+  secretFindings  SecretFinding[]
+
+  @@unique([repositoryId, externalId])
+  @@index([repositoryId])
+  @@map("pull_requests")
+}
+
+// ─── Findings ───────────────────────────────────────────
+
+model Finding {
+  id            String        @id @default(uuid()) @db.Uuid
+  pullRequestId String        @db.Uuid
+  type          FindingType
+  severity      Severity
+  title         String
+  description   String
+  filePath      String?
+  line          Int?
+  ruleId        String?
+  remediation   String?
+  status        FindingStatus @default(open)
+  createdAt     DateTime      @default(now())
+
+  pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId])
+  @@map("findings")
+}
+
+model Dependency {
+  id            String         @id @default(uuid()) @db.Uuid
+  pullRequestId String         @db.Uuid
+  ecosystem     String
+  name          String
+  version       String
+  trustScore    Int?
+  riskLevel     DependencyRisk @default(low)
+  reason        String?
+  createdAt     DateTime       @default(now())
+
+  pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId])
+  @@map("dependencies")
+}
+
+model SecretFinding {
+  id            String        @id @default(uuid()) @db.Uuid
+  pullRequestId String        @db.Uuid
+  secretType    String
+  location      String
+  maskedPreview String
+  status        FindingStatus @default(open)
+  revokedAt     DateTime?
+  createdAt     DateTime      @default(now())
+
+  pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId])
+  @@map("secret_findings")
+}
+
+// ─── Policy & audit ─────────────────────────────────────
+
+model Policy {
+  id                 String       @id @default(uuid()) @db.Uuid
+  organizationId     String       @db.Uuid
+  repositoryId       String?      @db.Uuid
+  rule               String
+  action             PolicyAction
+  severityThreshold  Severity
+  createdAt          DateTime     @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository   Repository?  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("policies")
+}
+
+/// Immutable audit log — append-only (cahier §10.1, §13.2).
+model AuditEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  actorType      ActorType
+  actorId        String?
+  action         String
+  resourceType   String
+  resourceId     String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@map("audit_events")
+}
