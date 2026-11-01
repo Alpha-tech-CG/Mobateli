@@ -1,0 +1,20 @@
+{
+  "name": "codegate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeGate — Security gate for AI-generated code",
+  "packageManager": "pnpm@11.1.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
