@@ -152,6 +152,8 @@ model PullRequest {
   title        String
   author       String
   aiGenerated  Boolean           @default(false)
+  // Head commit SHA — required to attach a GitHub Check Run.
+  headSha      String?
   riskScore    Int?
   status       PullRequestStatus @default(pending)
   createdAt    DateTime          @default(now())

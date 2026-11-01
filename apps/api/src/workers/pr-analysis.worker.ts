@@ -4,6 +4,9 @@ import { prisma } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
 import { analyzeDiff } from "../analysis/analyzer.js";
+import { buildPrComment } from "../analysis/explainer.js";
+import { resolveEnforcement } from "../analysis/policy.js";
+import { createCheckRun, upsertPrComment } from "../lib/github-feedback.js";
 import { PR_ANALYSIS_QUEUE, type PrAnalysisJob } from "../queues/pr-analysis.js";
 import type { AppConfig } from "../config.js";
 
@@ -110,6 +113,63 @@ export function createPrAnalysisWorker(
           reason: job.data.reason,
         },
       });
+
+      // ── Feedback GitHub (check run + commentaire), selon la politique ──
+      if (pr.repository.installationId == null || pr.headSha == null) return;
+
+      const policies = await prisma.policy.findMany({
+        where: {
+          organizationId: pr.repository.organizationId,
+          OR: [{ repositoryId: pr.repository.id }, { repositoryId: null }],
+        },
+        select: { action: true, severityThreshold: true },
+      });
+
+      const enforcement = resolveEnforcement(
+        result,
+        pr.repository.protectionLevel,
+        policies,
+      );
+      const comment = buildPrComment(result);
+      const installationId = Number(pr.repository.installationId);
+
+      try {
+        await createCheckRun(config, installationId, pr.repository.name, pr.headSha, {
+          conclusion: enforcement.conclusion,
+          title: enforcement.title,
+          summary: comment,
+        });
+        await upsertPrComment(
+          config,
+          installationId,
+          pr.repository.name,
+          pr.number,
+          comment,
+        );
+        await recordAudit({
+          organizationId: pr.repository.organizationId,
+          actorType: "system",
+          action: "pr.feedback_posted",
+          resourceType: "pull_request",
+          resourceId: pr.id,
+          metadata: {
+            conclusion: enforcement.conclusion,
+            blocked: enforcement.blocked,
+            protectionLevel: pr.repository.protectionLevel,
+          },
+        });
+      } catch (err) {
+        // Posting failed (token, rate limit…) — analysis is already saved.
+        await recordAudit({
+          organizationId: pr.repository.organizationId,
+          actorType: "system",
+          action: "pr.feedback_failed",
+          resourceType: "pull_request",
+          resourceId: pr.id,
+          metadata: { error: err instanceof Error ? err.message : "unknown" },
+        });
+        throw err; // let BullMQ retry the posting
+      }
     },
     { connection, concurrency: 5 },
   );

@@ -1,5 +1,8 @@
 import type { DependencyResult, FindingResult, SecretResult } from "./types.js";
 
+/** Hidden HTML marker identifying CodeGate's own PR comment, for upserts. */
+export const CODEGATE_COMMENT_MARKER = "<!-- codegate:report -->";
+
 /**
  * Risk Explainer (cahier §5.6). Turns technical findings into plain-language
  * guidance. Deterministic and offline — the Python AI engine can enrich these
@@ -39,6 +42,8 @@ export function buildPrComment(result: {
   const emoji =
     result.status === "blocked" ? "🛑" : result.status === "warning" ? "⚠️" : "✅";
   const lines: string[] = [];
+  // Hidden marker so we can find-and-update our own comment (no spam).
+  lines.push(CODEGATE_COMMENT_MARKER);
   lines.push(`## ${emoji} CodeGate — analyse de sécurité`);
   lines.push("");
   lines.push(`**Score de risque : ${result.riskScore}/100 — décision : ${result.decision}**`);

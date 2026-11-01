@@ -82,11 +82,13 @@ async function handlePullRequest(
       title: pr.title ?? "",
       author: pr.user?.login ?? "unknown",
       aiGenerated,
+      headSha: pr.head?.sha ?? null,
       status: "pending",
     },
     update: {
       title: pr.title ?? "",
       aiGenerated,
+      headSha: pr.head?.sha ?? null,
       status: "pending",
     },
     select: { id: true },
