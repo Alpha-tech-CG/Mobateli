@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+/*
+ * Design system: "Data-Dense Dashboard" (ui-ux-pro-max).
+ * Blue data + amber highlights. Tokens defined as CSS variables so they adapt
+ * to light/dark, then mapped into Tailwind's theme via @theme inline.
+ */
+
+:root {
+  --background: #f8fafc;
+  --foreground: #1e3a8a;
+  --card: #ffffff;
+  --card-foreground: #1e3a8a;
+  --primary: #1e40af;
+  --on-primary: #ffffff;
+  --secondary: #3b82f6;
+  --accent: #d97706;
+  --on-accent: #ffffff;
+  --muted: #e9eef6;
+  --muted-foreground: #475569;
+  --border: #dbeafe;
+  --destructive: #dc2626;
+  --on-destructive: #ffffff;
+  --success: #15803d;
+  --warning: #b45309;
+  --ring: #1e40af;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #0b1220;
+    --foreground: #e2e8f0;
+    --card: #111a2e;
+    --card-foreground: #e2e8f0;
+    --primary: #3b82f6;
+    --on-primary: #06101f;
+    --secondary: #60a5fa;
+    --accent: #f59e0b;
+    --on-accent: #1a1203;
+    --muted: #1b2740;
+    --muted-foreground: #94a3b8;
+    --border: #1e2b47;
+    --destructive: #f87171;
+    --on-destructive: #1a0606;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --ring: #3b82f6;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: #0b1220;
+  --foreground: #e2e8f0;
+  --card: #111a2e;
+  --card-foreground: #e2e8f0;
+  --primary: #3b82f6;
+  --on-primary: #06101f;
+  --secondary: #60a5fa;
+  --accent: #f59e0b;
+  --on-accent: #1a1203;
+  --muted: #1b2740;
+  --muted-foreground: #94a3b8;
+  --border: #1e2b47;
+  --destructive: #f87171;
+  --on-destructive: #1a0606;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --ring: #3b82f6;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-on-destructive: var(--on-destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-ring: var(--ring);
+
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "SFMono-Regular", monospace;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Respect reduced motion (pre-delivery checklist). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
