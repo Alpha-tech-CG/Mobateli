@@ -86,6 +86,37 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
     },
   );
 
+  // Linear → CodeGate webhook (§13.3): issue state synced back. Returns the
+  // signing secret once; paste it with the URL in Linear's webhook settings.
+  app.post(
+    "/api/v1/integrations/linear/webhook",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin", "security_manager")] },
+    async (req, reply) => {
+      const conn = await prisma.linearConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { id: true },
+      });
+      if (!conn) return reply.code(409).send({ error: "linear_not_connected" });
+      const secret = randomBytes(32).toString("hex");
+      await prisma.linearConnection.update({
+        where: { id: conn.id },
+        data: { webhookSecretEncrypted: encrypt(secret, config.ENCRYPTION_KEY) },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.linear_webhook_configured",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return {
+        url: `${config.PUBLIC_API_URL}/webhooks/linear/${req.principal.organizationId}`,
+        secret,
+      };
+    },
+  );
+
   // ─── Slack ────────────────────────────────────────────
 
   app.get(

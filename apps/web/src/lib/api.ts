@@ -45,7 +45,7 @@ export class ApiError extends Error {
   }
 }
 
-/** POST that downloads the response as a file (for evidence exports). */
+/** Downloads the response as a file (POST with a body, or GET when body is null). */
 export async function apiDownload(
   path: string,
   body: unknown,
@@ -53,12 +53,12 @@ export async function apiDownload(
 ): Promise<void> {
   const token = getToken();
   const res = await fetch(`${API_URL}${path}`, {
-    method: "POST",
+    method: body === null ? "GET" : "POST",
     headers: {
-      "content-type": "application/json",
+      ...(body === null ? {} : { "content-type": "application/json" }),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify(body),
+    ...(body === null ? {} : { body: JSON.stringify(body) }),
   });
   if (!res.ok) throw new ApiError(res.status, `http_${res.status}`);
   const blob = await res.blob();

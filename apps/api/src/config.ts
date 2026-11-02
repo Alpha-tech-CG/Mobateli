@@ -41,6 +41,12 @@ const envSchema = z.object({
       "ENCRYPTION_KEY doit être 32 octets encodés en base64",
     ),
 
+  // Vercel Cron sends `Authorization: Bearer <CRON_SECRET>` to /api/v1/cron/*.
+  CRON_SECRET: z.string().min(16).optional(),
+  // Data minimisation (cahier §11.2): PR analyses and audit trail retention.
+  RETENTION_DAYS: z.coerce.number().int().min(30).default(365),
+  AUDIT_RETENTION_DAYS: z.coerce.number().int().min(365).default(730),
+
   // Owners/admins must enable MFA before administrative actions (§10.2).
   MFA_REQUIRED_FOR_ADMINS: z.enum(["true", "false"]).default("true"),
 

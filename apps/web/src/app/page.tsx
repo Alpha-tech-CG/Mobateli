@@ -528,11 +528,12 @@ export default function Landing() {
               <Link href="/login" className="block hover:text-white">Connexion</Link>
               <Link href="/signup" className="block hover:text-white">Créer un compte</Link>
               <Link href="/dashboard" className="block hover:text-white">Dashboard</Link>
+              <Link href="/security" className="block hover:text-white">Sécurité</Link>
             </div>
           </div>
         </div>
         <div className="mx-auto mt-14 flex max-w-[1280px] items-center justify-between border-t border-[#232527] px-6 pt-6 text-[13px] text-white/60">
-          <span className="flex items-center gap-2"><Users className="size-4" aria-hidden /> Hébergement UE</span>
+          <Link href="/security" className="flex items-center gap-2 hover:text-white"><Users className="size-4" aria-hidden /> Hébergement UE</Link>
           <span>© 2026 CodeGate</span>
         </div>
         <p className="font-display mx-auto mt-6 max-w-[1280px] select-none whitespace-nowrap px-6 text-[22vw] leading-[0.8] text-[#1d1f20] lg:text-[260px]" aria-hidden>

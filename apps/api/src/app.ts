@@ -21,6 +21,8 @@ import { bruteForceRoutes } from "./routes/bruteforce.js";
 import { backupRoutes } from "./routes/backups.js";
 import { findingRoutes } from "./routes/findings.js";
 import { githubRoutes } from "./routes/github.js";
+import { privacyRoutes } from "./routes/privacy.js";
+import { cronRoutes } from "./routes/cron.js";
 import { getRedis } from "./lib/redis.js";
 import { createJobs } from "./lib/jobs.js";
 
@@ -102,6 +104,10 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     await integrationRoutes(instance, config);
   });
   await app.register(findingRoutes);
+  await app.register(privacyRoutes);
+  await app.register(async (instance) => {
+    await cronRoutes(instance, config);
+  });
   await app.register(async (instance) => {
     await githubRoutes(instance, config);
   });

@@ -295,6 +295,7 @@ enum InfraCategory {
   docker
   updates
   backups
+  tls
 }
 
 /// A VPS / server monitored by Infra Shield (extension §3). Ownership is
@@ -315,6 +316,8 @@ model Server {
   // Last normalized facts reported by the agent (no secrets — see agent).
   lastReport     Json?
   lastReportAt   DateTime?
+  // Set when a "silent agent" alert was sent; cleared by the next report.
+  silentAlertedAt DateTime?
   createdAt      DateTime  @default(now())
 
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -430,6 +433,8 @@ model BackupJob {
   type           String
   frequencyHours Int      @default(24)
   tokenHash      String   @unique
+  // Set when a "missing backup" alert was sent; cleared by the next run.
+  lateAlertedAt  DateTime?
   createdAt      DateTime @default(now())
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -561,6 +566,8 @@ model LinearConnection {
   organizationId  String   @unique @db.Uuid
   apiKeyEncrypted String
   teamId          String
+  // Signing secret of the Linear → CodeGate webhook (AES-256-GCM).
+  webhookSecretEncrypted String?
   createdAt       DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -644,7 +651,10 @@ model RemediationIssue {
   externalId    String
   identifier    String?
   url           String?
-  createdAt     DateTime @default(now())
+  // Synced back from the tracker: open | done | canceled.
+  status        String    @default("open")
+  closedAt      DateTime?
+  createdAt     DateTime  @default(now())
 
   pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
 

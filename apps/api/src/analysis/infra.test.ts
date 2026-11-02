@@ -139,3 +139,19 @@ test("database without any scheduled backup ⇒ high backups finding", () => {
   const unmonitored = { ...hardened, backups: { jobs: 1, tools: ["restic"], codegateReporting: false } };
   assert.equal(evaluateInfra(unmonitored).findings[0]?.severity, "low");
 });
+
+test("TLS: expired / expiring certificate, self-signed, legacy protocols", () => {
+  const r = evaluateInfra({
+    ...hardened,
+    tls: [
+      { port: 443, protocol: "TLSv1.3", legacyAccepted: true, certExpiresInDays: 9, selfSigned: false },
+      { port: 8443, protocol: "TLSv1.2", legacyAccepted: false, certExpiresInDays: -2, selfSigned: true },
+    ],
+  });
+  const sev = Object.fromEntries(r.findings.map((f) => [f.checkId, f.severity]));
+  assert.equal(sev["tls.cert_expiry.443"], "high");
+  assert.equal(sev["tls.legacy_accepted.443"], "medium");
+  assert.equal(sev["tls.cert_expiry.8443"], "critical");
+  assert.equal(sev["tls.self_signed.8443"], "medium");
+  assert.equal(evaluateInfra({ ...hardened, tls: [{ port: 443, protocol: "TLSv1.3", legacyAccepted: false, certExpiresInDays: 80, selfSigned: false }] }).findings.length, 0);
+});

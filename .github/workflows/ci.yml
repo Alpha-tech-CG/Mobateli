@@ -1,0 +1,81 @@
+# CI (cahier §14.1, §15.4 Definition of Done): every push and pull request
+# must typecheck, pass the unit tests, the end-to-end API tests against a real
+# Postgres + Redis, and build the web app.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: codegate
+          POSTGRES_PASSWORD: codegate
+          POSTGRES_DB: codegate_test
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U codegate" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://codegate:codegate@127.0.0.1:5434/codegate_test
+      TEST_DATABASE_URL: postgresql://codegate:codegate@127.0.0.1:5434/codegate_test
+      REDIS_URL: redis://127.0.0.1:6380
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma client + migrations
+        working-directory: packages/db
+        run: |
+          pnpm exec prisma generate
+          pnpm exec prisma migrate deploy
+
+      - name: Build shared package
+        run: pnpm --filter @codegate/shared build
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @codegate/api typecheck
+          pnpm --filter @codegate/web exec tsc --noEmit
+
+      - name: Unit tests
+        run: pnpm --filter @codegate/api test
+
+      - name: Integration tests
+        working-directory: apps/api
+        run: node --import tsx --test --test-timeout=90000 "src/**/*.itest.ts"
+
+      - name: Build web
+        run: pnpm --filter @codegate/web build
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:4000

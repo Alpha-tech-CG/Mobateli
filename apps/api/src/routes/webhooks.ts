@@ -2,7 +2,12 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
 import { prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
-import { verifyGithubSignature, verifyVercelSignature } from "../lib/webhook-verify.js";
+import {
+  verifyGithubSignature,
+  verifyLinearSignature,
+  verifyVercelSignature,
+} from "../lib/webhook-verify.js";
+import { decrypt } from "../lib/crypto.js";
 import type { Jobs } from "../lib/jobs.js";
 import { recordAudit } from "../lib/audit.js";
 import { evaluateDeployGate } from "../analysis/deploy-gate.js";
@@ -430,6 +435,70 @@ export async function webhookRoutes(
     }
 
     return reply.code(202).send({ status: "accepted" });
+  });
+
+  // Linear → CodeGate (§13.3): keep remediation issues in sync. One URL per
+  // organization; the body is signed with that organization's secret.
+  app.post("/webhooks/linear/:orgId", async (req, reply) => {
+    const { orgId } = req.params as { orgId: string };
+    const conn = /^[0-9a-f-]{36}$/i.test(orgId)
+      ? await prisma.linearConnection.findUnique({
+          where: { organizationId: orgId },
+          select: { webhookSecretEncrypted: true },
+        })
+      : null;
+    if (!conn?.webhookSecretEncrypted) return reply.code(404).send({ error: "not_configured" });
+
+    const raw = req.body as Buffer;
+    const secret = decrypt(conn.webhookSecretEncrypted, config.ENCRYPTION_KEY);
+    if (!verifyLinearSignature(raw, req.headers["linear-signature"] as string | undefined, secret)) {
+      return reply.code(401).send({ error: "invalid_signature" });
+    }
+
+    let payload: any;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      return reply.code(400).send({ error: "invalid_json" });
+    }
+    // Replay protection: Linear stamps each delivery (ms since epoch).
+    if (typeof payload.webhookTimestamp === "number" && Math.abs(Date.now() - payload.webhookTimestamp) > 5 * 60_000) {
+      return reply.code(401).send({ error: "stale_delivery" });
+    }
+    if (payload.type !== "Issue" || payload.action !== "update" || !payload.data?.id) {
+      return reply.code(200).send({ status: "ignored" });
+    }
+
+    const issue = await prisma.remediationIssue.findFirst({
+      where: { provider: "linear", externalId: String(payload.data.id), pullRequest: { repository: { organizationId: orgId } } },
+    });
+    if (!issue) return reply.code(200).send({ status: "unknown_issue" });
+
+    const stateType: string | undefined = payload.data.state?.type;
+    const status = stateType === "completed" ? "done" : stateType === "canceled" ? "canceled" : "open";
+    if (status === issue.status) return reply.code(200).send({ status: "unchanged" });
+
+    await prisma.remediationIssue.update({
+      where: { id: issue.id },
+      data: { status, closedAt: status === "open" ? null : new Date() },
+    });
+    if (status === "done") {
+      // The fix shipped: open findings of that PR are resolved (false
+      // positives keep their verdict).
+      await prisma.finding.updateMany({
+        where: { pullRequestId: issue.pullRequestId, status: { in: ["open", "acknowledged"] } },
+        data: { status: "resolved" },
+      });
+    }
+    await recordAudit({
+      organizationId: orgId,
+      actorType: "system",
+      action: `remediation.${status}`,
+      resourceType: "pull_request",
+      resourceId: issue.pullRequestId,
+      metadata: { provider: "linear", identifier: issue.identifier },
+    });
+    return reply.code(202).send({ status });
   });
 
   app.post("/webhooks/vercel", async (req, reply) => {

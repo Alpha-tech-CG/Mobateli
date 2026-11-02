@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import QRCode from "qrcode";
 import { CheckCircle2 } from "lucide-react";
-import { api, ApiError, getSession, setToken } from "@/lib/api";
+import { api, apiDownload, ApiError, clearToken, getSession, setToken } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
 
@@ -136,11 +136,98 @@ function SecuritySettings() {
         )}
       </Card>
 
+      <PrivacyCard />
+
       <Card className="p-5 text-sm text-muted-foreground">
         Les sessions expirent au bout de 12 heures. Après 5 mots de passe erronés en 10 minutes,
         le compte est verrouillé temporairement ; après 3 codes MFA erronés, le second facteur est
         bloqué 5 minutes.
       </Card>
     </div>
+  );
+}
+
+/** RGPD: data portability and the right to erasure (cahier §10.1, §11.3). */
+function PrivacyCard() {
+  const session = getSession();
+  const isOwner = session?.role === "owner";
+  const canExport = isOwner || session?.role === "admin";
+  const [confirmName, setConfirmName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function exportData() {
+    setError(null);
+    try {
+      await apiDownload("/api/v1/organization/export", null, "codegate-export.json");
+    } catch {
+      setError("Export impossible (rôle Owner ou Admin avec MFA requis).");
+    }
+  }
+
+  async function erase(e: FormEvent) {
+    e.preventDefault();
+    if (!confirm("Supprimer définitivement l'organisation et toutes ses données ? Action irréversible.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/api/v1/organization", { method: "DELETE", body: JSON.stringify({ confirmName }) });
+      clearToken();
+      window.location.href = "/";
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.code === "confirmation_mismatch"
+          ? "Le nom saisi ne correspond pas exactement au nom de l'organisation."
+          : "Suppression impossible.",
+      );
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="space-y-4 p-5">
+      <div>
+        <h2 className="font-medium">Vos données (RGPD)</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Hébergement UE. Analyses conservées 365 jours, journal d&apos;audit 730 jours. Aucune
+          donnée n&apos;est utilisée pour entraîner un modèle.
+        </p>
+      </div>
+      {canExport ? (
+        <button
+          type="button"
+          onClick={exportData}
+          className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+        >
+          Exporter toutes les données (JSON)
+        </button>
+      ) : null}
+      {isOwner ? (
+        <form onSubmit={erase} className="space-y-2 border-t border-border pt-4">
+          <p className="text-sm font-medium text-destructive">Supprimer l&apos;organisation</p>
+          <p className="text-xs text-muted-foreground">
+            Supprime définitivement les membres, dépôts, analyses, serveurs, sauvegardes suivies et
+            le journal d&apos;audit. Saisissez le nom exact de l&apos;organisation pour confirmer.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <input
+              required
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              placeholder="Nom de l'organisation"
+              className="w-64 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="cursor-pointer rounded-md border border-destructive px-3 py-2 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              Supprimer définitivement
+            </button>
+          </div>
+        </form>
+      ) : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+    </Card>
   );
 }

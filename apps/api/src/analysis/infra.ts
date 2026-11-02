@@ -6,7 +6,7 @@ import type { AgentReport, Severity } from "@codegate/shared";
  * Deterministic — the same report always gives the same result.
  */
 
-export type InfraCategory = "ports" | "ssh" | "firewall" | "bruteforce" | "docker" | "updates" | "backups";
+export type InfraCategory = "ports" | "ssh" | "firewall" | "bruteforce" | "docker" | "updates" | "backups" | "tls";
 
 export interface InfraFinding {
   category: InfraCategory;
@@ -259,6 +259,55 @@ export function evaluateInfra(report: AgentReport): InfraResult {
           ? "`dnf install dnf-automatic && systemctl enable --now dnf-automatic.timer`"
           : "`apt install unattended-upgrades && dpkg-reconfigure -plow unattended-upgrades`",
     });
+  }
+
+  // ── TLS (§3.2 TLS Audit) ──
+  for (const t of report.tls ?? []) {
+    const where = `port ${t.port}`;
+    if (t.certExpiresInDays !== null && t.certExpiresInDays < 30) {
+      const expired = t.certExpiresInDays < 0;
+      add({
+        category: "tls",
+        checkId: `tls.cert_expiry.${t.port}`,
+        severity: expired ? "critical" : t.certExpiresInDays < 14 ? "high" : "medium",
+        title: expired
+          ? `Certificat TLS expiré (${where})`
+          : `Certificat TLS expirant dans ${t.certExpiresInDays} jour(s) (${where})`,
+        detail: expired
+          ? "Les navigateurs bloquent le site et les clients API refusent la connexion."
+          : "Sans renouvellement, le service deviendra inaccessible en HTTPS.",
+        recommendation: "Automatisez le renouvellement : `certbot renew` (timer systemd) ou Caddy / Traefik avec ACME.",
+      });
+    }
+    if (t.selfSigned) {
+      add({
+        category: "tls",
+        checkId: `tls.self_signed.${t.port}`,
+        severity: "medium",
+        title: `Certificat auto-signé (${where})`,
+        detail: "Les clients ne peuvent pas vérifier l'identité du serveur : porte ouverte à l'interception.",
+        recommendation: "Utilisez un certificat d'une autorité reconnue (Let's Encrypt gratuit).",
+      });
+    }
+    if (t.protocol && /^TLSv1(\.[01])?$|^SSL/.test(t.protocol)) {
+      add({
+        category: "tls",
+        checkId: `tls.weak_protocol.${t.port}`,
+        severity: "high",
+        title: `Protocole ${t.protocol} négocié (${where})`,
+        detail: "Ce protocole est obsolète et vulnérable.",
+        recommendation: "Exigez TLS 1.2 minimum, TLS 1.3 recommandé (`ssl_protocols TLSv1.2 TLSv1.3;` pour nginx).",
+      });
+    } else if (t.legacyAccepted) {
+      add({
+        category: "tls",
+        checkId: `tls.legacy_accepted.${t.port}`,
+        severity: "medium",
+        title: `TLS 1.0 / 1.1 encore acceptés (${where})`,
+        detail: "Un client peut forcer un protocole obsolète (attaque par rétrogradation).",
+        recommendation: "Désactivez TLS 1.0 et 1.1 : `ssl_protocols TLSv1.2 TLSv1.3;` (nginx) ou équivalent.",
+      });
+    }
   }
 
   // ── Sauvegardes (Backup Shield §5.3 Backup Discovery) ──

@@ -90,6 +90,7 @@ function Integrations() {
               <CheckCircle2 className="size-4" aria-hidden />
               Connecté — équipe <span className="font-mono">{teamId}</span>
             </p>
+            <LinearWebhook />
             <button
               onClick={disconnect}
               disabled={busy}
@@ -781,5 +782,50 @@ function GithubCard() {
       )}
       {msg ? <p className="mt-3 text-sm text-destructive">{msg}</p> : null}
     </Card>
+  );
+}
+
+/** Linear → CodeGate webhook: issues closed in Linear resolve the findings. */
+function LinearWebhook() {
+  const [cfg, setCfg] = useState<{ url: string; secret: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function configure() {
+    setErr(null);
+    try {
+      setCfg(await api<{ url: string; secret: string }>("/api/v1/integrations/linear/webhook", { method: "POST" }));
+    } catch {
+      setErr("Configuration impossible.");
+    }
+  }
+
+  if (cfg) {
+    return (
+      <div className="space-y-2 rounded-md border border-border p-3 text-xs">
+        <p>
+          Dans Linear : Settings → API → Webhooks → « New webhook », événement <strong>Issues</strong>.
+          Le secret ne sera plus affiché.
+        </p>
+        <p className="text-muted-foreground">URL</p>
+        <pre className="overflow-x-auto rounded bg-muted p-2 font-mono">{cfg.url}</pre>
+        <p className="text-muted-foreground">Secret de signature</p>
+        <pre className="overflow-x-auto rounded bg-muted p-2 font-mono">{cfg.secret}</pre>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={configure}
+        className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted"
+      >
+        Synchroniser les statuts depuis Linear
+      </button>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Une issue terminée dans Linear marque les problèmes de la PR comme résolus.
+      </p>
+      {err ? <p className="mt-1 text-xs text-destructive">{err}</p> : null}
+    </div>
   );
 }

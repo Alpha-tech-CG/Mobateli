@@ -171,6 +171,19 @@ CodeGate ne reçoit **jamais** les données : l'outil `codegate-backup` (`/agent
 
 Contrôles : exécution reçue, fraîcheur (> 1,5 × fréquence ⇒ sauvegarde manquante, détectée à la lecture), succès, chiffrement au repos (algorithme détecté depuis l'en-tête : age, OpenPGP, openssl…), en transit, clé hors serveur, SHA-256, intégrité revérifiée, copie hors site, compte séparé, rétention ≥ 30 j, immutabilité, restauration testée < 30 j. L'agent Infra (v1.1) signale aussi une base de données sans aucun job de sauvegarde (noms d'outils uniquement, jamais les lignes de commande).
 
+## RGPD, maintenance et Linear
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/organization/export` | owner/admin | Export JSON complet (portabilité) — sans hachés de mot de passe, secrets MFA, jetons ni identifiants d'intégration |
+| DELETE | `/api/v1/organization` | owner | `{ confirmName }` (nom exact) → effacement définitif de l'organisation et de toutes ses données (cascade) |
+| DELETE | `/api/v1/account` | tous | Le membre efface son compte (refusé pour le dernier owner) |
+| GET/POST | `/api/v1/cron/maintenance` | `Authorization: Bearer <CRON_SECRET>` | Quotidien (Vercel Cron) : purge de rétention (PR > `RETENTION_DAYS`, audit > `AUDIT_RETENTION_DAYS`), alerte « sauvegarde manquante » et « agent serveur silencieux » (une fois, réarmée au rapport suivant) |
+| POST | `/api/v1/integrations/linear/webhook` | gestion | Génère l'URL et le secret du webhook Linear |
+| POST | `/webhooks/linear/:orgId` | `linear-signature` (HMAC-SHA256) | Issue terminée/annulée → statut de remédiation synchronisé ; terminée ⇒ problèmes de la PR résolus. Anti-rejeu 5 min |
+
+Le dossier de preuves (`/api/v1/audit/export`) inclut désormais l'infrastructure (scores et points ouverts par serveur), les politiques et tests anti brute force, et l'état des sauvegardes (score de récupération, contrôles en échec). L'agent Infra v1.2 audite aussi le TLS des écoutes locales (443/8443/9443) : protocole, TLS 1.0/1.1 acceptés, expiration et auto-signature du certificat.
+
 ## Webhooks
 
 | Méthode | Route | Signature | Description |
@@ -183,4 +196,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `org.data_exported`, `user.erased`, `backup.missing`, `server.agent_silent`, `remediation.done`/`canceled`, `integration.linear_webhook_configured`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.

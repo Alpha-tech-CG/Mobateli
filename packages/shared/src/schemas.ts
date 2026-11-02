@@ -136,6 +136,11 @@ export const updateFindingSchema = z.object({
 });
 export type UpdateFindingInput = z.infer<typeof updateFindingSchema>;
 
+export const deleteOrganizationSchema = z.object({
+  /** The exact organization name, typed by the owner to confirm. */
+  confirmName: z.string().min(1).max(200),
+});
+
 export const linkGithubSchema = z.object({
   installationId: z.coerce.number().int().positive(),
   state: z.string().min(20).max(2000),
@@ -210,6 +215,19 @@ export const agentReportSchema = z.object({
     pendingSecurity: z.number().int().nonnegative().nullable(),
     autoUpdates: z.boolean().nullable(),
   }),
+  /** TLS Audit (§3.2): local HTTPS listeners, probed on 127.0.0.1. */
+  tls: z
+    .array(
+      z.object({
+        port: z.number().int(),
+        protocol: z.string().max(20).nullable(),
+        legacyAccepted: z.boolean().nullable(),
+        certExpiresInDays: z.number().int().nullable(),
+        selfSigned: z.boolean().nullable(),
+      }),
+    )
+    .max(50)
+    .optional(),
   /** Backup Discovery (§5.3): tool names found in cron / systemd timers only. */
   backups: z
     .object({

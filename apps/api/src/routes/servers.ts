@@ -228,6 +228,7 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
           securityScore: result.score,
           lastReport: report as unknown as Prisma.InputJsonValue,
           lastReportAt: new Date(),
+          silentAlertedAt: null,
         },
       }),
     ]);

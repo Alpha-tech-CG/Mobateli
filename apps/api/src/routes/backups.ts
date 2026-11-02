@@ -247,6 +247,7 @@ export async function backupRoutes(app: FastifyInstance, config: AppConfig) {
     const run = await prisma.backupRun.create({
       data: { jobId: job.id, ...body, finishedAt: new Date(body.finishedAt) },
     });
+    await prisma.backupJob.update({ where: { id: job.id }, data: { lateAlertedAt: null } });
     const evaluation = evaluate(
       await prisma.backupJob.findUniqueOrThrow({ where: { id: job.id }, include: latestInclude }),
     );

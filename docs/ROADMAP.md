@@ -62,10 +62,22 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 - [x] Faux positifs mémorisés (US02), vulnérabilités connues OSV + paquets inexistants (US04), prompt injection (§10.5)
 - [x] Sessions de 12 h, MFA obligatoire pour owner/admin (§10.2), page Sécurité du compte
 
+## Étape 9 — Conformité & exploitation ✅
+- [x] RGPD : export complet, effacement de l'organisation / du compte, rétention 365 j (audit 730 j)
+- [x] Hébergement UE réel : API et site à Francfort (fra1), à côté de la base Neon
+- [x] Page de sécurité publique (`/security`)
+- [x] Maintenance quotidienne (Vercel Cron) : purge + alertes sauvegarde manquante / agent silencieux
+- [x] Dossier de preuves étendu à l'infrastructure, au brute force et aux sauvegardes
+- [x] Audit TLS dans l'agent (v1.2)
+- [x] Webhook Linear (synchronisation des issues de remédiation)
+- [x] CI GitHub Actions (typecheck, tests unitaires, tests d'intégration Postgres/Redis, build web)
+
 ## Reste à faire (post-MVP)
 - [ ] Moteur de scan Rust avancé (`services/scan-engine`)
-- [ ] Observabilité (OpenTelemetry), CI/CD, déploiement UE
-- [ ] Enrichissement IA (triage via Claude), détection de prompt injection
+- [ ] Observabilité (OpenTelemetry, Sentry) — nécessite un compte
+- [ ] Facturation Stripe — nécessite un compte
+- [ ] Création de la GitHub App de production (App ID, clé, secret, slug)
+- [ ] Enrichissement IA des explications via Gemini — nécessite une clé API
 - [ ] SAML : poster dans le dépôt GitLab (statut/commentaire MR), feedback GitLab-like
 
 ---

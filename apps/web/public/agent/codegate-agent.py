@@ -21,13 +21,15 @@ import json
 import os
 import re
 import shutil
+import ssl
+import time
 import socket
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_URL = "https://codegate-api.vercel.app"
 
 
@@ -231,6 +233,73 @@ def updates():
     return {"manager": None, "pendingSecurity": None, "autoUpdates": None}
 
 
+TLS_PORTS = (443, 8443, 9443)
+
+
+def _probe_tls(port, version=None):
+    """Handshake with 127.0.0.1:port; returns (protocol, der_cert) or None."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    if version is not None:
+        try:
+            ctx.minimum_version = version
+            ctx.maximum_version = version
+            ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+        except (ValueError, ssl.SSLError):
+            return "unsupported"
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+            with ctx.wrap_socket(raw, server_hostname="localhost") as tls:
+                return tls.version(), tls.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError):
+        return None
+
+
+def _cert_facts(der):
+    """(days until expiry, self-signed) from a DER certificate, stdlib only."""
+    try:
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as f:
+            f.write(ssl.DER_cert_to_PEM_cert(der))
+            path = f.name
+        try:
+            info = ssl._ssl._test_decode_cert(path)  # noqa: SLF001 (stdlib decoder)
+        finally:
+            os.unlink(path)
+        expires = ssl.cert_time_to_seconds(info["notAfter"])
+        days = int((expires - time.time()) // 86400)
+        return days, info.get("subject") == info.get("issuer")
+    except Exception:  # pylint: disable=broad-except
+        return None, None
+
+
+def tls_audit(listening_sockets):
+    """TLS Audit: probes local HTTPS listeners only (never another host)."""
+    ports = sorted({l["port"] for l in listening_sockets if l["proto"] == "tcp" and l["port"] in TLS_PORTS})
+    results = []
+    for port in ports:
+        probe = _probe_tls(port)
+        if not probe:
+            continue
+        protocol, der = probe
+        days, self_signed = _cert_facts(der) if der else (None, None)
+        legacy = None
+        for version in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1):
+            r = _probe_tls(port, version)
+            if r == "unsupported":
+                continue  # this client cannot even offer it: inconclusive
+            legacy = bool(r) or bool(legacy)
+        results.append({
+            "port": port,
+            "protocol": protocol,
+            "legacyAccepted": legacy,
+            "certExpiresInDays": days,
+            "selfSigned": self_signed,
+        })
+    return results
+
+
 BACKUP_TOOLS = ("pg_dump", "pg_dumpall", "pgbackrest", "barman", "mysqldump", "mariadb-dump",
                 "xtrabackup", "mongodump", "restic", "borg", "rclone", "duplicity", "rsync",
                 "rsnapshot", "kopia", "codegate-backup")
@@ -266,11 +335,12 @@ def backups():
 
 
 def collect():
+    sockets = listening()
     return {
         "agentVersion": VERSION,
         "hostname": socket.gethostname()[:255],
         "os": os_name(),
-        "listening": listening(),
+        "listening": sockets,
         "ssh": ssh_settings(),
         "firewall": firewall(),
         "bruteforce": {
@@ -279,6 +349,7 @@ def collect():
         },
         "docker": docker(),
         "updates": updates(),
+        "tls": tls_audit(sockets),
         "backups": backups(),
     }
 

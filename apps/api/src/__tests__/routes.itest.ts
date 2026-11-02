@@ -21,6 +21,7 @@ process.env.GITHUB_WEBHOOK_SECRET = "it_gh_secret";
 process.env.VERCEL_WEBHOOK_SECRET = "it_vercel_secret";
 // The suite drives admin routes with a fresh owner; MFA enforcement is unit-tested.
 process.env.MFA_REQUIRED_FOR_ADMINS = "false";
+process.env.CRON_SECRET = "it_cron_secret_0123456789abcdef";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");
@@ -734,4 +735,81 @@ test("findings: false positive is suppressed for future analyses and rescored", 
   });
   assert.equal(reopen.statusCode, 200);
   assert.equal(await prisma.findingSuppression.count({ where: { repositoryId: pr.repositoryId } }), 0);
+});
+
+test("linear webhook: signed 'completed' resolves the PR findings", async () => {
+  const cfg = await app.inject({ method: "POST", url: "/api/v1/integrations/linear/webhook", headers: auth() });
+  assert.equal(cfg.statusCode, 200);
+  const { url, secret } = cfg.json();
+  const path = new URL(url).pathname;
+  const pr = await prisma.pullRequest.findFirstOrThrow({ where: { repository: { provider: "github" } } });
+  await prisma.remediationIssue.deleteMany({ where: { pullRequestId: pr.id } });
+  await prisma.remediationIssue.create({
+    data: { pullRequestId: pr.id, provider: "linear", externalId: "lin-issue-1", identifier: "SEC-1" },
+  });
+  const open = await prisma.finding.create({
+    data: { pullRequestId: pr.id, type: "sast", severity: "medium", title: "x", description: "x", ruleId: "XSS_INNERHTML" },
+  });
+  const body = JSON.stringify({
+    type: "Issue",
+    action: "update",
+    webhookTimestamp: Date.now(),
+    data: { id: "lin-issue-1", state: { type: "completed" } },
+  });
+  const { createHmac } = await import("node:crypto");
+  const sign = (b: string) => createHmac("sha256", secret).update(b).digest("hex");
+
+  const forged = await app.inject({
+    method: "POST", url: path, payload: body,
+    headers: { "content-type": "application/json", "linear-signature": "0".repeat(64) },
+  });
+  assert.equal(forged.statusCode, 401);
+
+  const ok = await app.inject({
+    method: "POST", url: path, payload: body,
+    headers: { "content-type": "application/json", "linear-signature": sign(body) },
+  });
+  assert.equal(ok.statusCode, 202);
+  assert.equal(ok.json().status, "done");
+  assert.equal((await prisma.finding.findUniqueOrThrow({ where: { id: open.id } })).status, "resolved");
+});
+
+test("maintenance: cron auth, missing backup + silent agent alert once", async () => {
+  assert.equal((await app.inject({ method: "GET", url: "/api/v1/cron/maintenance" })).statusCode, 401);
+  const ok = await app.inject({
+    method: "GET",
+    url: "/api/v1/cron/maintenance",
+    headers: { authorization: `Bearer ${process.env.CRON_SECRET}` },
+  });
+  assert.equal(ok.statusCode, 200);
+
+  const { runMaintenance } = await import("../lib/maintenance.js");
+  const later = new Date(Date.now() + 3 * 24 * 3600_000);
+  const first = await runMaintenance(loadConfig(), later);
+  assert.ok(first.alerts.missingBackups >= 1, "backup reported 'now' is late 3 days later");
+  assert.ok(first.alerts.silentAgents >= 1, "agent reported 'now' is silent 3 days later");
+  const second = await runMaintenance(loadConfig(), later);
+  assert.equal(second.alerts.missingBackups + second.alerts.silentAgents, 0, "alerts fire once");
+  assert.ok(await prisma.auditEvent.count({ where: { action: "backup.missing" } }));
+});
+
+test("rgpd: export without secrets, then erase the organization", async () => {
+  const exp = await app.inject({ method: "GET", url: "/api/v1/organization/export", headers: auth() });
+  assert.equal(exp.statusCode, 200);
+  const text = exp.body;
+  for (const forbidden of ["passwordHash", "mfaSecret", "agentTokenHash", "tokenHash", "apiKeyEncrypted", "webhookSecretEncrypted"]) {
+    assert.equal(text.includes(forbidden), false, `${forbidden} must not be exported`);
+  }
+  assert.ok(exp.json().users.length >= 1);
+
+  const wrong = await app.inject({
+    method: "DELETE", url: "/api/v1/organization", headers: auth(), payload: { confirmName: "acme" },
+  });
+  assert.equal(wrong.statusCode, 400);
+  const erased = await app.inject({
+    method: "DELETE", url: "/api/v1/organization", headers: auth(), payload: { confirmName: "Acme" },
+  });
+  assert.equal(erased.statusCode, 204);
+  assert.equal(await prisma.organization.count(), 0);
+  assert.equal(await prisma.user.count({ where: { email: "owner@acme.test" } }), 0);
 });

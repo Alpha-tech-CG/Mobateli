@@ -77,6 +77,8 @@ writeFileSync(
     {
       $schema: "https://openapi.vercel.sh/vercel.json",
       framework: null,
+      // EU hosting (cahier §10.1), next to the Neon database (Frankfurt).
+      regions: ["fra1"],
       installCommand: "npm install",
       buildCommand: "npm run build",
       outputDirectory: "public",
@@ -87,6 +89,8 @@ writeFileSync(
         },
       },
       rewrites: [{ source: "/(.*)", destination: "/api" }],
+      // Daily maintenance: retention purge + proactive alerts (Hobby: daily).
+      crons: [{ path: "/api/v1/cron/maintenance", schedule: "0 5 * * *" }],
     },
     null,
     2,
