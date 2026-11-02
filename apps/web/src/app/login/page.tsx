@@ -2,7 +2,6 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ShieldCheck } from "lucide-react";
 import { api, setToken, ApiError } from "@/lib/api";
 import { Card } from "@/components/ui";
 
@@ -46,8 +45,9 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
       <Card className="w-full max-w-sm p-6">
-        <div className="mb-6 flex items-center gap-2">
-          <ShieldCheck className="size-6 text-primary" aria-hidden />
+        <div className="mb-6 flex items-center gap-2.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.webp" alt="CodeGate" className="size-9" />
           <span className="font-mono text-xl font-semibold">CodeGate</span>
         </div>
         <h1 className="mb-1 text-lg font-semibold">Connexion</h1>

@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  ShieldCheck,
   KeyRound,
   PackageSearch,
   Bot,
@@ -61,8 +60,9 @@ export default function Landing() {
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-border/60 bg-background/80 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3.5">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-6 text-primary" aria-hidden />
+          <div className="flex items-center gap-2.5">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo.webp" alt="CodeGate" className="size-8" />
             <span className="font-mono text-lg font-semibold tracking-tight">CodeGate</span>
           </div>
           <nav className="hidden items-center gap-7 text-sm text-muted-foreground md:flex">
@@ -231,7 +231,8 @@ export default function Landing() {
       <footer className="border-t border-border/60 py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 text-sm text-muted-foreground sm:flex-row">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="size-5 text-primary" aria-hidden />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo.webp" alt="CodeGate" className="size-6" />
             <span className="font-mono font-semibold text-foreground">CodeGate</span>
           </div>
           <p>Sécurité du code généré par IA · Hébergement UE</p>

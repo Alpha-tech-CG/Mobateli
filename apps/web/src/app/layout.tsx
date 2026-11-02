@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "CodeGate",
   description: "Security gate for AI-generated code",
+  icons: { icon: "/logo.webp" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  ShieldCheck,
   LayoutDashboard,
   GitPullRequest,
   ScrollText,
@@ -43,7 +42,8 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-card">
         <div className="flex items-center gap-2 px-5 py-4">
-          <ShieldCheck className="size-6 text-primary" aria-hidden />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.webp" alt="CodeGate" className="size-7" />
           <span className="font-mono text-lg font-semibold">CodeGate</span>
         </div>
         <nav className="flex-1 px-2 py-2" aria-label="Navigation principale">
