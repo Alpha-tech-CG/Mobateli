@@ -60,8 +60,11 @@ jobs:
           pnpm exec prisma generate
           pnpm exec prisma migrate deploy
 
-      - name: Build shared package
-        run: pnpm --filter @codegate/shared build
+      # Workspace packages resolve through their compiled dist/ (gitignored).
+      - name: Build workspace packages
+        run: |
+          pnpm --filter @codegate/shared build
+          pnpm --filter @codegate/db build
 
       - name: Typecheck
         run: |
