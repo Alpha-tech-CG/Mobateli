@@ -55,6 +55,12 @@ export const createPolicySchema = z.object({
 });
 export type CreatePolicyInput = z.infer<typeof createPolicySchema>;
 
+export const connectLinearSchema = z.object({
+  apiKey: z.string().min(10).max(200),
+  teamId: z.string().min(1).max(100),
+});
+export type ConnectLinearInput = z.infer<typeof connectLinearSchema>;
+
 /** Pagination shared across list endpoints. */
 export const paginationSchema = z.object({
   cursor: z.string().uuid().optional(),

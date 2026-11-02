@@ -7,6 +7,12 @@ import { analyzeDiff } from "../analysis/analyzer.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
 import { createCheckRun, upsertPrComment } from "../lib/github-feedback.js";
+import {
+  buildRemediationIssue,
+  createLinearIssue,
+  shouldCreateRemediation,
+} from "../lib/linear.js";
+import { decrypt } from "../lib/crypto.js";
 import { PR_ANALYSIS_QUEUE, type PrAnalysisJob } from "../queues/pr-analysis.js";
 import type { AppConfig } from "../config.js";
 
@@ -113,6 +119,54 @@ export function createPrAnalysisWorker(
           reason: job.data.reason,
         },
       });
+
+      // ── Linear : issue de remédiation (cahier §5.7), idempotente ──
+      if (shouldCreateRemediation(result)) {
+        const linear = await prisma.linearConnection.findUnique({
+          where: { organizationId: pr.repository.organizationId },
+        });
+        const existing = await prisma.remediationIssue.findUnique({
+          where: { pullRequestId_provider: { pullRequestId: pr.id, provider: "linear" } },
+        });
+        if (linear && !existing) {
+          try {
+            const apiKey = decrypt(linear.apiKeyEncrypted, config.ENCRYPTION_KEY);
+            const issue = buildRemediationIssue({
+              repository: pr.repository.name,
+              prNumber: pr.number,
+              prTitle: pr.title,
+              result,
+            });
+            const ref = await createLinearIssue(apiKey, linear.teamId, issue);
+            await prisma.remediationIssue.create({
+              data: {
+                pullRequestId: pr.id,
+                provider: "linear",
+                externalId: ref.id,
+                identifier: ref.identifier,
+                url: ref.url,
+              },
+            });
+            await recordAudit({
+              organizationId: pr.repository.organizationId,
+              actorType: "system",
+              action: "remediation.created",
+              resourceType: "pull_request",
+              resourceId: pr.id,
+              metadata: { provider: "linear", identifier: ref.identifier, url: ref.url },
+            });
+          } catch (err) {
+            await recordAudit({
+              organizationId: pr.repository.organizationId,
+              actorType: "system",
+              action: "remediation.failed",
+              resourceType: "pull_request",
+              resourceId: pr.id,
+              metadata: { provider: "linear", error: err instanceof Error ? err.message : "unknown" },
+            });
+          }
+        }
+      }
 
       // ── Feedback GitHub (check run + commentaire), selon la politique ──
       if (pr.repository.installationId == null || pr.headSha == null) return;

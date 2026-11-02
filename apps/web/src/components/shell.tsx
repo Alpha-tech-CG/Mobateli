@@ -3,13 +3,21 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ShieldCheck, LayoutDashboard, GitPullRequest, ScrollText, LogOut } from "lucide-react";
+import {
+  ShieldCheck,
+  LayoutDashboard,
+  GitPullRequest,
+  ScrollText,
+  Plug,
+  LogOut,
+} from "lucide-react";
 import { clearToken, getToken } from "@/lib/api";
 
 const NAV = [
   { href: "/", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
   { href: "/policies", label: "Politiques", icon: ScrollText },
+  { href: "/integrations", label: "Intégrations", icon: Plug },
 ];
 
 /** App shell with sidebar nav + client-side auth guard. */
