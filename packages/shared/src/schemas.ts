@@ -100,6 +100,14 @@ export const connectSlackSchema = z.object({
 });
 export type ConnectSlackInput = z.infer<typeof connectSlackSchema>;
 
+export const connectSamlSchema = z.object({
+  idpEntityId: z.string().min(1).max(300),
+  idpSsoUrl: z.string().url().max(500),
+  /** IdP signing certificate (PEM body, base64) used to verify assertions. */
+  idpCert: z.string().min(50).max(10000),
+});
+export type ConnectSamlInput = z.infer<typeof connectSamlSchema>;
+
 export const connectJiraSchema = z.object({
   baseUrl: z.string().url().max(300),
   email: emailSchema,

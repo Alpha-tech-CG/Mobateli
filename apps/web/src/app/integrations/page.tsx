@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plug, Bell, Gitlab, Ticket, UserCog } from "lucide-react";
+import { CheckCircle2, Plug, Bell, Gitlab, Ticket, UserCog, KeyRound } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
@@ -138,7 +138,138 @@ function Integrations() {
       <GitlabCard />
       <JiraCard />
       <ScimCard />
+      <SamlCard />
     </div>
+  );
+}
+
+function SamlCard() {
+  const [connected, setConnected] = useState(false);
+  const [urls, setUrls] = useState<{ metadataUrl: string; acsUrl: string } | null>(null);
+  const [form, setForm] = useState({ idpEntityId: "", idpSsoUrl: "", idpCert: "" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function load() {
+    api<{ connected: boolean; metadataUrl: string; acsUrl: string }>("/api/v1/integrations/saml")
+      .then((r) => {
+        setConnected(r.connected);
+        setUrls({ metadataUrl: r.metadataUrl, acsUrl: r.acsUrl });
+      })
+      .catch(() => {});
+  }
+  useEffect(load, []);
+
+  async function connect(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api("/api/v1/integrations/saml", { method: "POST", body: JSON.stringify(form) });
+      setForm({ idpEntityId: "", idpSsoUrl: "", idpCert: "" });
+      setMsg("SAML configuré.");
+      load();
+    } catch {
+      setMsg("Configuration impossible (champs ou droits).");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setBusy(true);
+    try {
+      await api("/api/v1/integrations/saml", { method: "DELETE" });
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mt-6 max-w-xl p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <KeyRound className="size-5 text-primary" aria-hidden />
+        <div>
+          <h2 className="font-semibold">SAML (SSO)</h2>
+          <p className="text-xs text-muted-foreground">
+            Authentification unique via votre fournisseur d&apos;identité.
+          </p>
+        </div>
+      </div>
+
+      {urls ? (
+        <div className="mb-3 space-y-1 rounded-md border border-border bg-muted px-3 py-2 text-xs">
+          <p>
+            <span className="text-muted-foreground">Metadata SP :</span>{" "}
+            <code className="font-mono break-all">{urls.metadataUrl}</code>
+          </p>
+          <p>
+            <span className="text-muted-foreground">ACS URL :</span>{" "}
+            <code className="font-mono break-all">{urls.acsUrl}</code>
+          </p>
+        </div>
+      ) : null}
+
+      {connected ? (
+        <div className="space-y-3">
+          <p className="flex items-center gap-2 text-sm text-success">
+            <CheckCircle2 className="size-4" aria-hidden />
+            Configuré
+          </p>
+          <button
+            onClick={disconnect}
+            disabled={busy}
+            className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm text-destructive transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+          >
+            Supprimer la configuration
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={connect} className="space-y-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">IdP Entity ID</span>
+            <input
+              required
+              value={form.idpEntityId}
+              onChange={(e) => setForm({ ...form, idpEntityId: e.target.value })}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">IdP SSO URL</span>
+            <input
+              type="url"
+              required
+              value={form.idpSsoUrl}
+              onChange={(e) => setForm({ ...form, idpSsoUrl: e.target.value })}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">
+              Certificat IdP (X.509)
+            </span>
+            <textarea
+              required
+              rows={4}
+              value={form.idpCert}
+              onChange={(e) => setForm({ ...form, idpCert: e.target.value })}
+              placeholder="MIIC…"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy}
+            className="cursor-pointer rounded-md bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? "Enregistrement…" : "Configurer SAML"}
+          </button>
+        </form>
+      )}
+      {msg ? <p className="mt-3 text-sm text-muted-foreground">{msg}</p> : null}
+    </Card>
   );
 }
 

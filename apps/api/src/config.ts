@@ -36,6 +36,8 @@ const envSchema = z.object({
     ),
 
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  // Public base URL of this API — used to build SAML SP entityId/ACS URLs.
+  PUBLIC_API_URL: z.string().url().default("http://localhost:4000"),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

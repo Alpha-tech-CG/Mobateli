@@ -1,7 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@codegate/db";
-import { connectLinearSchema, connectSlackSchema, connectJiraSchema } from "@codegate/shared";
+import {
+  connectLinearSchema,
+  connectSlackSchema,
+  connectJiraSchema,
+  connectSamlSchema,
+} from "@codegate/shared";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { sendSlackAlert } from "../lib/slack.js";
@@ -347,6 +352,76 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
         actorType: "user",
         actorId: req.principal.userId,
         action: "integration.scim_disconnected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return { connected: false };
+    },
+  );
+
+  // ─── SAML SSO ─────────────────────────────────────────
+
+  app.get(
+    "/api/v1/integrations/saml",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const conn = await prisma.samlConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { idpEntityId: true, idpSsoUrl: true },
+      });
+      return {
+        connected: conn !== null,
+        idpEntityId: conn?.idpEntityId ?? null,
+        metadataUrl: `${config.PUBLIC_API_URL}/saml/${req.principal.organizationId}/metadata`,
+        acsUrl: `${config.PUBLIC_API_URL}/saml/${req.principal.organizationId}/acs`,
+      };
+    },
+  );
+
+  app.post(
+    "/api/v1/integrations/saml",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req, reply) => {
+      const body = connectSamlSchema.parse(req.body);
+      await prisma.samlConnection.upsert({
+        where: { organizationId: req.principal.organizationId },
+        create: {
+          organizationId: req.principal.organizationId,
+          idpEntityId: body.idpEntityId,
+          idpSsoUrl: body.idpSsoUrl,
+          idpCert: body.idpCert,
+        },
+        update: {
+          idpEntityId: body.idpEntityId,
+          idpSsoUrl: body.idpSsoUrl,
+          idpCert: body.idpCert,
+        },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.saml_connected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+        metadata: { idpEntityId: body.idpEntityId },
+      });
+      return reply.code(201).send({ connected: true });
+    },
+  );
+
+  app.delete(
+    "/api/v1/integrations/saml",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req) => {
+      await prisma.samlConnection.deleteMany({
+        where: { organizationId: req.principal.organizationId },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.saml_disconnected",
         resourceType: "organization",
         resourceId: req.principal.organizationId,
       });

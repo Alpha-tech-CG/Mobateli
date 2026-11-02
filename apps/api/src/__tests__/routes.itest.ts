@@ -390,6 +390,57 @@ test("scim: provision, list, deactivate; deactivated user can't log in", async (
   });
 });
 
+test("saml: configure, metadata endpoint, ACS rejects invalid assertions", async () => {
+  const org = await app.inject({ method: "GET", url: "/api/v1/organization", headers: auth() });
+  const orgId: string = org.json().id;
+
+  // A placeholder IdP cert (metadata generation doesn't validate it).
+  const dummyCert =
+    "MIIByDummyCertBodyForTestingPurposesOnly0123456789abcdefABCDEF0123456789==";
+
+  const con = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/saml",
+    headers: auth(),
+    payload: {
+      idpEntityId: "https://idp.acme.test/entity",
+      idpSsoUrl: "https://idp.acme.test/sso",
+      idpCert: dummyCert,
+    },
+  });
+  assert.equal(con.statusCode, 201);
+
+  const status = await app.inject({
+    method: "GET",
+    url: "/api/v1/integrations/saml",
+    headers: auth(),
+  });
+  assert.equal(status.json().connected, true);
+  assert.match(status.json().metadataUrl, /\/saml\/.+\/metadata$/);
+
+  // SP metadata is public XML containing our ACS endpoint.
+  const meta = await app.inject({ method: "GET", url: `/saml/${orgId}/metadata` });
+  assert.equal(meta.statusCode, 200);
+  assert.match(meta.headers["content-type"] as string, /xml/);
+  assert.match(meta.body, /EntityDescriptor/);
+  assert.match(meta.body, new RegExp(`/saml/${orgId}/acs`));
+
+  // ACS input validation.
+  const noResp = await app.inject({
+    method: "POST",
+    url: `/saml/${orgId}/acs`,
+    payload: {},
+  });
+  assert.equal(noResp.statusCode, 400);
+
+  const garbage = await app.inject({
+    method: "POST",
+    url: `/saml/${orgId}/acs`,
+    payload: { SAMLResponse: Buffer.from("not-a-saml-response").toString("base64") },
+  });
+  assert.equal(garbage.statusCode, 401);
+});
+
 test("audit export returns a JSON evidence pack", async () => {
   const res = await app.inject({
     method: "POST",
