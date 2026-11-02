@@ -54,7 +54,9 @@ CodeGate ne remplace pas GitHub, Vercel ou Linear — **il les sécurise.** Chaq
 
 **P2** ✅ Agent Guard (permissions des agents IA) · Compliance Evidence Pack (export JSON/CSV/PDF) · Slack Alerts
 
-**P3** ⬜ GitLab · Jira · SAML/SCIM
+**P3** ✅ GitLab (2ᵉ SCM) · Jira (remédiation entreprise) · SCIM 2.0 (provisioning) · SAML SSO
+
+**Post-MVP** ⬜ Moteur de scan Rust · détection de prompt injection · OpenTelemetry · CI/CD + déploiement UE
 
 ## Démarrage rapide
 
@@ -84,10 +86,12 @@ Détails, variables d'environnement, intégrations (GitHub App, Linear, Vercel, 
 
 ## Tests
 
+**49 tests** : 35 unitaires (moteurs, policy, agent guard, builders Linear/Jira/Slack…) + 14 d'intégration bout en bout (parcours HTTP réels via `app.inject`).
+
 ```bash
-pnpm --filter @codegate/api test                 # tests unitaires (moteurs, policy, agent guard…)
+pnpm --filter @codegate/api test                 # tests unitaires
 pnpm --filter @codegate/api test:db:setup        # (re)crée la base codegate_test
-pnpm --filter @codegate/api test:integration     # tests d'intégration bout en bout (app.inject)
+pnpm --filter @codegate/api test:integration     # tests d'intégration bout en bout
 ```
 
 ## Prérequis

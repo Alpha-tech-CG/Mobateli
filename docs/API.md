@@ -59,6 +59,32 @@ Permissions : `read_repo`, `modify_file`, `install_dependency`, `run_shell`, `ne
 | GET/POST/DELETE | `/api/v1/integrations/linear` | POST/DELETE : owner/admin(/security_manager) | Connexion Linear `{ apiKey, teamId }` (clé chiffrée, jamais renvoyée) |
 | GET/POST/DELETE | `/api/v1/integrations/slack` | idem | Connexion Slack `{ webhookUrl }` (URL chiffrée) |
 | POST | `/api/v1/integrations/slack/test` | tous | Envoie une alerte de test |
+| GET/POST/DELETE | `/api/v1/integrations/gitlab` | POST/DELETE : owner/admin/security_manager | GitLab : POST (re)génère le token de webhook (renvoyé une fois) |
+| GET/POST/DELETE | `/api/v1/integrations/jira` | idem | Connexion Jira `{ baseUrl, email, apiToken, projectKey }` (token chiffré) |
+| GET/POST/DELETE | `/api/v1/integrations/scim` | owner/admin | SCIM : POST (re)génère le bearer token (renvoyé une fois) |
+| GET/POST/DELETE | `/api/v1/integrations/saml` | owner/admin | SAML : config IdP `{ idpEntityId, idpSsoUrl, idpCert }` |
+
+## SSO entreprise (§12.2 P3)
+
+### SCIM 2.0 — `/scim/v2/*` (auth : bearer SCIM token)
+
+| Méthode | Route | Description |
+|---|---|---|
+| POST | `/scim/v2/Users` | Provisionne un utilisateur (`userName`, `displayName`, `active`) |
+| GET | `/scim/v2/Users` | Liste (filtre `userName eq "x"`) |
+| GET | `/scim/v2/Users/:id` | Détail |
+| PATCH | `/scim/v2/Users/:id` | Met à jour `active` (dé/réactivation) |
+| DELETE | `/scim/v2/Users/:id` | Désactivation douce (204) |
+
+Un compte désactivé ne peut plus se connecter (`login` → 403 `account_disabled`).
+
+### SAML — `/saml/:orgId/*` (public)
+
+| Méthode | Route | Description |
+|---|---|---|
+| GET | `/saml/:orgId/metadata` | Métadonnées SP (XML) à fournir à l'IdP |
+| GET | `/saml/:orgId/login` | SSO SP-initié → redirection vers l'IdP |
+| POST | `/saml/:orgId/acs` | Consomme l'assertion signée → provisioning JIT → JWT CodeGate |
 
 ## Audit & conformité (§5.8)
 
@@ -72,10 +98,11 @@ Permissions : `read_repo`, `modify_file`, `install_dependency`, `run_shell`, `ne
 | Méthode | Route | Signature | Description |
 |---|---|---|---|
 | POST | `/webhooks/github` | `x-hub-signature-256` (HMAC-SHA256) | `pull_request` (opened/synchronize/reopened) → upsert + enqueue analyse ; `installation*` |
+| POST | `/webhooks/gitlab` | `x-gitlab-token` (secret partagé, haché) | `Merge Request Hook` (open/reopen/update) → upsert + enqueue analyse |
 | POST | `/webhooks/vercel` | `x-vercel-signature` (HMAC-SHA1) | `deployment.created` → Deploy Gate → décision persistée |
 
 Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de livraison est libéré en cas d'échec pour permettre les retries), et renvoient `503` si l'intégration n'est pas configurée.
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `integration.linear_connected`/`_disconnected`, `integration.slack_connected`/`_disconnected`, `audit.exported`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`.

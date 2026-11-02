@@ -43,6 +43,7 @@ Copier `.env.example` → `.env` et renseigner au minimum `DATABASE_URL`, `JWT_S
 | `WEB_ORIGIN` | — | origine CORS en production (défaut `http://localhost:3000`) |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_WEBHOOK_SECRET` | — | GitHub App (sinon les routes GitHub renvoient 503) |
 | `VERCEL_WEBHOOK_SECRET` | — | vérification du webhook Vercel |
+| `PUBLIC_API_URL` | — | base publique de l'API (URLs SAML SP), défaut `http://localhost:4000` |
 | `NEXT_PUBLIC_API_URL` | — | (web) URL de l'API, défaut `http://127.0.0.1:4000` |
 
 > `127.0.0.1` est préféré à `localhost` dans `DATABASE_URL` (évite une résolution IPv6 capricieuse sous Windows).
@@ -63,7 +64,7 @@ pnpm --filter @codegate/db exec prisma migrate dev     # applique les migrations
 pnpm --filter @codegate/db exec prisma studio          # explorateur de données
 ```
 
-Modèle de données : voir `packages/db/prisma/schema.prisma`. En-têtes des tables — `organizations`, `users`, `repositories`, `pull_requests`, `findings`, `dependencies`, `secret_findings`, `policies`, `audit_events`, `github_installations`, `linear_connections`, `slack_connections`, `remediation_issues`, `agent_policies`, `deploy_checks`.
+Modèle de données : voir `packages/db/prisma/schema.prisma`. Tables — `organizations`, `users` (dont `active` pour SCIM), `repositories`, `pull_requests`, `findings`, `dependencies`, `secret_findings`, `policies`, `audit_events`, `github_installations`, `gitlab_connections`, `linear_connections`, `jira_connections`, `slack_connections`, `scim_tokens`, `saml_connections`, `remediation_issues`, `agent_policies`, `deploy_checks`.
 
 ## 6. Lancer les services
 
@@ -103,6 +104,10 @@ uvicorn app.main:app --reload --port 8000
 - **Linear** : dashboard → Intégrations → coller la clé API + Team ID. Déclenche la création d'issues de remédiation sur risque bloquant.
 - **Vercel** : webhook sur `POST /webhooks/vercel` (signature HMAC-SHA1) ; le déploiement est évalué avant mise en production.
 - **Slack** : dashboard → Intégrations → URL de webhook entrant ; alertes sur PR bloquée, secret, déploiement bloqué.
+- **GitLab** (P3, 2ᵉ SCM) : dashboard → Intégrations → « Connecter GitLab » génère un token ; à coller dans le webhook GitLab (événement *Merge request*) pointant sur `POST /webhooks/gitlab`.
+- **Jira** (P3) : dashboard → Intégrations → `baseUrl`, email, jeton API, clé de projet ; crée des issues de remédiation (REST v3).
+- **SCIM** (P3, provisioning SSO) : dashboard → Intégrations → « Activer SCIM » génère un bearer token ; endpoint IdP `/scim/v2`.
+- **SAML** (P3, SSO) : dashboard → Intégrations → IdP entityId/SSO URL/certificat ; métadonnées SP sur `/saml/:orgId/metadata`, ACS sur `/saml/:orgId/acs`.
 
 Les secrets d'intégration (clé Linear, URL Slack, secret TOTP) sont **chiffrés au repos** (AES-256-GCM) et ne sont jamais renvoyés par l'API.
 

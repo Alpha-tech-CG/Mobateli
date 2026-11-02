@@ -44,13 +44,17 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 - [x] Tests unitaires (34) + tests d'intégration bout en bout (10)
 - [x] Résilience de connexion DB
 
-## Reste à faire (P3 / post-MVP)
-- [ ] GitLab (2e fournisseur SCM)
-- [ ] Jira (intégration entreprise)
-- [ ] SAML / SCIM (SSO entreprise)
+## Étape 7 — P3 entreprise ✅
+- [x] GitLab (2e fournisseur SCM) — webhook Merge Request → même pipeline
+- [x] Jira (issues de remédiation entreprise, REST v3 + ADF)
+- [x] SCIM 2.0 (provisioning d'utilisateurs, `User.active`)
+- [x] SAML SSO (SP par org : métadonnées, login, ACS)
+
+## Reste à faire (post-MVP)
 - [ ] Moteur de scan Rust avancé (`services/scan-engine`)
 - [ ] Observabilité (OpenTelemetry), CI/CD, déploiement UE
 - [ ] Enrichissement IA (triage via Claude), détection de prompt injection
+- [ ] SAML : poster dans le dépôt GitLab (statut/commentaire MR), feedback GitLab-like
 
 ---
 
