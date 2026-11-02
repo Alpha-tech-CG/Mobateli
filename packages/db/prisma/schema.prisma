@@ -136,6 +136,7 @@ model Organization {
   bruteforcePolicies BruteForcePolicy[]
   bruteforceTargets  BruteForceTarget[]
   backupJobs         BackupJob[]
+  approvalRequests   ApprovalRequest[]
 
   @@map("organizations")
 }
@@ -514,6 +515,33 @@ model FindingSuppression {
   @@map("finding_suppressions")
 }
 
+/// A sensitive action waiting for a human decision (cahier §5.4, §5.5,
+/// §10.5, US06): an AI agent action under `require_approval`, or a
+/// deployment the Deploy Gate sent to human validation.
+model ApprovalRequest {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  repositoryId   String?   @db.Uuid
+  kind           String
+  title          String
+  detail         Json
+  // Identical pending requests are merged (an agent retrying the same action).
+  dedupeKey      String
+  status         String    @default("pending")
+  requestedById  String?   @db.Uuid
+  decidedById    String?   @db.Uuid
+  decidedAt      DateTime?
+  reason         String?
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([dedupeKey])
+  @@map("approval_requests")
+}
+
 /// Webhook delivery ids already processed — idempotence when the API runs
 /// without Redis (serverless, ANALYSIS_MODE=inline). cahier §13.4.
 model WebhookDelivery {
@@ -593,6 +621,9 @@ model GitlabConnection {
   id             String   @id @default(uuid()) @db.Uuid
   organizationId String   @unique @db.Uuid
   tokenHash      String   @unique
+  // API access (read diffs, post statuses and MR notes): instance + token.
+  baseUrl           String  @default("https://gitlab.com")
+  apiTokenEncrypted String?
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)

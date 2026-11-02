@@ -6,7 +6,10 @@ import {
   connectSlackSchema,
   connectJiraSchema,
   connectSamlSchema,
+  connectGitlabApiSchema,
 } from "@codegate/shared";
+import { gitlabApi } from "../lib/gitlab.js";
+import { TargetRejected, assertPublicOrigin } from "../lib/bruteforce-runner.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { sendSlackAlert } from "../lib/slack.js";
@@ -207,9 +210,13 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
     async (req) => {
       const conn = await prisma.gitlabConnection.findUnique({
         where: { organizationId: req.principal.organizationId },
-        select: { createdAt: true },
+        select: { createdAt: true, baseUrl: true, apiTokenEncrypted: true },
       });
-      return { connected: conn !== null };
+      return {
+        connected: conn !== null,
+        apiConfigured: Boolean(conn?.apiTokenEncrypted),
+        baseUrl: conn?.baseUrl ?? null,
+      };
     },
   );
 
@@ -256,6 +263,42 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
         resourceId: req.principal.organizationId,
       });
       return { connected: false };
+    },
+  );
+
+  // API access: lets CodeGate read MR diffs and post statuses / notes.
+  app.put(
+    "/api/v1/integrations/gitlab/api",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin", "security_manager")] },
+    async (req, reply) => {
+      const body = connectGitlabApiSchema.parse(req.body);
+      const conn = await prisma.gitlabConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { id: true },
+      });
+      if (!conn) return reply.code(409).send({ error: "gitlab_not_connected" });
+      const baseUrl = new URL(body.baseUrl).origin;
+      try {
+        await assertPublicOrigin(baseUrl);
+        await gitlabApi(baseUrl, body.accessToken).request("/user");
+      } catch (err) {
+        if (err instanceof TargetRejected) return reply.code(400).send({ error: err.message });
+        return reply.code(422).send({ error: "gitlab_token_invalid" });
+      }
+      await prisma.gitlabConnection.update({
+        where: { id: conn.id },
+        data: { baseUrl, apiTokenEncrypted: encrypt(body.accessToken, config.ENCRYPTION_KEY) },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.gitlab_api_configured",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+        metadata: { baseUrl },
+      });
+      return { apiConfigured: true, baseUrl };
     },
   );
 

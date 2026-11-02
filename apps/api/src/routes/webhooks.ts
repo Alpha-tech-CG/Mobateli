@@ -12,6 +12,7 @@ import type { Jobs } from "../lib/jobs.js";
 import { recordAudit } from "../lib/audit.js";
 import { evaluateDeployGate } from "../analysis/deploy-gate.js";
 import { notifySlack } from "../lib/notify.js";
+import { requestApproval } from "../lib/approvals.js";
 
 /** Heuristic: was this PR likely opened by an AI coding agent? (cahier §5.1) */
 function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
@@ -271,7 +272,7 @@ async function handleVercelDeployment(
     repo.protectionLevel,
   );
 
-  await prisma.deployCheck.upsert({
+  const check = await prisma.deployCheck.upsert({
     where: { provider_externalId: { provider: "vercel", externalId: deploymentId } },
     create: {
       repositoryId: repo.id,
@@ -300,6 +301,18 @@ async function handleVercelDeployment(
       severity: "critical",
       repository: fullName,
       detail: result.reason,
+    });
+  } else if (result.decision === "requires_approval") {
+    // US05: the decision is a human's; the reviewer is notified.
+    await requestApproval({
+      organizationId: repo.organizationId,
+      encryptionKey,
+      kind: "deployment",
+      dedupeKey: `deploy:${deploymentId}`,
+      title: `Déploiement de ${fullName}${meta.githubCommitRef ? ` (${meta.githubCommitRef})` : ""}`,
+      detail: { deploymentId, deployCheckId: check.id, reason: result.reason },
+      repositoryId: repo.id,
+      repositoryName: fullName,
     });
   }
 }

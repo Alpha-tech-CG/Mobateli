@@ -18,6 +18,8 @@ const CATEGORY_LABEL: Record<InfraCategory, string> = {
   bruteforce: "Brute force",
   docker: "Docker",
   updates: "Mises à jour",
+  backups: "Sauvegardes",
+  tls: "TLS",
 };
 
 export default function ServerPage() {

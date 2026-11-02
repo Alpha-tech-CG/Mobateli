@@ -72,13 +72,22 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 - [x] Webhook Linear (synchronisation des issues de remédiation)
 - [x] CI GitHub Actions (typecheck, tests unitaires, tests d'intégration Postgres/Redis, build web)
 
+## Étape 10 — Workflows humains & multi-écosystèmes ✅
+- [x] Approbations humaines : actions d'agents (US06) et déploiements (US05), expiration 24 h, page Approbations
+- [x] Gestion des membres : rôles, désactivation, garde-fous (§12.1)
+- [x] Révocation guidée des secrets + preuve de remédiation (US03)
+- [x] Dépendances PyPI et Go (extraction, typosquatting, OSV, paquets inexistants)
+- [x] GitLab : analyse du vrai diff des MR, statut de commit et note (feedback équivalent à GitHub)
+
+## Étape 11 — Moteur Rust ✅
+- [x] `services/scan-engine` : secrets + SAST sur arbre syntaxique (oxc) pour JS/TS, compilé en WebAssembly et exécuté dans l'API (repli TypeScript automatique)
+- [x] Construction sans installation locale (image Docker officielle `rust`), tests Rust et build WebAssembly dans la CI
+
 ## Reste à faire (post-MVP)
-- [ ] Moteur de scan Rust avancé (`services/scan-engine`)
 - [ ] Observabilité (OpenTelemetry, Sentry) — nécessite un compte
 - [ ] Facturation Stripe — nécessite un compte
 - [ ] Création de la GitHub App de production (App ID, clé, secret, slug)
 - [ ] Enrichissement IA des explications via Gemini — nécessite une clé API
-- [ ] SAML : poster dans le dépôt GitLab (statut/commentaire MR), feedback GitLab-like
 
 ---
 

@@ -7,7 +7,7 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
-import type { PullRequestDetail } from "@/lib/types";
+import type { PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
 
 export default function PullRequestDetailPage() {
   return (
@@ -112,13 +112,7 @@ function Detail() {
         {pr.secretFindings.length ? (
           <ul className="divide-y divide-border">
             {pr.secretFindings.map((s) => (
-              <li key={s.id} className="flex items-center justify-between px-4 py-3 text-sm">
-                <span>
-                  <span className="font-medium">{s.secretType}</span>{" "}
-                  <span className="font-mono text-xs text-muted-foreground">{s.location}</span>
-                </span>
-                <span className="font-mono text-xs text-muted-foreground">{s.maskedPreview}</span>
-              </li>
+              <SecretRow key={s.id} secret={s} onChange={load} />
             ))}
           </ul>
         ) : (
@@ -220,4 +214,82 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="px-4 py-6 text-center text-sm text-muted-foreground">{children}</p>;
+}
+
+/** A detected secret with its guided revocation (US03). */
+function SecretRow({ secret, onChange }: { secret: SecretFinding; onChange: () => void }) {
+  const [guide, setGuide] = useState<RevocationGuide | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const revoked = Boolean(secret.revokedAt) || secret.status === "resolved";
+
+  async function toggleGuide() {
+    if (guide) return setGuide(null);
+    try {
+      const r = await api<{ guide: RevocationGuide }>(`/api/v1/secrets/${secret.id}/revocation`);
+      setGuide(r.guide);
+    } catch {
+      setError("Guide indisponible.");
+    }
+  }
+
+  async function markRevoked() {
+    if (!confirm("Confirmez-vous que la clé a été révoquée chez le fournisseur ?")) return;
+    try {
+      await api(`/api/v1/secrets/${secret.id}/revoked`, { method: "POST" });
+      onChange();
+    } catch {
+      setError("Mise à jour impossible.");
+    }
+  }
+
+  return (
+    <li className="px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span>
+          <span className="font-medium">{secret.secretType}</span>{" "}
+          <span className="font-mono text-xs text-muted-foreground">{secret.location}</span>
+        </span>
+        <span className="font-mono text-xs text-muted-foreground">{secret.maskedPreview}</span>
+      </div>
+      <div className="mt-2 flex items-center gap-3 text-xs">
+        {revoked ? (
+          <span className="text-success">Révoqué — exclu du score</span>
+        ) : (
+          <>
+            <button type="button" onClick={toggleGuide} className="cursor-pointer text-primary hover:underline">
+              {guide ? "Masquer la procédure" : "Procédure de révocation"}
+            </button>
+            <button
+              type="button"
+              onClick={markRevoked}
+              className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
+            >
+              Marquer comme révoqué
+            </button>
+          </>
+        )}
+      </div>
+      {guide ? (
+        <div className="mt-2 rounded-md border border-border bg-muted/40 p-3 text-xs">
+          <p className="font-medium">
+            {guide.provider}
+            {guide.url ? (
+              <>
+                {" — "}
+                <a href={guide.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                  ouvrir la console
+                </a>
+              </>
+            ) : null}
+          </p>
+          <ol className="mt-2 list-decimal space-y-1 pl-4">
+            {guide.steps.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+      {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+    </li>
+  );
 }

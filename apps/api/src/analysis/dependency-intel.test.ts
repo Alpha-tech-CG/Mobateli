@@ -85,3 +85,17 @@ test("network failure leaves the deterministic result unchanged", async () => {
   const input = [dep("express")];
   assert.deepEqual(await enrichDependencies(input, boom, now), input);
 });
+
+test("PyPI: non-existent package is critical; Go: missing module too", async () => {
+  const out = await enrichDependencies(
+    [
+      { ecosystem: "PyPI", name: "fastapi-securitee-helper", version: "*", trustScore: 80, riskLevel: "low" },
+      { ecosystem: "Go", name: "github.com/nobody/not-a-module", version: "v1.0.0", trustScore: 80, riskLevel: "low" },
+    ],
+    fakeFetch({ querybatch: () => json({ results: [{}, {}] }) }),
+    now,
+  );
+  assert.equal(out[0]!.riskLevel, "critical");
+  assert.match(out[0]!.reason!, /PyPI/);
+  assert.equal(out[1]!.riskLevel, "critical");
+});

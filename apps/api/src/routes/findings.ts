@@ -4,6 +4,7 @@ import { findingsQuerySchema, updateFindingSchema } from "@codegate/shared";
 import { recordAudit } from "../lib/audit.js";
 import { decide } from "../analysis/risk.js";
 import { findingFingerprint } from "../analysis/analyzer.js";
+import { revocationGuide } from "../analysis/revocation.js";
 
 /** Who may hide a finding: marking a false positive removes it from the score. */
 const TRIAGE_FP = new Set(["owner", "admin", "security_manager"]);
@@ -12,7 +13,7 @@ const TRIAGE_FP = new Set(["owner", "admin", "security_manager"]);
 async function rescorePullRequest(pullRequestId: string) {
   const [findings, secrets, dependencies] = await Promise.all([
     prisma.finding.findMany({ where: { pullRequestId, status: { not: "false_positive" } } }),
-    prisma.secretFinding.findMany({ where: { pullRequestId, status: { not: "false_positive" } } }),
+    prisma.secretFinding.findMany({ where: { pullRequestId, status: { notIn: ["false_positive", "resolved"] } } }),
     prisma.dependency.findMany({ where: { pullRequestId } }),
   ]);
   const { riskScore, status } = decide({
@@ -129,6 +130,46 @@ export async function findingRoutes(app: FastifyInstance) {
       });
 
       return { finding: { id, status: body.status }, pullRequest: rescored };
+    },
+  );
+
+  // US03: guided revocation of an exposed secret.
+  app.get("/api/v1/secrets/:id/revocation", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const secret = await prisma.secretFinding.findFirst({
+      where: { id, pullRequest: { repository: { organizationId: req.principal.organizationId } } },
+      select: { secretType: true, location: true, maskedPreview: true, status: true, revokedAt: true },
+    });
+    if (!secret) return reply.code(404).send({ error: "not_found" });
+    return { secret, guide: revocationGuide(secret.secretType) };
+  });
+
+  // Proof of remediation: the key was rotated at the provider.
+  app.post(
+    "/api/v1/secrets/:id/revoked",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin", "security_manager", "developer")] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const secret = await prisma.secretFinding.findFirst({
+        where: { id, pullRequest: { repository: { organizationId: req.principal.organizationId } } },
+        select: { id: true, pullRequestId: true, secretType: true },
+      });
+      if (!secret) return reply.code(404).send({ error: "not_found" });
+      await prisma.secretFinding.update({
+        where: { id },
+        data: { status: "resolved", revokedAt: new Date() },
+      });
+      const rescored = await rescorePullRequest(secret.pullRequestId);
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "secret.revoked",
+        resourceType: "secret_finding",
+        resourceId: id,
+        metadata: { secretType: secret.secretType },
+      });
+      return { id, revoked: true, pullRequest: rescored };
     },
   );
 }

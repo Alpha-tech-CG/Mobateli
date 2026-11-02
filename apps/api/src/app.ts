@@ -23,6 +23,7 @@ import { findingRoutes } from "./routes/findings.js";
 import { githubRoutes } from "./routes/github.js";
 import { privacyRoutes } from "./routes/privacy.js";
 import { cronRoutes } from "./routes/cron.js";
+import { approvalRoutes } from "./routes/approvals.js";
 import { getRedis } from "./lib/redis.js";
 import { createJobs } from "./lib/jobs.js";
 
@@ -105,6 +106,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   });
   await app.register(findingRoutes);
   await app.register(privacyRoutes);
+  await app.register(approvalRoutes);
   await app.register(async (instance) => {
     await cronRoutes(instance, config);
   });
@@ -112,7 +114,9 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     await githubRoutes(instance, config);
   });
   await app.register(auditRoutes);
-  await app.register(agentGuardRoutes);
+  await app.register(async (instance) => {
+    await agentGuardRoutes(instance, config);
+  });
   await app.register(scimRoutes);
   await app.register(async (instance) => {
     await serverRoutes(instance, config);

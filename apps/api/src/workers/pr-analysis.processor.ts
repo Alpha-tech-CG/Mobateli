@@ -15,6 +15,7 @@ import {
 import { buildJiraIssue, createJiraIssue } from "../lib/jira.js";
 import { decrypt } from "../lib/crypto.js";
 import { notifySlack } from "../lib/notify.js";
+import { fetchMrDiff, gitlabForOrg, setCommitStatus, upsertMrNote } from "../lib/gitlab.js";
 import type { PrAnalysisJob } from "../queues/pr-analysis.js";
 import type { AppConfig } from "../config.js";
 
@@ -38,10 +39,16 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
     data: { status: "analyzing" },
   });
 
-  // Fetch the diff via GitHub when the App is configured; otherwise run on
-  // an empty diff (local dev / unconfigured) → clean result.
+  // Fetch the diff from the SCM (GitHub App, or GitLab API token); without
+  // access, run on an empty diff (local dev / unconfigured) → clean result.
   let diff = "";
-  if (pr.repository.installationId != null) {
+  const gitlab =
+    pr.repository.provider === "gitlab"
+      ? await gitlabForOrg(pr.repository.organizationId, config.ENCRYPTION_KEY)
+      : null;
+  if (gitlab) {
+    diff = await fetchMrDiff(gitlab, pr.repository.externalId, pr.number);
+  } else if (pr.repository.installationId != null) {
     const fetched = await fetchPrDiff(
       config,
       Number(pr.repository.installationId),
@@ -127,6 +134,7 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
       riskScore: result.riskScore,
       decision: result.decision,
       status: result.status,
+      engine: result.engine,
       counts: {
         findings: result.findings.length,
         secrets: result.secrets.length,
@@ -265,8 +273,9 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
     }
   }
 
-  // ── Feedback GitHub (check run + commentaire), selon la politique ──
-  if (pr.repository.installationId == null || pr.headSha == null) return;
+  // ── Feedback SCM (GitHub check run / GitLab commit status + commentaire) ──
+  if (pr.headSha == null) return;
+  if (!gitlab && pr.repository.installationId == null) return;
 
   const policies = await prisma.policy.findMany({
     where: {
@@ -285,18 +294,24 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
   const installationId = Number(pr.repository.installationId);
 
   try {
-    await createCheckRun(config, installationId, pr.repository.name, pr.headSha, {
-      conclusion: enforcement.conclusion,
-      title: enforcement.title,
-      summary: comment,
-    });
-    await upsertPrComment(
-      config,
-      installationId,
-      pr.repository.name,
-      pr.number,
-      comment,
-    );
+    if (gitlab) {
+      const state = enforcement.conclusion === "success" || enforcement.conclusion === "neutral" ? "success" : "failed";
+      await setCommitStatus(gitlab, pr.repository.externalId, pr.headSha, state, enforcement.title);
+      await upsertMrNote(gitlab, pr.repository.externalId, pr.number, comment);
+    } else {
+      await createCheckRun(config, installationId, pr.repository.name, pr.headSha, {
+        conclusion: enforcement.conclusion,
+        title: enforcement.title,
+        summary: comment,
+      });
+      await upsertPrComment(
+        config,
+        installationId,
+        pr.repository.name,
+        pr.number,
+        comment,
+      );
+    }
     await recordAudit({
       organizationId: pr.repository.organizationId,
       actorType: "system",

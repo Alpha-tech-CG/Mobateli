@@ -539,6 +539,7 @@ function GitlabCard() {
             <CheckCircle2 className="size-4" aria-hidden />
             Connecté
           </p>
+          <GitlabApiForm />
           <div className="flex gap-2">
             <button
               onClick={connect}
@@ -827,5 +828,78 @@ function LinearWebhook() {
       </p>
       {err ? <p className="mt-1 text-xs text-destructive">{err}</p> : null}
     </div>
+  );
+}
+
+/** GitLab API access: diffs of MRs + commit status and note feedback. */
+function GitlabApiForm() {
+  const [status, setStatus] = useState<{ apiConfigured: boolean; baseUrl: string | null } | null>(null);
+  const [baseUrl, setBaseUrl] = useState("https://gitlab.com");
+  const [token, setToken] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api<{ apiConfigured: boolean; baseUrl: string | null }>("/api/v1/integrations/gitlab")
+      .then((r) => {
+        setStatus(r);
+        if (r.baseUrl) setBaseUrl(r.baseUrl);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api<{ apiConfigured: boolean; baseUrl: string }>("/api/v1/integrations/gitlab/api", {
+        method: "PUT",
+        body: JSON.stringify({ baseUrl, accessToken: token }),
+      });
+      setStatus(r);
+      setToken("");
+    } catch (err) {
+      setMsg(
+        err instanceof ApiError && err.code === "gitlab_token_invalid"
+          ? "Jeton refusé par GitLab (portée « api » requise)."
+          : err instanceof ApiError && err.code === "private_address"
+            ? "Instance GitLab sur un réseau privé : non joignable depuis CodeGate."
+            : "Enregistrement impossible.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="space-y-2 rounded-md border border-border p-3">
+      <p className="text-xs text-muted-foreground">
+        {status?.apiConfigured
+          ? `Accès API actif (${status.baseUrl}) : diff des MR, statut « CodeGate » et commentaire publiés.`
+          : "Ajoutez un jeton d'accès (portée « api ») pour analyser le code des MR et publier le résultat dans GitLab."}
+      </p>
+      <input
+        value={baseUrl}
+        onChange={(e) => setBaseUrl(e.target.value)}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      />
+      <input
+        type="password"
+        required
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="glpat-…"
+        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      />
+      <button
+        type="submit"
+        disabled={busy}
+        className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+      >
+        {status?.apiConfigured ? "Remplacer le jeton" : "Enregistrer l'accès API"}
+      </button>
+      {msg ? <p className="text-xs text-destructive">{msg}</p> : null}
+    </form>
   );
 }

@@ -793,6 +793,98 @@ test("maintenance: cron auth, missing backup + silent agent alert once", async (
   assert.ok(await prisma.auditEvent.count({ where: { action: "backup.missing" } }));
 });
 
+test("approvals: agent action waits for a human, then is allowed", async () => {
+  const repo = await prisma.repository.findFirstOrThrow({ where: { provider: "github" } });
+  const ask = () =>
+    app.inject({
+      method: "POST",
+      url: "/api/v1/agent/guard",
+      headers: auth(),
+      payload: { repositoryId: repo.id, permission: "run_shell", target: "rm -rf build", agentId: "cursor" },
+    });
+  const first = await ask();
+  assert.equal(first.json().decision, "require_approval");
+  const approvalId = first.json().approvalId;
+  assert.ok(approvalId);
+  assert.equal((await ask()).json().approvalId, approvalId, "a retry reuses the same request");
+
+  const poll = await app.inject({ method: "GET", url: `/api/v1/agent/approvals/${approvalId}`, headers: auth() });
+  assert.equal(poll.json().status, "pending");
+  const pending = await app.inject({ method: "GET", url: "/api/v1/approvals?status=pending", headers: auth() });
+  assert.ok(pending.json().approvals.some((a: { id: string }) => a.id === approvalId));
+
+  const ok = await app.inject({
+    method: "POST",
+    url: `/api/v1/approvals/${approvalId}/decision`,
+    headers: auth(),
+    payload: { decision: "approve" },
+  });
+  assert.equal(ok.json().status, "approved");
+  assert.equal((await ask()).json().decision, "allow");
+  const again = await app.inject({
+    method: "POST",
+    url: `/api/v1/approvals/${approvalId}/decision`,
+    headers: auth(),
+    payload: { decision: "deny" },
+  });
+  assert.equal(again.statusCode, 409);
+});
+
+test("members: role change, deactivation, last-owner and self guards", async () => {
+  const inv = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "dev2@acme.test", role: "developer" },
+  });
+  assert.equal(inv.statusCode, 201);
+  const devId = inv.json().user.id;
+  const promote = await app.inject({
+    method: "PATCH", url: `/api/v1/organization/members/${devId}`, headers: auth(), payload: { role: "security_manager" },
+  });
+  assert.equal(promote.json().member.role, "security_manager");
+  const off = await app.inject({
+    method: "PATCH", url: `/api/v1/organization/members/${devId}`, headers: auth(), payload: { active: false },
+  });
+  assert.equal(off.json().member.active, false);
+  const login = await app.inject({
+    method: "POST", url: "/api/v1/auth/login", payload: { email: "dev2@acme.test", password: inv.json().tempPassword },
+  });
+  assert.equal(login.statusCode, 403, "deactivated member cannot sign in");
+
+  const owner = await prisma.user.findFirstOrThrow({ where: { email: "owner@acme.test" } });
+  const self = await app.inject({
+    method: "PATCH", url: `/api/v1/organization/members/${owner.id}`, headers: auth(), payload: { role: "viewer" },
+  });
+  assert.equal(self.statusCode, 409);
+});
+
+test("secrets: guided revocation and proof of remediation", async () => {
+  const pr = await prisma.pullRequest.findFirstOrThrow({ where: { repository: { provider: "github" } } });
+  const secret = await prisma.secretFinding.create({
+    data: { pullRequestId: pr.id, secretType: "aws_access_key_id", location: "src/x.ts:3", maskedPreview: "AKIA…WXYZ", severity: "critical" },
+  });
+  const guide = await app.inject({ method: "GET", url: `/api/v1/secrets/${secret.id}/revocation`, headers: auth() });
+  assert.equal(guide.json().guide.provider, "AWS");
+  assert.ok(guide.json().guide.steps.length >= 4);
+  const revoked = await app.inject({ method: "POST", url: `/api/v1/secrets/${secret.id}/revoked`, headers: auth() });
+  assert.equal(revoked.statusCode, 200);
+  const row = await prisma.secretFinding.findUniqueOrThrow({ where: { id: secret.id } });
+  assert.ok(row.revokedAt);
+  assert.notEqual(revoked.json().pullRequest.status, "blocked", "a revoked secret no longer blocks");
+});
+
+test("gitlab api: private instance refused", async () => {
+  const res = await app.inject({
+    method: "PUT",
+    url: "/api/v1/integrations/gitlab/api",
+    headers: auth(),
+    payload: { baseUrl: "https://localhost", accessToken: "glpat-0123456789abcdef" },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "private_address");
+});
+
 test("rgpd: export without secrets, then erase the organization", async () => {
   const exp = await app.inject({ method: "GET", url: "/api/v1/organization/export", headers: auth() });
   assert.equal(exp.statusCode, 200);

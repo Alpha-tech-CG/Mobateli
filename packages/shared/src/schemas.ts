@@ -53,6 +53,11 @@ export const inviteMemberSchema = z.object({
 });
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema>;
 
+export const updateMemberSchema = z
+  .object({ role: z.enum(ROLES).optional(), active: z.boolean().optional() })
+  .refine((v) => v.role !== undefined || v.active !== undefined, "role ou active requis");
+export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
+
 export const createPolicySchema = z.object({
   repositoryId: z.string().uuid().nullable().optional(),
   rule: z.string().min(1).max(120),
@@ -114,6 +119,17 @@ export const connectSamlSchema = z.object({
 });
 export type ConnectSamlInput = z.infer<typeof connectSamlSchema>;
 
+export const connectGitlabApiSchema = z.object({
+  baseUrl: z
+    .string()
+    .url()
+    .max(300)
+    .refine((v) => v.startsWith("https://"), "HTTPS obligatoire")
+    .default("https://gitlab.com"),
+  /** Project/group access token with `api` scope (encrypted at rest). */
+  accessToken: z.string().min(10).max(500),
+});
+
 export const connectJiraSchema = z.object({
   baseUrl: z.string().url().max(300),
   email: emailSchema,
@@ -135,6 +151,15 @@ export const updateFindingSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 export type UpdateFindingInput = z.infer<typeof updateFindingSchema>;
+
+export const approvalsQuerySchema = z.object({
+  status: z.enum(["pending", "approved", "denied", "expired"]).optional(),
+});
+
+export const approvalDecisionSchema = z.object({
+  decision: z.enum(["approve", "deny"]),
+  reason: z.string().max(500).optional(),
+});
 
 export const deleteOrganizationSchema = z.object({
   /** The exact organization name, typed by the owner to confirm. */

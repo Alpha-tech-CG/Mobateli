@@ -1,4 +1,5 @@
 import type { DependencyResult, FindingResult, SecretResult } from "./types.js";
+import { revocationGuide } from "./revocation.js";
 
 /** Hidden HTML marker identifying CodeGate's own PR comment, for upserts. */
 export const CODEGATE_COMMENT_MARKER = "<!-- codegate:report -->";
@@ -10,12 +11,13 @@ export const CODEGATE_COMMENT_MARKER = "<!-- codegate:report -->";
  */
 
 export function explainSecret(s: SecretResult): string {
+  const guide = revocationGuide(s.secretType);
   return (
     `Un secret de type « ${s.secretType} » a été détecté dans ${s.location} ` +
     `(valeur masquée : ${s.maskedPreview}). ` +
     `Un secret exposé dans le code peut être lu par quiconque a accès au dépôt ou à l'historique. ` +
-    `Révoquez immédiatement cette clé, régénérez-en une nouvelle, et déplacez-la dans une variable ` +
-    `d'environnement ou un gestionnaire de secrets.`
+    `Révoquez immédiatement cette clé${guide.url ? ` (${guide.provider} : ${guide.url})` : ""}, ` +
+    `régénérez-en une nouvelle, et déplacez-la dans une variable d'environnement ou un gestionnaire de secrets.`
   );
 }
 

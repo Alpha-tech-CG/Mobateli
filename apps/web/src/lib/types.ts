@@ -1,4 +1,5 @@
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
+export type Role = "owner" | "admin" | "security_manager" | "developer" | "auditor" | "viewer";
 export type PullRequestStatus =
   | "pending"
   | "analyzing"
@@ -116,6 +117,7 @@ export interface SecretFinding {
   location: string;
   maskedPreview: string;
   status: string;
+  revokedAt?: string | null;
 }
 
 export interface Dependency {
@@ -145,7 +147,15 @@ export interface PullRequestDetail {
 
 // ─── Infra Shield ───────────────────────────────────────
 
-export type InfraCategory = "ports" | "ssh" | "firewall" | "bruteforce" | "docker" | "updates";
+export type InfraCategory =
+  | "ports"
+  | "ssh"
+  | "firewall"
+  | "bruteforce"
+  | "docker"
+  | "updates"
+  | "backups"
+  | "tls";
 
 export interface ServerRow {
   id: string;
@@ -289,4 +299,34 @@ export interface BackupEvaluation {
   status: BackupStatus;
   ransomwareReady: boolean;
   checks: BackupCheck[];
+}
+
+// ─── Approbations & membres ─────────────────────────────
+
+export interface ApprovalRow {
+  id: string;
+  kind: "agent_action" | "deployment";
+  title: string;
+  detail: { reason?: string; permission?: string; target?: string | null; agentId?: string | null };
+  status: "pending" | "approved" | "denied" | "expired";
+  reason: string | null;
+  expiresAt: string;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface MemberRow {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  mfaEnabled: boolean;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface RevocationGuide {
+  provider: string;
+  url: string | null;
+  steps: string[];
 }

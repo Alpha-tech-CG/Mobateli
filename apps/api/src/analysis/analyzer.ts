@@ -3,6 +3,7 @@ import { scanSecrets } from "./secret-scanner.js";
 import { scanDependencies } from "./dependency-scanner.js";
 import { runSastRules, flagSensitiveFiles } from "./sast.js";
 import { detectPromptInjection } from "./prompt-injection.js";
+import { scanWithEngine } from "./engine/index.js";
 import { decide } from "./risk.js";
 import type { AnalysisResult, FindingResult } from "./types.js";
 
@@ -22,13 +23,18 @@ export function findingFingerprint(f: Pick<FindingResult, "ruleId" | "title" | "
 export function analyzeDiff(
   diff: string,
   suppressed: ReadonlySet<string> = new Set(),
-): AnalysisResult & { suppressed: FindingResult[] } {
+): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
   const parsed = parseUnifiedDiff(diff);
 
-  const secrets = scanSecrets(parsed.addedLines);
+  // Rust engine (WebAssembly) first: secrets + syntax-tree rules for JS/TS.
+  // Files it could not parse, other languages, or no engine ⇒ line rules.
+  const engine = scanWithEngine(parsed.addedLines);
+  const astFiles = new Set(engine?.astFiles ?? []);
+  const secrets = engine?.secrets ?? scanSecrets(parsed.addedLines);
   const dependencies = scanDependencies(parsed);
   const all = [
-    ...runSastRules(parsed.addedLines),
+    ...(engine?.findings ?? []),
+    ...runSastRules(parsed.addedLines.filter((l) => !astFiles.has(l.file))),
     ...flagSensitiveFiles(parsed.files),
     ...detectPromptInjection(parsed.addedLines, parsed.files),
   ];
@@ -39,7 +45,16 @@ export function analyzeDiff(
 
   const { riskScore, decision, status } = decide({ findings, secrets, dependencies });
 
-  return { findings, secrets, dependencies, riskScore, decision, status, suppressed: suppressedFindings };
+  return {
+    findings,
+    secrets,
+    dependencies,
+    riskScore,
+    decision,
+    status,
+    suppressed: suppressedFindings,
+    engine: engine ? `rust-wasm ${engine.version}` : "typescript",
+  };
 }
 
 export * from "./types.js";

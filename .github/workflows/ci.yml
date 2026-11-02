@@ -54,6 +54,18 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Rust scan engine (cahier §9.3): unit tests, then a fresh WebAssembly
+      # build that the API tests below load.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/scan-engine
+      - name: Scan engine (cargo test + wasm build)
+        working-directory: services/scan-engine
+        run: sh build-wasm.sh
+
       - name: Prisma client + migrations
         working-directory: packages/db
         run: |

@@ -61,12 +61,80 @@ interface NpmDoc {
   "dist-tags"?: { latest?: string };
 }
 
+const REGISTRY_NAME: Record<string, string> = { npm: "npm", PyPI: "PyPI", Go: "le proxy Go" };
+
+interface RegistryFacts {
+  missing: boolean;
+  created?: Date;
+  maintainers?: number;
+  /** null = no licence declared; undefined = unknown. */
+  license?: string | null;
+  installHooks: string[];
+  weeklyDownloads?: number;
+}
+
+interface PypiDoc {
+  info?: { license?: string | null; license_expression?: string | null; classifiers?: string[] };
+  releases?: Record<string, { upload_time_iso_8601?: string }[]>;
+}
+
+/** Go module paths escape capitals as "!x" on the module proxy. */
+const goEscape = (path: string) => path.replace(/[A-Z]/g, (c) => `!${c.toLowerCase()}`);
+
+async function registryFacts(fetchImpl: typeof fetch, dep: DependencyResult): Promise<RegistryFacts> {
+  if (dep.ecosystem === "npm") {
+    const [doc, downloads] = await Promise.all([
+      getJson<NpmDoc>(fetchImpl, `https://registry.npmjs.org/${encodeURIComponent(dep.name).replace("%40", "@")}`),
+      getJson<{ downloads?: number }>(fetchImpl, `https://api.npmjs.org/downloads/point/last-week/${dep.name}`),
+    ]);
+    if (doc.status === 404) return { missing: true, installHooks: [] };
+    const body = doc.body;
+    const license = body ? (typeof body.license === "string" ? body.license : body.license?.type) ?? null : undefined;
+    const latest = body?.["dist-tags"]?.latest;
+    const scripts = latest ? body?.versions?.[latest]?.scripts : undefined;
+    return {
+      missing: false,
+      ...(body?.time?.created ? { created: new Date(body.time.created) } : {}),
+      ...(body ? { maintainers: body.maintainers?.length ?? 0 } : {}),
+      ...(license !== undefined ? { license } : {}),
+      installHooks: ["preinstall", "install", "postinstall"].filter((h) => scripts?.[h]),
+      ...(downloads.body?.downloads !== undefined ? { weeklyDownloads: downloads.body.downloads } : {}),
+    };
+  }
+  if (dep.ecosystem === "PyPI") {
+    const doc = await getJson<PypiDoc>(fetchImpl, `https://pypi.org/pypi/${encodeURIComponent(dep.name)}/json`);
+    if (doc.status === 404) return { missing: true, installHooks: [] };
+    const uploads = Object.values(doc.body?.releases ?? {})
+      .flat()
+      .map((f) => f.upload_time_iso_8601)
+      .filter((t): t is string => Boolean(t))
+      .sort();
+    const info = doc.body?.info;
+    const license = info
+      ? (info.license_expression || info.license || (info.classifiers ?? []).find((c) => c.startsWith("License ::")) || null)
+      : undefined;
+    return {
+      missing: false,
+      ...(uploads[0] ? { created: new Date(uploads[0]) } : {}),
+      ...(license !== undefined ? { license } : {}),
+      installHooks: [],
+    };
+  }
+  if (dep.ecosystem === "Go") {
+    const list = await getJson<unknown>(fetchImpl, `https://proxy.golang.org/${goEscape(dep.name)}/@v/list`);
+    return { missing: list.status === 404 || list.status === 410, installHooks: [] };
+  }
+  return { missing: false, installHooks: [] };
+}
+
 export async function enrichDependencies(
   deps: DependencyResult[],
   fetchImpl: typeof fetch = fetch,
   now = new Date(),
 ): Promise<DependencyResult[]> {
-  const npm = deps.filter((d) => d.ecosystem === "npm").slice(0, MAX_PACKAGES);
+  const npm = deps
+    .filter((d) => d.ecosystem === "npm" || d.ecosystem === "PyPI" || d.ecosystem === "Go")
+    .slice(0, MAX_PACKAGES);
   if (!npm.length) return deps;
 
   // One OSV batch call for all packages.
@@ -79,7 +147,7 @@ export async function enrichDependencies(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         queries: npm.map((d, i) => ({
-          package: { name: d.name, ecosystem: "npm" },
+          package: { name: d.name, ecosystem: d.ecosystem },
           ...(versions[i] ? { version: versions[i] } : {}),
         })),
       }),
@@ -110,54 +178,38 @@ export async function enrichDependencies(
       }
 
       // ── Registry metadata ──
-      const [doc, downloads] = await Promise.all([
-        getJson<NpmDoc>(fetchImpl, `https://registry.npmjs.org/${encodeURIComponent(dep.name).replace("%40", "@")}`),
-        getJson<{ downloads?: number }>(
-          fetchImpl,
-          `https://api.npmjs.org/downloads/point/last-week/${dep.name}`,
-        ),
-      ]);
-      if (doc.status === 404) {
+      const registry = await registryFacts(fetchImpl, dep);
+      if (registry.missing) {
         return {
           ...dep,
           trustScore: 0,
           riskLevel: "critical" as const,
           reason: [
             ...reasons,
-            "Ce paquet n'existe pas sur npm : nom probablement inventé par l'IA (un attaquant peut le publier).",
+            `Ce paquet n'existe pas sur ${REGISTRY_NAME[dep.ecosystem] ?? dep.ecosystem} : nom probablement inventé par l'IA (un attaquant peut le publier).`,
           ].join(" "),
         };
       }
-      if (doc.body) {
-        const created = doc.body.time?.created ? new Date(doc.body.time.created) : null;
-        if (created && now.getTime() - created.getTime() < 30 * DAY) {
-          trust -= 25;
-          risk = raise(risk, "medium");
-          const days = Math.max(0, Math.round((now.getTime() - created.getTime()) / DAY));
-          reasons.push(`Publié il y a ${days} jour(s).`);
-        }
-        const maintainers = doc.body.maintainers?.length ?? 0;
-        if (maintainers === 1) {
-          trust -= 5;
-          reasons.push("Un seul mainteneur.");
-        }
-        const license =
-          typeof doc.body.license === "string" ? doc.body.license : doc.body.license?.type;
-        if (!license) reasons.push("Aucune licence déclarée.");
-        const latest = doc.body["dist-tags"]?.latest;
-        const scripts = latest ? doc.body.versions?.[latest]?.scripts : undefined;
-        const hooks = ["preinstall", "install", "postinstall"].filter((h) => scripts?.[h]);
-        if (hooks.length) {
-          trust -= 15;
-          risk = raise(risk, "medium");
-          reasons.push(`Exécute du code à l'installation (${hooks.join(", ")}).`);
-        }
+      if (registry.created && now.getTime() - registry.created.getTime() < 30 * DAY) {
+        trust -= 25;
+        risk = raise(risk, "medium");
+        const days = Math.max(0, Math.round((now.getTime() - registry.created.getTime()) / DAY));
+        reasons.push(`Publié il y a ${days} jour(s).`);
       }
-      const weekly = downloads.body?.downloads;
-      if (weekly !== undefined && weekly < 100) {
+      if (registry.maintainers === 1) {
+        trust -= 5;
+        reasons.push("Un seul mainteneur.");
+      }
+      if (registry.license === null) reasons.push("Aucune licence déclarée.");
+      if (registry.installHooks.length) {
         trust -= 15;
         risk = raise(risk, "medium");
-        reasons.push(`Très peu utilisé (${weekly} téléchargements / semaine).`);
+        reasons.push(`Exécute du code à l'installation (${registry.installHooks.join(", ")}).`);
+      }
+      if (registry.weeklyDownloads !== undefined && registry.weeklyDownloads < 100) {
+        trust -= 15;
+        risk = raise(risk, "medium");
+        reasons.push(`Très peu utilisé (${registry.weeklyDownloads} téléchargements / semaine).`);
       }
 
       trust = Math.max(0, Math.min(100, trust));

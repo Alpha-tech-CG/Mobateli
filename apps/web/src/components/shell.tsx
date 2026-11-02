@@ -15,6 +15,8 @@ import {
   KeyRound,
   DatabaseBackup,
   ShieldCheck,
+  ClipboardCheck,
+  Users,
   LogOut,
 } from "lucide-react";
 import { clearToken, getSession, getToken } from "@/lib/api";
@@ -24,12 +26,14 @@ const NAV = [
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
   { href: "/policies", label: "Politiques", icon: ScrollText },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
+  { href: "/approvals", label: "Approbations", icon: ClipboardCheck },
   { href: "/deployments", label: "Déploiements", icon: Rocket },
   { href: "/servers", label: "Serveurs", icon: Server },
   { href: "/bruteforce", label: "Brute force", icon: KeyRound },
   { href: "/backups", label: "Sauvegardes", icon: DatabaseBackup },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
+  { href: "/members", label: "Membres", icon: Users },
   { href: "/settings/security", label: "Sécurité du compte", icon: ShieldCheck },
 ];
 

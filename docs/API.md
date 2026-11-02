@@ -106,7 +106,21 @@ Un compte désactivé ne peut plus se connecter (`login` → 403 `account_disabl
 
 **Sessions et MFA (§10.2)** : les jetons expirent après 12 h. Les rôles owner/admin doivent avoir activé la MFA pour toute action d'administration (`403 mfa_enrollment_required` sinon) ; `POST /api/v1/auth/mfa/verify` renvoie une nouvelle session qui porte la MFA. Désactivable par `MFA_REQUIRED_FOR_ADMINS=false` (tests).
 
-**Analyse** : dépendances enrichies en ligne (OSV : vulnérabilités connues ; registre npm : paquet inexistant/halluciné, âge, mainteneurs, licence, scripts d'installation, popularité) et détection de prompt injection (détournement d'instructions, ordres adressés à un agent, faux messages système, exfiltration de secrets, caractères invisibles / Trojan Source, fichiers de consignes d'agents) — chaque détection est journalisée (`security.prompt_injection_detected`).
+**Analyse** : secrets et règles de code exécutés par le moteur Rust (WebAssembly, arbre syntaxique pour JS/TS — voir `services/scan-engine`), repli TypeScript automatique ; `GET /health` renvoie `scanEngine`. Dépendances enrichies en ligne (OSV : vulnérabilités connues ; registre npm : paquet inexistant/halluciné, âge, mainteneurs, licence, scripts d'installation, popularité) et détection de prompt injection (détournement d'instructions, ordres adressés à un agent, faux messages système, exfiltration de secrets, caractères invisibles / Trojan Source, fichiers de consignes d'agents) — chaque détection est journalisée (`security.prompt_injection_detected`).
+
+## Approbations, membres, secrets, GitLab
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/approvals` | tous | `?status=pending\|approved\|denied\|expired` — demandes d'approbation humaine |
+| POST | `/api/v1/approvals/:id/decision` | owner/admin/security_manager | `{ decision: approve\|deny, reason? }` ; un déploiement approuvé passe `authorized`, refusé `blocked` |
+| GET | `/api/v1/agent/approvals/:id` | tous | Statut d'une demande, interrogé par l'agent |
+| PATCH | `/api/v1/organization/members/:id` | owner/admin | `{ role?, active? }` — jamais sans owner actif, pas sur soi-même, l'admin ne touche pas aux owners |
+| GET | `/api/v1/secrets/:id/revocation` | tous | Procédure de révocation guidée par fournisseur (AWS, Stripe, OpenAI, Anthropic, GitHub, Google, Slack, clé privée, base de données) |
+| POST | `/api/v1/secrets/:id/revoked` | dev+ | Preuve de remédiation : secret marqué révoqué, PR re-notée |
+| PUT | `/api/v1/integrations/gitlab/api` | gestion | `{ baseUrl (https), accessToken }` — jeton vérifié puis chiffré ; les MR sont alors analysées sur leur vrai diff et reçoivent un statut « CodeGate » + une note |
+
+`POST /api/v1/agent/guard` : quand la politique exige une approbation, la réponse contient `approvalId` ; une même action redemandée réutilise la même demande, et une approbation reste valable 24 h. Le Deploy Gate crée aussi une demande quand il renvoie `requires_approval` (notification Slack). Les dépendances sont analysées pour npm, PyPI (`requirements*.txt`, `pyproject.toml`) et Go (`go.mod`).
 
 ## Infra Shield — serveurs (extension §3)
 
@@ -196,4 +210,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `org.data_exported`, `user.erased`, `backup.missing`, `server.agent_silent`, `remediation.done`/`canceled`, `integration.linear_webhook_configured`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `approval.requested`/`approved`/`denied`, `member.role_changed`/`deactivated`/`reactivated`, `secret.revoked`, `integration.gitlab_api_configured`, `org.data_exported`, `user.erased`, `backup.missing`, `server.agent_silent`, `remediation.done`/`canceled`, `integration.linear_webhook_configured`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.

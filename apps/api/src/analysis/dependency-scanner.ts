@@ -4,9 +4,8 @@ import type { DependencyResult } from "./types.js";
 /**
  * Dependency Trust Score (cahier §5.3). Deterministic first pass:
  * typosquatting against popular packages, suspicious-name heuristics, and a
- * trust score. OSV / registry-age lookups (network) plug in later via
- * `enrichWithOsv` — kept out of the synchronous path so analysis stays fast
- * and offline-testable.
+ * trust score, for npm, PyPI and Go. Network lookups (OSV, registries) live in
+ * dependency-intel.ts, outside this synchronous, offline-testable path.
  */
 
 // A small curated set of very popular npm packages for typosquat detection.
@@ -38,11 +37,17 @@ export function levenshtein(a: string, b: string): number {
 }
 
 /** Closest popular package within a small edit distance (a typosquat target). */
-export function nearestPopular(name: string): { target: string; distance: number } | null {
+export function nearestPopular(
+  name: string,
+  ecosystem: DepEntry["ecosystem"] = "npm",
+): { target: string; distance: number } | null {
+  if (ecosystem === "Go") return null; // module paths are host-qualified
+  const popular = ecosystem === "PyPI" ? POPULAR_PYPI : POPULAR_NPM;
+  const normalized = ecosystem === "PyPI" ? name.toLowerCase().replace(/[_.]/g, "-") : name;
   let best: { target: string; distance: number } | null = null;
-  for (const pkg of POPULAR_NPM) {
-    if (pkg === name) return null; // exact match ⇒ legitimate, not a squat
-    const d = levenshtein(name, pkg);
+  for (const pkg of popular) {
+    if (pkg === normalized) return null; // exact match ⇒ legitimate, not a squat
+    const d = levenshtein(normalized, pkg);
     if (d >= 1 && d <= 2 && (!best || d < best.distance)) {
       best = { target: pkg, distance: d };
     }
@@ -50,26 +55,57 @@ export function nearestPopular(name: string): { target: string; distance: number
   return best;
 }
 
+// Popular PyPI packages: the usual typosquatting targets (requests → reqeusts).
+const POPULAR_PYPI = [
+  "requests", "numpy", "pandas", "django", "flask", "fastapi", "pydantic", "urllib3",
+  "boto3", "setuptools", "pytest", "sqlalchemy", "cryptography", "pillow", "scipy",
+  "matplotlib", "openai", "anthropic", "langchain", "httpx", "uvicorn", "celery", "redis",
+];
+
 interface DepEntry {
   name: string;
   version: string;
+  ecosystem: "npm" | "PyPI" | "Go";
 }
 
-/** Extract dependency entries from the added lines of any package.json. */
+const NOT_DEPENDENCIES = new Set([
+  "name", "version", "description", "license", "main", "module", "type", "python",
+  "readme", "authors", "homepage", "repository", "documentation", "requires-python",
+]);
+
+/**
+ * Dependencies added in the diff, per manifest: package.json (npm),
+ * requirements*.txt / pyproject.toml (PyPI), go.mod (Go).
+ */
 export function extractAddedDependencies(diff: ParsedDiff): DepEntry[] {
   const deps: DepEntry[] = [];
-  const entry = /^\s*"([^"]+)"\s*:\s*"([^"]+)"\s*,?\s*$/;
-  for (const line of diff.addedLines) {
-    if (!line.file.endsWith("package.json")) continue;
-    const m = line.content.match(entry);
-    if (!m) continue;
-    const name = m[1]!;
-    const version = m[2]!;
-    // Skip non-dependency fields that also look like "k": "v".
-    if (["name", "version", "description", "license", "main", "module", "type"].includes(name)) {
-      continue;
+  const npmEntry = /^\s*"([^"]+)"\s*:\s*"([^"]+)"\s*,?\s*$/;
+  const reqEntry = /^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]*\])?\s*(?:(==|>=|~=|<=|>|<|!=)\s*([^\s;#,]+))?\s*(?:[;#].*)?$/;
+  const pepEntry = /^\s*"([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]*\])?\s*(?:(==|>=|~=|<=|>|<|!=)\s*([^";,]+))?[^"]*"\s*,?\s*$/;
+  const poetryEntry = /^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*=\s*"([^"]+)"\s*$/;
+  const goEntry = /^\s*(?:require\s+)?([a-z0-9.-]+\.[a-z]{2,}\/[^\s]+)\s+(v[0-9][^\s]*)/;
+
+  for (const { file, content } of diff.addedLines) {
+    const base = file.split("/").pop() ?? file;
+    if (base === "package.json") {
+      const m = content.match(npmEntry);
+      if (m && !NOT_DEPENDENCIES.has(m[1]!)) deps.push({ name: m[1]!, version: m[2]!, ecosystem: "npm" });
+    } else if (/^requirements.*\.txt$/.test(base)) {
+      if (/^\s*(-|#|$)/.test(content) || content.includes("://")) continue;
+      const m = content.match(reqEntry);
+      if (m) deps.push({ name: m[1]!, version: m[3] ?? "*", ecosystem: "PyPI" });
+    } else if (base === "pyproject.toml") {
+      const pep = content.match(pepEntry);
+      const poetry = pep ? null : content.match(poetryEntry);
+      if (pep && !NOT_DEPENDENCIES.has(pep[1]!.toLowerCase())) {
+        deps.push({ name: pep[1]!, version: pep[3]?.trim() ?? "*", ecosystem: "PyPI" });
+      } else if (poetry && !NOT_DEPENDENCIES.has(poetry[1]!.toLowerCase())) {
+        deps.push({ name: poetry[1]!, version: poetry[2]!, ecosystem: "PyPI" });
+      }
+    } else if (base === "go.mod") {
+      const m = content.match(goEntry);
+      if (m) deps.push({ name: m[1]!, version: m[2]!, ecosystem: "Go" });
     }
-    deps.push({ name, version });
   }
   return deps;
 }
@@ -79,7 +115,7 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   let trust = 80;
   let risk: DependencyResult["riskLevel"] = "low";
 
-  const squat = nearestPopular(dep.name);
+  const squat = nearestPopular(dep.name, dep.ecosystem);
   if (squat) {
     trust -= 60;
     risk = "critical";
@@ -106,7 +142,7 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   if (risk === "low" && trust < 50) risk = "medium";
 
   return {
-    ecosystem: "npm",
+    ecosystem: dep.ecosystem,
     name: dep.name,
     version: dep.version,
     trustScore: trust,

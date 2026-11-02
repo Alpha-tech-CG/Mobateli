@@ -44,6 +44,8 @@ await build({
   logLevel: "warning",
 });
 
+// Rust scan engine, loaded next to the bundle (new URL("./codegate_scan.wasm", import.meta.url)).
+cpSync(join(apiDir, "src", "analysis", "engine", "codegate_scan.wasm"), join(out, "api", "codegate_scan.wasm"));
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
 cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), {
   recursive: true,
@@ -85,7 +87,7 @@ writeFileSync(
       functions: {
         "api/index.js": {
           maxDuration: 30,
-          includeFiles: "node_modules/pdfkit/js/data/**",
+          includeFiles: "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm}",
         },
       },
       rewrites: [{ source: "/(.*)", destination: "/api" }],
