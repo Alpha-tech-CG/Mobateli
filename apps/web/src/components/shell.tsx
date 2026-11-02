@@ -10,6 +10,7 @@ import {
   ScrollText,
   Plug,
   FileClock,
+  Bot,
   LogOut,
 } from "lucide-react";
 import { clearToken, getToken } from "@/lib/api";
@@ -18,6 +19,7 @@ const NAV = [
   { href: "/", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
   { href: "/policies", label: "Politiques", icon: ScrollText },
+  { href: "/agent-guard", label: "Agent Guard", icon: Bot },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
 ];

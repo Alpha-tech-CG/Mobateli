@@ -65,3 +65,19 @@ export type PolicyAction = (typeof POLICY_ACTIONS)[number];
 
 export const ACTOR_TYPES = ["user", "ai_agent", "system"] as const;
 export type ActorType = (typeof ACTOR_TYPES)[number];
+
+/** Actions an AI agent may attempt — cf. cahier §5.4 */
+export const AGENT_PERMISSIONS = [
+  "read_repo",
+  "modify_file",
+  "install_dependency",
+  "run_shell",
+  "network_access",
+  "modify_secrets",
+  "deploy_production",
+  "delete_files",
+] as const;
+export type AgentPermission = (typeof AGENT_PERMISSIONS)[number];
+
+export const AGENT_DECISIONS = ["allow", "deny", "require_approval"] as const;
+export type AgentDecision = (typeof AGENT_DECISIONS)[number];

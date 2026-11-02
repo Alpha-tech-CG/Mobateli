@@ -19,6 +19,26 @@ export async function organizationRoutes(app: FastifyInstance) {
     },
   );
 
+  /** List repositories connected to the current organization. */
+  app.get(
+    "/api/v1/repositories",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const repositories = await prisma.repository.findMany({
+        where: { organizationId: req.principal.organizationId },
+        select: {
+          id: true,
+          name: true,
+          provider: true,
+          defaultBranch: true,
+          protectionLevel: true,
+        },
+        orderBy: { name: "asc" },
+      });
+      return { repositories };
+    },
+  );
+
   /** List members of the current organization. */
   app.get(
     "/api/v1/organization/members",

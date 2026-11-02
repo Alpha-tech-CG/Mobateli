@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ROLES, SEVERITIES } from "./enums.js";
+import { ROLES, SEVERITIES, AGENT_PERMISSIONS, AGENT_DECISIONS } from "./enums.js";
 
 /**
  * Zod schemas for API input validation. These are the single source of truth
@@ -54,6 +54,22 @@ export const createPolicySchema = z.object({
   severityThreshold: z.enum(SEVERITIES),
 });
 export type CreatePolicyInput = z.infer<typeof createPolicySchema>;
+
+export const setAgentPolicySchema = z.object({
+  permission: z.enum(AGENT_PERMISSIONS),
+  decision: z.enum(AGENT_DECISIONS),
+  allowlist: z.array(z.string().min(1).max(200)).max(200).default([]),
+});
+export type SetAgentPolicyInput = z.infer<typeof setAgentPolicySchema>;
+
+export const guardActionSchema = z.object({
+  repositoryId: z.string().uuid(),
+  permission: z.enum(AGENT_PERMISSIONS),
+  /** The package name, domain, command or path the agent wants to act on. */
+  target: z.string().max(500).optional(),
+  agentId: z.string().max(120).optional(),
+});
+export type GuardActionInput = z.infer<typeof guardActionSchema>;
 
 export const auditQuerySchema = z.object({
   repositoryId: z.string().uuid().optional(),

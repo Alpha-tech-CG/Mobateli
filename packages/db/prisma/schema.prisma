@@ -85,6 +85,23 @@ enum ActorType {
   system
 }
 
+enum AgentPermission {
+  read_repo
+  modify_file
+  install_dependency
+  run_shell
+  network_access
+  modify_secrets
+  deploy_production
+  delete_files
+}
+
+enum AgentDecision {
+  allow
+  deny
+  require_approval
+}
+
 // ─── Core tenancy ───────────────────────────────────────
 
 model Organization {
@@ -100,6 +117,7 @@ model Organization {
   auditEvents      AuditEvent[]
   installations    GithubInstallation[]
   linearConnection LinearConnection?
+  agentPolicies    AgentPolicy[]
 
   @@map("organizations")
 }
@@ -136,9 +154,10 @@ model Repository {
   installationId  BigInt?
   createdAt       DateTime        @default(now())
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  pullRequests PullRequest[]
-  policies     Policy[]
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pullRequests  PullRequest[]
+  policies      Policy[]
+  agentPolicies AgentPolicy[]
 
   @@unique([provider, externalId])
   @@index([organizationId])
@@ -224,6 +243,27 @@ model SecretFinding {
 
   @@index([pullRequestId])
   @@map("secret_findings")
+}
+
+/// Per-scope override of what an AI agent may do (cahier §5.4). A rule scoped
+/// to a repository wins over an org-wide rule; absent any rule, secure
+/// built-in defaults apply.
+model AgentPolicy {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @db.Uuid
+  repositoryId   String?         @db.Uuid
+  permission     AgentPermission
+  decision       AgentDecision
+  allowlist      String[]        @default([])
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository   Repository?  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, repositoryId, permission])
+  @@index([organizationId])
+  @@map("agent_policies")
 }
 
 /// Maps a GitHub App installation to a CodeGate organization. Created during

@@ -33,6 +33,33 @@ export interface Policy {
   createdAt: string;
 }
 
+export interface Repository {
+  id: string;
+  name: string;
+  provider: string;
+  defaultBranch: string;
+  protectionLevel: string;
+}
+
+export type AgentPermission =
+  | "read_repo"
+  | "modify_file"
+  | "install_dependency"
+  | "run_shell"
+  | "network_access"
+  | "modify_secrets"
+  | "deploy_production"
+  | "delete_files";
+
+export type AgentDecision = "allow" | "deny" | "require_approval";
+
+export interface AgentPolicyRow {
+  permission: AgentPermission;
+  decision: AgentDecision;
+  allowlist: string[];
+  source: "default" | "organization" | "repository";
+}
+
 export interface AuditEvent {
   id: string;
   createdAt: string;
