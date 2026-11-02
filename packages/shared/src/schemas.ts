@@ -55,6 +55,24 @@ export const createPolicySchema = z.object({
 });
 export type CreatePolicyInput = z.infer<typeof createPolicySchema>;
 
+export const auditQuerySchema = z.object({
+  repositoryId: z.string().uuid().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  action: z.string().max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+export type AuditQueryInput = z.infer<typeof auditQuerySchema>;
+
+export const auditExportSchema = z.object({
+  format: z.enum(["json", "csv", "pdf"]).default("json"),
+  repositoryId: z.string().uuid().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  severityThreshold: z.enum(SEVERITIES).optional(),
+});
+export type AuditExportInput = z.infer<typeof auditExportSchema>;
+
 export const connectLinearSchema = z.object({
   apiKey: z.string().min(10).max(200),
   teamId: z.string().min(1).max(100),

@@ -33,6 +33,17 @@ export interface Policy {
   createdAt: string;
 }
 
+export interface AuditEvent {
+  id: string;
+  createdAt: string;
+  actorType: string;
+  actorId: string | null;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  metadata: unknown;
+}
+
 export interface PullRequestListItem {
   id: string;
   number: number;

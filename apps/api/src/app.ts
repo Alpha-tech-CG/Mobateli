@@ -11,6 +11,7 @@ import { organizationRoutes } from "./routes/organizations.js";
 import { policyRoutes } from "./routes/policies.js";
 import { pullRequestRoutes } from "./routes/pull-requests.js";
 import { integrationRoutes } from "./routes/integrations.js";
+import { auditRoutes } from "./routes/audit.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { getRedis } from "./lib/redis.js";
 
@@ -79,6 +80,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(async (instance) => {
     await integrationRoutes(instance, config);
   });
+  await app.register(auditRoutes);
   // Encapsulated scope: the raw-body parser applies to webhooks only.
   await app.register(async (instance) => {
     await webhookRoutes(instance, config, connection);
