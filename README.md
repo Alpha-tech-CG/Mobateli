@@ -2,83 +2,101 @@
 
 > **Aucun code généré par IA n'atteint la production sans analyse de sécurité, validation des dépendances, contrôle des permissions de l'agent et traçabilité complète.**
 
-CodeGate est une plateforme SaaS B2B qui sécurise le code généré par IA (Cursor, Claude Code, Copilot, Codex…) avant qu'il n'atteigne la production. Il se place comme une couche de contrôle entre les outils de dev assisté par IA et les plateformes de livraison (GitHub, GitLab, Vercel, Linear).
+CodeGate est une plateforme SaaS B2B qui sécurise le code généré par IA (Cursor, Claude Code, Copilot, Codex…) avant qu'il n'atteigne la production. Il s'installe comme une couche de contrôle entre les outils de dev assisté par IA et les plateformes de livraison (GitHub, GitLab, Vercel, Linear).
 
-CodeGate ne remplace pas GitHub, Vercel ou Linear — **il les sécurise.**
+CodeGate ne remplace pas GitHub, Vercel ou Linear — **il les sécurise.** Chaque pull request générée par IA devient une décision de sécurité claire : **autoriser, corriger, bloquer ou escalader vers un humain.**
 
-Chaque pull request générée par IA devient une décision de sécurité claire : **autoriser, corriger, bloquer ou escalader vers un humain.**
+📖 Spécification complète : [`docs/cahier-des-charges.md`](docs/cahier-des-charges.md) · Guide dev : [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) · API : [`docs/API.md`](docs/API.md)
 
 ---
 
-## Architecture (polyglotte)
+## Architecture (monorepo polyglotte)
 
-| Couche | Techno | Dossier |
-|---|---|---|
-| Interface web / dashboard | Next.js + TypeScript + Tailwind | `apps/web` |
-| API produit & intégrations | Node.js + TypeScript (Fastify) | `apps/api` |
-| Workers async (PR, scans, webhooks) | BullMQ (Node) | `apps/api` |
-| Moteur d'analyse statique & scan | Rust | `services/scan-engine` |
-| Moteur IA (explication, triage, scoring) | Python + FastAPI | `services/ai-engine` |
-| Schéma & accès données | Prisma + PostgreSQL | `packages/db` |
-| Types & logique partagés | TypeScript | `packages/shared` |
-| Infra locale | Docker Compose (Postgres, Redis) | `infra/docker` |
+| Couche | Techno | Dossier | État |
+|---|---|---|---|
+| Interface web / dashboard | Next.js 15 + TypeScript + Tailwind v4 | `apps/web` | ✅ |
+| API produit & intégrations | Node.js + TypeScript (Fastify 5) | `apps/api` | ✅ |
+| Workers async (analyse PR, feedback) | BullMQ | `apps/api` (`src/worker.ts`) | ✅ |
+| Moteurs d'analyse (secrets, deps, SAST, décision) | TypeScript déterministe | `apps/api/src/analysis` | ✅ |
+| Schéma & accès données | Prisma + PostgreSQL | `packages/db` | ✅ |
+| Types & schémas Zod partagés | TypeScript | `packages/shared` | ✅ |
+| Moteur IA (explication, triage) | Python + FastAPI | `services/ai-engine` | 🧪 scaffold |
+| Moteur de scan avancé | Rust | `services/scan-engine` | ⬜ prévu |
+| Infra locale | Docker Compose (Postgres, Redis) | `infra/docker` | ✅ |
 
 ```
 [Cursor / Claude Code / Copilot]
-          │
+          │  ouvre une PR
           ▼
-   [GitHub Pull Request]
-          │
-          ▼
-   [CodeGate Security Engine]
-          │
-   ┌──────┼──────┐
-   ▼      ▼      ▼
-[Secret][Dep.  ][Static +
- Scanner][Trust ] AI Review]
-   └──────┼──────┘
-          ▼
-  [Risk Decision Engine]
-   ┌──────┴──────┐
-   ▼             ▼
-[Linear Issue][Vercel Deploy Gate]
-                 │
-                 ▼
-       [Audit & Compliance Store]
+   [GitHub Pull Request] ──webhook──▶ [CodeGate API]
+                                          │ enqueue (BullMQ)
+                                          ▼
+                                   [PR Analysis Worker]
+                     ┌────────────────────┼────────────────────┐
+                     ▼                     ▼                    ▼
+              [Secret Shield]     [Dependency Trust]     [SAST rules]
+                     └────────────────────┼────────────────────┘
+                                          ▼
+                              [Risk Decision Engine]
+             ┌──────────────┬─────────────┼───────────────┬──────────────┐
+             ▼              ▼             ▼               ▼              ▼
+     [GitHub Check +   [Policy      [Linear issue]  [Slack alerte]  [Audit log]
+      commentaire]      Engine]
+                                          │
+                        [Vercel deploy] ──webhook──▶ [Deploy Gate] ──▶ décision
 ```
 
-## Modules MVP (P0 → P1)
+## Fonctionnalités (cahier §12.2)
 
-- **P0** Authentification + organisations (MFA)
-- **P0** GitHub App — connexion dépôts, réception des PR
-- **P0** PR Analyzer — analyse du diff, score de risque
-- **P0** Secret Scanner — détection des secrets
-- **P0** Dependency Scanner — analyse des dépendances ajoutées
-- **P0** GitHub Check + commentaire IA structuré
-- **P1** Linear Connector, Vercel Deploy Gate, Policy Engine, Dashboard
+**P0** ✅ Authentification + organisations (MFA TOTP) · GitHub App + webhooks · PR Analyzer (diff → score) · Secret Scanner · Dependency Trust Score · GitHub Check + commentaire structuré
 
-Voir [`docs/cahier-des-charges.md`](docs/cahier-des-charges.md) pour la spécification complète.
+**P1** ✅ Policy Engine (observe/warn/block + seuils) · Dashboard web · Linear (issues de remédiation) · Vercel Deploy Gate
 
-## Prérequis
+**P2** ✅ Agent Guard (permissions des agents IA) · Compliance Evidence Pack (export JSON/CSV/PDF) · Slack Alerts
 
-- Node.js ≥ 22 (présent : 24)
-- pnpm ≥ 11
-- Docker (Postgres + Redis en local)
-- Python ≥ 3.12 (moteur IA)
-- Rust / Cargo (moteur de scan — à installer)
+**P3** ⬜ GitLab · Jira · SAML/SCIM
 
-## Démarrage (à venir)
+## Démarrage rapide
 
 ```bash
 pnpm install
-docker compose -f infra/docker/docker-compose.yml up -d   # Postgres + Redis
-pnpm --filter @codegate/db migrate
-pnpm dev
+docker compose -f infra/docker/docker-compose.yml up -d    # Postgres :5434, Redis :6380
+cp .env.example .env                                        # puis renseigner JWT_SECRET + ENCRYPTION_KEY
+pnpm --filter @codegate/db exec prisma migrate dev          # crée les tables
 ```
+
+Générer les secrets locaux :
+
+```bash
+node -e "console.log('ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toString('base64'))"
+node -e "console.log('JWT_SECRET=' + require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+Lancer (3 terminaux) :
+
+```bash
+pnpm --filter @codegate/api dev        # API  → http://localhost:4000
+pnpm --filter @codegate/api worker     # worker d'analyse
+pnpm --filter @codegate/web dev        # dashboard → http://localhost:3000
+```
+
+Détails, variables d'environnement, intégrations (GitHub App, Linear, Vercel, Slack) et dépannage : [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
+## Tests
+
+```bash
+pnpm --filter @codegate/api test                 # tests unitaires (moteurs, policy, agent guard…)
+pnpm --filter @codegate/api test:db:setup        # (re)crée la base codegate_test
+pnpm --filter @codegate/api test:integration     # tests d'intégration bout en bout (app.inject)
+```
+
+## Prérequis
+
+- Node.js ≥ 22 · pnpm ≥ 11 · Docker · (Python ≥ 3.12 pour le moteur IA optionnel)
 
 ## Sécurité
 
-CodeGate est un produit de sécurité : il doit être plus sûr que les applications qu'il protège. Principes non négociables — moindre privilège, aucun secret en clair, chiffrement au repos et en transit, hébergement UE, isolation des agents, journalisation complète. Voir `docs/cahier-des-charges.md` §10.
+CodeGate est un produit de sécurité : il doit être plus sûr que les applications qu'il protège. Principes appliqués — moindre privilège, **aucun secret en clair** (AES-256-GCM au repos), mots de passe **argon2id**, **MFA TOTP**, validation stricte des entrées (Zod), signatures de webhooks vérifiées, en-têtes de sécurité (helmet), rate limiting, journal d'audit immuable, et l'invariant non dérogeable « un agent IA ne modifie jamais les secrets ». Voir `docs/cahier-des-charges.md` §10.
 
 ## Licence
 

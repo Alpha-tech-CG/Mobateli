@@ -1,0 +1,81 @@
+# Référence API — CodeGate
+
+Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent un en-tête `Authorization: Bearer <JWT>` (obtenu via signup/login). Les entrées sont validées par Zod ; une erreur renvoie `400 { error: "validation_error", issues: [...] }`. Rôles : `owner`, `admin`, `security_manager`, `developer`, `auditor`, `viewer`.
+
+## Santé
+
+| Méthode | Route | Description |
+|---|---|---|
+| GET | `/health` | Liveness |
+| GET | `/ready` | Readiness (ping DB) |
+
+## Authentification
+
+| Méthode | Route | Auth | Description |
+|---|---|---|---|
+| POST | `/api/v1/auth/signup` | — | Crée l'organisation + l'utilisateur `owner`, renvoie un JWT |
+| POST | `/api/v1/auth/login` | — | `{ email, password, totp? }` → JWT (TOTP requis si MFA activé) |
+| POST | `/api/v1/auth/mfa/setup` | ✅ | Génère un secret TOTP, renvoie l'`otpauth://` |
+| POST | `/api/v1/auth/mfa/verify` | ✅ | Confirme le premier code et active la MFA |
+
+## Organisation & dépôts
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/organization` | tous | Organisation courante |
+| GET | `/api/v1/organization/members` | tous | Membres |
+| POST | `/api/v1/organization/members` | owner/admin | Invite un membre (mot de passe temporaire renvoyé une fois) |
+| GET | `/api/v1/repositories` | tous | Dépôts connectés |
+
+## Pull requests
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/pull-requests` | tous | Liste des PR analysées (+ compteurs) |
+| GET | `/api/v1/pull-requests/:id` | tous | Détail : findings, secrets, dépendances |
+| POST | `/api/v1/pull-requests/:id/rescan` | tous | Relance l'analyse (enqueue) |
+
+## Politiques
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/policies` | tous | Politiques de l'organisation |
+| POST | `/api/v1/policies` | owner/admin/security_manager | Crée une règle `{ rule, action, severityThreshold, repositoryId? }` |
+
+## Agent Guard (§5.4)
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/repositories/:id/agent-policies` | tous | Politiques effectives (défaut + overrides) |
+| PUT | `/api/v1/repositories/:id/agent-policies` | owner/admin/security_manager | Définit une règle `{ permission, decision, allowlist }` (refuse d'assouplir `modify_secrets`) |
+| POST | `/api/v1/agent/guard` | tous | Enforcement : `{ repositoryId, permission, target?, agentId? }` → `{ decision, reason }` (journalisé en `ai_agent`) |
+
+Permissions : `read_repo`, `modify_file`, `install_dependency`, `run_shell`, `network_access`, `modify_secrets`, `deploy_production`, `delete_files`. Décisions : `allow`, `deny`, `require_approval`.
+
+## Intégrations
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET/POST/DELETE | `/api/v1/integrations/linear` | POST/DELETE : owner/admin(/security_manager) | Connexion Linear `{ apiKey, teamId }` (clé chiffrée, jamais renvoyée) |
+| GET/POST/DELETE | `/api/v1/integrations/slack` | idem | Connexion Slack `{ webhookUrl }` (URL chiffrée) |
+| POST | `/api/v1/integrations/slack/test` | tous | Envoie une alerte de test |
+
+## Audit & conformité (§5.8)
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/audit-events` | tous | Journal filtrable `{ from?, to?, action?, limit? }` |
+| POST | `/api/v1/audit/export` | tous | Dossier de preuves `{ format: json\|csv\|pdf, repositoryId?, from?, to?, severityThreshold? }` (fichier téléchargeable) |
+
+## Webhooks
+
+| Méthode | Route | Signature | Description |
+|---|---|---|---|
+| POST | `/webhooks/github` | `x-hub-signature-256` (HMAC-SHA256) | `pull_request` (opened/synchronize/reopened) → upsert + enqueue analyse ; `installation*` |
+| POST | `/webhooks/vercel` | `x-vercel-signature` (HMAC-SHA1) | `deployment.created` → Deploy Gate → décision persistée |
+
+Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de livraison est libéré en cas d'échec pour permettre les retries), et renvoient `503` si l'intégration n'est pas configurée.
+
+## Événements d'audit (actions)
+
+`org.created`, `auth.login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `integration.linear_connected`/`_disconnected`, `integration.slack_connected`/`_disconnected`, `audit.exported`.
