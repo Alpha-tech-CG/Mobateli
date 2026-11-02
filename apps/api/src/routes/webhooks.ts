@@ -17,12 +17,33 @@ function looksAiGenerated(authorLogin: string, title: string, body: string): boo
   return needles.some((n) => hay.includes(n)) || /generated with/i.test(body);
 }
 
-async function resolveOrg(installationId: number): Promise<string | null> {
+async function resolveOrg(
+  installationId: number,
+  opts?: { autoLink?: boolean; accountLogin?: string },
+): Promise<string | null> {
   const inst = await prisma.githubInstallation.findUnique({
     where: { installationId: BigInt(installationId) },
     select: { organizationId: true },
   });
-  return inst?.organizationId ?? null;
+  if (inst) return inst.organizationId;
+
+  // Dev convenience: when exactly one organization exists, auto-link a new
+  // installation to it so self-hosted single-org testing works without a
+  // manual mapping step. Never in production (there, use a connect flow).
+  if (opts?.autoLink) {
+    const orgs = await prisma.organization.findMany({ select: { id: true }, take: 2 });
+    if (orgs.length === 1) {
+      await prisma.githubInstallation.create({
+        data: {
+          organizationId: orgs[0]!.id,
+          installationId: BigInt(installationId),
+          accountLogin: opts.accountLogin ?? "github",
+        },
+      });
+      return orgs[0]!.id;
+    }
+  }
+  return null;
 }
 
 type GithubRepo = { id: number; full_name: string; default_branch?: string };
@@ -57,13 +78,19 @@ async function handlePullRequest(
   req: FastifyRequest,
   payload: any,
   connection: Redis,
+  devAutoLink: boolean,
 ): Promise<void> {
   const action: string = payload.action;
   if (!["opened", "synchronize", "reopened"].includes(action)) return;
 
   const installationId: number | undefined = payload.installation?.id;
   if (!installationId) return;
-  const organizationId = await resolveOrg(installationId);
+  const organizationId = await resolveOrg(installationId, {
+    autoLink: devAutoLink,
+    ...(payload.installation?.account?.login
+      ? { accountLogin: payload.installation.account.login }
+      : {}),
+  });
   if (!organizationId) {
     req.log.warn({ installationId }, "webhook for unknown installation — skipped");
     return;
@@ -327,19 +354,34 @@ export async function webhookRoutes(
       return reply.code(400).send({ error: "invalid_json" });
     }
 
+    const devAutoLink = config.NODE_ENV !== "production";
     try {
       switch (event) {
         case "pull_request":
-          await handlePullRequest(req, payload, connection);
+          await handlePullRequest(req, payload, connection, devAutoLink);
           break;
         case "installation_repositories":
           await handleInstallationRepositories(payload);
           break;
-        case "installation":
-          if ((payload as { action?: string }).action === "deleted") {
+        case "installation": {
+          const action = (payload as { action?: string }).action;
+          if (action === "created") {
+            // Pre-link the installation (dev: to the sole org) and log its id.
+            const instId = (payload as { installation?: { id?: number } }).installation?.id;
+            const login = (payload as { installation?: { account?: { login?: string } } })
+              .installation?.account?.login;
+            if (instId) {
+              const org = await resolveOrg(instId, {
+                autoLink: devAutoLink,
+                ...(login ? { accountLogin: login } : {}),
+              });
+              req.log.info({ installationId: instId, login, linked: org !== null }, "github app installed");
+            }
+          } else if (action === "deleted") {
             await handleInstallationDeleted(payload);
           }
           break;
+        }
         default:
           // Unhandled event — acknowledge so GitHub stops retrying.
           break;
