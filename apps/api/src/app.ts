@@ -27,7 +27,21 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
 
   // Security headers: CSP, HSTS, X-Frame-Options… (cahier §13.4).
   await app.register(helmet);
-  await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
+  // In production, lock CORS to the configured web origin. In development,
+  // accept any localhost origin so the dashboard works on any dev port.
+  await app.register(cors, {
+    credentials: true,
+    origin:
+      config.NODE_ENV === "production"
+        ? config.WEB_ORIGIN
+        : (origin, cb) => {
+            if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+              cb(null, true);
+            } else {
+              cb(null, false);
+            }
+          },
+  });
   await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
   await app.register(authPlugin, { jwtSecret: config.JWT_SECRET });
 

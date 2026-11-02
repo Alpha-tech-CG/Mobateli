@@ -14,9 +14,12 @@ allowBuilds:
   # fine, so we keep it blocked.
   msgpackr-extract: false
   prisma: true
+  # Next.js image optimizer (native). Standard dependency — allowed.
+  sharp: true
 onlyBuiltDependencies:
   - "@prisma/client"
   - "@prisma/engines"
   - argon2
   - esbuild
   - prisma
+  - sharp
