@@ -11,6 +11,8 @@
     "worker": "tsx watch --env-file=../../.env src/worker.ts",
     "worker:start": "node --env-file=../../.env dist/worker.js",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test:db:setup": "node ../../scripts/setup-test-db.mjs",
+    "test:integration": "node --import tsx --test \"src/**/*.itest.ts\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
