@@ -13,6 +13,7 @@ import { pullRequestRoutes } from "./routes/pull-requests.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { auditRoutes } from "./routes/audit.js";
 import { agentGuardRoutes } from "./routes/agent-guard.js";
+import { scimRoutes } from "./routes/scim.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { getRedis } from "./lib/redis.js";
 
@@ -83,6 +84,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   });
   await app.register(auditRoutes);
   await app.register(agentGuardRoutes);
+  await app.register(scimRoutes);
   // Encapsulated scope: the raw-body parser applies to webhooks only.
   await app.register(async (instance) => {
     await webhookRoutes(instance, config, connection);

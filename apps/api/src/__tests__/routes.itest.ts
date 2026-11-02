@@ -22,7 +22,7 @@ process.env.VERCEL_WEBHOOK_SECRET = "it_vercel_secret";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");
-const { prisma } = await import("@codegate/db");
+const { prisma, startDbKeepAlive } = await import("@codegate/db");
 const { getRedis } = await import("../lib/redis.js");
 
 type App = Awaited<ReturnType<typeof buildApp>>;
@@ -36,9 +36,13 @@ const ghSig = (body: string) =>
 const vercelSig = (body: string) =>
   createHmac("sha1", process.env.VERCEL_WEBHOOK_SECRET!).update(body).digest("hex");
 
+let stopKeepAlive: (() => void) | undefined;
+
 before(async () => {
   app = await buildApp(loadConfig());
   await app.ready();
+  // Keep the DB connection warm so the suite doesn't thrash on reconnects.
+  stopKeepAlive = startDbKeepAlive(10_000);
   // Fresh state (idempotent across reruns).
   await prisma.$executeRawUnsafe(
     `TRUNCATE TABLE organizations RESTART IDENTITY CASCADE;`,
@@ -46,6 +50,7 @@ before(async () => {
 });
 
 after(async () => {
+  stopKeepAlive?.();
   await app.close();
   getRedis(process.env.REDIS_URL!).disconnect();
 });
@@ -302,6 +307,87 @@ test("jira integration: connect, status hides the token", async () => {
   assert.equal(body.connected, true);
   assert.equal(body.projectKey, "SEC");
   assert.ok(!("apiToken" in body));
+});
+
+test("scim: provision, list, deactivate; deactivated user can't log in", async () => {
+  // Generate a SCIM bearer token (as owner).
+  const gen = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/scim",
+    headers: auth(),
+  });
+  assert.equal(gen.statusCode, 201);
+  const scimToken: string = gen.json().token;
+  const scim = () => ({ authorization: `Bearer ${scimToken}` });
+
+  // Wrong token → 401.
+  const unauth = await app.inject({
+    method: "GET",
+    url: "/scim/v2/Users",
+    headers: { authorization: "Bearer nope" },
+  });
+  assert.equal(unauth.statusCode, 401);
+
+  // Provision a user.
+  const create = await app.inject({
+    method: "POST",
+    url: "/scim/v2/Users",
+    headers: scim(),
+    payload: { userName: "dev@acme.test", displayName: "Dev One", active: true },
+  });
+  assert.equal(create.statusCode, 201);
+  const scimId: string = create.json().id;
+  assert.equal(create.json().userName, "dev@acme.test");
+  assert.equal(create.json().active, true);
+
+  // List with filter.
+  const list = await app.inject({
+    method: "GET",
+    url: `/scim/v2/Users?filter=${encodeURIComponent('userName eq "dev@acme.test"')}`,
+    headers: scim(),
+  });
+  assert.equal(list.json().totalResults, 1);
+  assert.equal(list.json().Resources[0].id, scimId);
+
+  // Deactivate the provisioned user via PATCH.
+  const patch = await app.inject({
+    method: "PATCH",
+    url: `/scim/v2/Users/${scimId}`,
+    headers: scim(),
+    payload: { Operations: [{ op: "replace", path: "active", value: false }] },
+  });
+  assert.equal(patch.json().active, false);
+
+  // Deprovision→login-block path, with a known password: deactivate the owner
+  // via SCIM, confirm login is refused (403), then reactivate.
+  const ownerList = await app.inject({
+    method: "GET",
+    url: `/scim/v2/Users?filter=${encodeURIComponent('userName eq "owner@acme.test"')}`,
+    headers: scim(),
+  });
+  const ownerId: string = ownerList.json().Resources[0].id;
+
+  await app.inject({
+    method: "PATCH",
+    url: `/scim/v2/Users/${ownerId}`,
+    headers: scim(),
+    payload: { Operations: [{ op: "replace", path: "active", value: false }] },
+  });
+  const blocked = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "owner@acme.test", password: "supersecret-password" },
+  });
+  assert.equal(blocked.statusCode, 403);
+  assert.equal(blocked.json().error, "account_disabled");
+
+  // Reactivate so later tests / the session keep working.
+  await app.inject({
+    method: "PATCH",
+    url: `/scim/v2/Users/${ownerId}`,
+    headers: scim(),
+    payload: { Operations: [{ op: "replace", path: "active", value: true }] },
+  });
 });
 
 test("audit export returns a JSON evidence pack", async () => {

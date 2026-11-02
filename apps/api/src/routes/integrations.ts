@@ -296,4 +296,61 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
       return { connected: false };
     },
   );
+
+  // ─── SCIM provisioning token ──────────────────────────
+
+  app.get(
+    "/api/v1/integrations/scim",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const row = await prisma.scimToken.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { createdAt: true },
+      });
+      return { connected: row !== null };
+    },
+  );
+
+  app.post(
+    "/api/v1/integrations/scim",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req, reply) => {
+      const token = randomBytes(32).toString("base64url");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      await prisma.scimToken.upsert({
+        where: { organizationId: req.principal.organizationId },
+        create: { organizationId: req.principal.organizationId, tokenHash },
+        update: { tokenHash },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.scim_connected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      // Bearer token for the IdP's SCIM config, returned once.
+      return reply.code(201).send({ connected: true, token });
+    },
+  );
+
+  app.delete(
+    "/api/v1/integrations/scim",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req) => {
+      await prisma.scimToken.deleteMany({
+        where: { organizationId: req.principal.organizationId },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.scim_disconnected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return { connected: false };
+    },
+  );
 }

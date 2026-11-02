@@ -70,6 +70,10 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
     if (!user || !(await verifyPassword(user.passwordHash, body.password))) {
       return reply.code(401).send({ error: "invalid_credentials" });
     }
+    // Deprovisioned (SCIM-deactivated) users cannot sign in.
+    if (!user.active) {
+      return reply.code(403).send({ error: "account_disabled" });
+    }
 
     if (user.mfaEnabled) {
       if (!body.totp) {

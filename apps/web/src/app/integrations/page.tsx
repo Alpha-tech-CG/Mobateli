@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plug, Bell, Gitlab, Ticket } from "lucide-react";
+import { CheckCircle2, Plug, Bell, Gitlab, Ticket, UserCog } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
@@ -137,7 +137,101 @@ function Integrations() {
       <SlackCard />
       <GitlabCard />
       <JiraCard />
+      <ScimCard />
     </div>
+  );
+}
+
+function ScimCard() {
+  const [connected, setConnected] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function load() {
+    api<{ connected: boolean }>("/api/v1/integrations/scim")
+      .then((r) => setConnected(r.connected))
+      .catch(() => {});
+  }
+  useEffect(load, []);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await api<{ token: string }>("/api/v1/integrations/scim", { method: "POST" });
+      setToken(r.token);
+      setConnected(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setBusy(true);
+    try {
+      await api("/api/v1/integrations/scim", { method: "DELETE" });
+      setToken(null);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mt-6 max-w-xl p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <UserCog className="size-5 text-primary" aria-hidden />
+        <div>
+          <h2 className="font-semibold">SCIM (provisioning SSO)</h2>
+          <p className="text-xs text-muted-foreground">
+            Provisionnez les utilisateurs depuis votre IdP (Okta, Entra ID…). Endpoint :
+            <code className="font-mono"> /scim/v2</code>
+          </p>
+        </div>
+      </div>
+
+      {token ? (
+        <div className="space-y-2">
+          <p className="text-sm">Jeton bearer SCIM (à coller dans la config de l'IdP) :</p>
+          <code className="block break-all rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs">
+            {token}
+          </code>
+          <p className="text-xs text-muted-foreground">
+            Copiez-le maintenant — il ne sera plus affiché.
+          </p>
+        </div>
+      ) : connected ? (
+        <div className="space-y-3">
+          <p className="flex items-center gap-2 text-sm text-success">
+            <CheckCircle2 className="size-4" aria-hidden />
+            Activé
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={generate}
+              disabled={busy}
+              className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+            >
+              Régénérer le jeton
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={busy}
+              className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm text-destructive transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+            >
+              Désactiver
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={generate}
+          disabled={busy}
+          className="cursor-pointer rounded-md bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? "Génération…" : "Activer SCIM"}
+        </button>
+      )}
+    </Card>
   );
 }
 
