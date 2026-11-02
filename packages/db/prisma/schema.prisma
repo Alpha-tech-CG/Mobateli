@@ -179,6 +179,7 @@ model Repository {
   policies      Policy[]
   agentPolicies AgentPolicy[]
   deployChecks  DeployCheck[]
+  suppressions  FindingSuppression[]
 
   @@unique([provider, externalId])
   @@index([organizationId])
@@ -256,6 +257,7 @@ model SecretFinding {
   secretType    String
   location      String
   maskedPreview String
+  severity      Severity      @default(high)
   status        FindingStatus @default(open)
   revokedAt     DateTime?
   createdAt     DateTime      @default(now())
@@ -488,6 +490,23 @@ model BackupRestoreTest {
 
   @@index([jobId, completedAt])
   @@map("backup_restore_tests")
+}
+
+/// A finding a human marked as false positive (US02). Matched on later
+/// re-analyses by fingerprint (rule + file, line-independent) so the verdict
+/// survives new commits; suppressed findings no longer count in the score.
+model FindingSuppression {
+  id           String   @id @default(uuid()) @db.Uuid
+  repositoryId String   @db.Uuid
+  fingerprint  String
+  reason       String?
+  createdById  String?  @db.Uuid
+  createdAt    DateTime @default(now())
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, fingerprint])
+  @@map("finding_suppressions")
 }
 
 /// Webhook delivery ids already processed — idempotence when the API runs

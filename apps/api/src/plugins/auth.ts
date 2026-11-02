@@ -8,7 +8,14 @@ export interface AuthPrincipal {
   userId: string;
   organizationId: string;
   role: Role;
+  /** True when this session passed a second factor (TOTP or the SSO IdP). */
+  mfa?: boolean;
 }
+
+/** Roles that must use MFA before any administrative action (cahier §10.2). */
+const MFA_ROLES: ReadonlySet<Role> = new Set(["owner", "admin"]);
+/** Sessions expire (cahier §10.2). */
+export const SESSION_TTL = "12h";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -31,8 +38,11 @@ declare module "@fastify/jwt" {
   }
 }
 
-async function authPlugin(app: FastifyInstance, opts: { jwtSecret: string }) {
-  await app.register(fastifyJwt, { secret: opts.jwtSecret });
+async function authPlugin(
+  app: FastifyInstance,
+  opts: { jwtSecret: string; mfaRequiredForAdmins: boolean },
+) {
+  await app.register(fastifyJwt, { secret: opts.jwtSecret, sign: { expiresIn: SESSION_TTL } });
 
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -51,6 +61,10 @@ async function authPlugin(app: FastifyInstance, opts: { jwtSecret: string }) {
       }
       if (!roles.includes(req.principal.role)) {
         await reply.code(403).send({ error: "forbidden" });
+        return;
+      }
+      if (opts.mfaRequiredForAdmins && MFA_ROLES.has(req.principal.role) && !req.principal.mfa) {
+        await reply.code(403).send({ error: "mfa_enrollment_required" });
       }
     };
   });

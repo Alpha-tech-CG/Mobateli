@@ -14,9 +14,10 @@ import {
   Server,
   KeyRound,
   DatabaseBackup,
+  ShieldCheck,
   LogOut,
 } from "lucide-react";
-import { clearToken, getToken } from "@/lib/api";
+import { clearToken, getSession, getToken } from "@/lib/api";
 
 const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
@@ -29,6 +30,7 @@ const NAV = [
   { href: "/backups", label: "Sauvegardes", icon: DatabaseBackup },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
+  { href: "/settings/security", label: "Sécurité du compte", icon: ShieldCheck },
 ];
 
 /** App shell with sidebar nav + client-side auth guard. */
@@ -37,9 +39,18 @@ export function Shell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
 
+  const [needsMfa, setNeedsMfa] = useState(false);
+
   useEffect(() => {
-    if (!getToken()) router.replace("/login");
-    else setReady(true);
+    const session = getSession();
+    // Expired sessions (cahier §10.2) go back to login.
+    if (!getToken() || !session || (session.exp && session.exp * 1000 < Date.now())) {
+      clearToken();
+      router.replace("/login");
+      return;
+    }
+    setNeedsMfa((session.role === "owner" || session.role === "admin") && !session.mfa);
+    setReady(true);
   }, [router]);
 
   if (!ready) return null;
@@ -82,7 +93,23 @@ export function Shell({ children }: { children: ReactNode }) {
           Se déconnecter
         </button>
       </aside>
-      <main className="flex-1 overflow-x-hidden px-6 py-6">{children}</main>
+      <main className="flex-1 overflow-x-hidden px-6 py-6">
+        {needsMfa && pathname !== "/settings/security" ? (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+            <span>
+              La double authentification (MFA) est obligatoire pour les administrateurs : les
+              actions d&apos;administration restent bloquées jusqu&apos;à son activation.
+            </span>
+            <Link
+              href="/settings/security"
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-on-primary hover:opacity-90"
+            >
+              Activer la MFA
+            </Link>
+          </div>
+        ) : null}
+        {children}
+      </main>
     </div>
   );
 }

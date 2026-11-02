@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { ROLES, SEVERITIES, AGENT_PERMISSIONS, AGENT_DECISIONS } from "./enums.js";
+import {
+  ROLES,
+  SEVERITIES,
+  AGENT_PERMISSIONS,
+  AGENT_DECISIONS,
+  FINDING_STATUSES,
+} from "./enums.js";
 
 /**
  * Zod schemas for API input validation. These are the single source of truth
@@ -115,6 +121,25 @@ export const connectJiraSchema = z.object({
   projectKey: z.string().min(1).max(50),
 });
 export type ConnectJiraInput = z.infer<typeof connectJiraSchema>;
+
+export const findingsQuerySchema = z.object({
+  repositoryId: z.string().uuid().optional(),
+  status: z.enum(FINDING_STATUSES).optional(),
+  severity: z.enum(SEVERITIES).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+export const updateFindingSchema = z.object({
+  status: z.enum(FINDING_STATUSES),
+  /** Why it is a false positive / accepted — kept in the audit trail. */
+  reason: z.string().max(500).optional(),
+});
+export type UpdateFindingInput = z.infer<typeof updateFindingSchema>;
+
+export const linkGithubSchema = z.object({
+  installationId: z.coerce.number().int().positive(),
+  state: z.string().min(20).max(2000),
+});
 
 // ─── Infra Shield (extension §3) ──────────────────────────
 

@@ -93,6 +93,21 @@ Un compte désactivé ne peut plus se connecter (`login` → 403 `account_disabl
 | GET | `/api/v1/audit-events` | tous | Journal filtrable `{ from?, to?, action?, limit? }` |
 | POST | `/api/v1/audit/export` | tous | Dossier de preuves `{ format: json\|csv\|pdf, repositoryId?, from?, to?, severityThreshold? }` (fichier téléchargeable) |
 
+## Findings & GitHub (US01, US02)
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/findings` | tous | `?repositoryId&status&severity&limit` — problèmes de code de l'organisation |
+| PATCH | `/api/v1/findings/:id` | dev+ (faux positif : owner/admin/security_manager) | `{ status: open\|acknowledged\|resolved\|false_positive, reason? }` — un faux positif est mémorisé (règle + fichier) pour les analyses suivantes et sort du score ; la PR est re-notée |
+| GET | `/api/v1/github/install-url` | gestion | Lien d'installation de la GitHub App avec un `state` signé (15 min) |
+| POST | `/api/v1/github/link` | gestion | `{ installationId, state }` (retour de GitHub) → lie l'installation à l'organisation et importe les dépôts choisis |
+| GET | `/api/v1/github/installations` | tous | Installations liées et nombre de dépôts |
+| DELETE | `/api/v1/github/installations/:id` | gestion | Révoque : désinstalle l'App côté GitHub et délie |
+
+**Sessions et MFA (§10.2)** : les jetons expirent après 12 h. Les rôles owner/admin doivent avoir activé la MFA pour toute action d'administration (`403 mfa_enrollment_required` sinon) ; `POST /api/v1/auth/mfa/verify` renvoie une nouvelle session qui porte la MFA. Désactivable par `MFA_REQUIRED_FOR_ADMINS=false` (tests).
+
+**Analyse** : dépendances enrichies en ligne (OSV : vulnérabilités connues ; registre npm : paquet inexistant/halluciné, âge, mainteneurs, licence, scripts d'installation, popularité) et détection de prompt injection (détournement d'instructions, ordres adressés à un agent, faux messages système, exfiltration de secrets, caractères invisibles / Trojan Source, fichiers de consignes d'agents) — chaque détection est journalisée (`security.prompt_injection_detected`).
+
 ## Infra Shield — serveurs (extension §3)
 
 Un agent **en lecture seule** (`/agent/codegate-agent.py`, Python 3 sans dépendance) tourne sur le serveur et envoie ses constats. CodeGate ne scanne jamais un hôte depuis l'extérieur : détenir le token d'agent sur la machine vaut preuve de propriété.
@@ -168,4 +183,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.

@@ -77,7 +77,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
-      "content-type": "application/json",
+      // Only declare JSON when there is a body: an empty JSON body is a 400.
+      ...(init?.body !== undefined ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
@@ -95,4 +96,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** Claims of the current session (read-only, for UI hints — the API enforces). */
+export function getSession(): { role?: string; mfa?: boolean; exp?: number } | null {
+  const token = getToken();
+  if (!token) return null;
+  try {
+    const payload = token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(payload)) as { role?: string; mfa?: boolean; exp?: number };
+  } catch {
+    return null;
+  }
 }

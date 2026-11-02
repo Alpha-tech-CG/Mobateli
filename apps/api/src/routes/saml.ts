@@ -85,6 +85,8 @@ export async function samlRoutes(app: FastifyInstance, config: AppConfig) {
       userId: user.id,
       organizationId: user.organizationId,
       role: user.role,
+      // Strong authentication is delegated to the IdP.
+      mfa: true,
     });
     // An IdP posts here directly; return the token (a browser flow would
     // instead redirect to the web app with the token).

@@ -2,6 +2,8 @@ import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
 import { analyzeDiff } from "../analysis/analyzer.js";
+import { enrichDependencies } from "../analysis/dependency-intel.js";
+import { decide } from "../analysis/risk.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
 import { createCheckRun, upsertPrComment } from "../lib/github-feedback.js";
@@ -49,52 +51,69 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
     if (fetched) diff = fetched;
   }
 
-  const result = analyzeDiff(diff);
+  const suppressions = await prisma.findingSuppression.findMany({
+    where: { repositoryId: pr.repository.id },
+    select: { fingerprint: true },
+  });
+  const base = analyzeDiff(diff, new Set(suppressions.map((s) => s.fingerprint)));
+  // Network enrichment (OSV, npm registry) — best effort, then re-decide.
+  const dependencies = await enrichDependencies(base.dependencies);
+  const result = {
+    ...base,
+    dependencies,
+    ...decide({ findings: base.findings, secrets: base.secrets, dependencies }),
+  };
 
   // Replace previous findings for this PR (idempotent re-analysis), then
   // persist the new set and the decision — atomically, with retry on a
   // transient connection drop.
   await withDbRetry(() =>
     prisma.$transaction([
-    prisma.finding.deleteMany({ where: { pullRequestId: pr.id } }),
-    prisma.dependency.deleteMany({ where: { pullRequestId: pr.id } }),
-    prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
-    prisma.finding.createMany({
-      data: result.findings.map((f) => ({
-        pullRequestId: pr.id,
-        type: f.type,
-        severity: f.severity,
-        title: f.title,
-        description: f.description,
-        filePath: f.filePath ?? null,
-        line: f.line ?? null,
-        ruleId: f.ruleId ?? null,
-        remediation: f.remediation ?? null,
-      })),
-    }),
-    prisma.dependency.createMany({
-      data: result.dependencies.map((d) => ({
-        pullRequestId: pr.id,
-        ecosystem: d.ecosystem,
-        name: d.name,
-        version: d.version,
-        trustScore: d.trustScore,
-        riskLevel: d.riskLevel,
-        reason: d.reason ?? null,
-      })),
-    }),
-    prisma.secretFinding.createMany({
-      data: result.secrets.map((s) => ({
-        pullRequestId: pr.id,
-        secretType: s.secretType,
-        location: s.location,
-        maskedPreview: s.maskedPreview,
-      })),
-    }),
-    prisma.pullRequest.update({
-      where: { id: pr.id },
-      data: { riskScore: result.riskScore, status: result.status },
-    }),
+      prisma.finding.deleteMany({ where: { pullRequestId: pr.id } }),
+      prisma.dependency.deleteMany({ where: { pullRequestId: pr.id } }),
+      prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
+      prisma.finding.createMany({
+        data: [
+          ...result.findings.map((f) => ({ f, status: "open" as const })),
+          // Human-confirmed false positives: kept for the record, not scored.
+          ...result.suppressed.map((f) => ({ f, status: "false_positive" as const })),
+        ].map(({ f, status }) => ({
+          pullRequestId: pr.id,
+          type: f.type,
+          severity: f.severity,
+          title: f.title,
+          description: f.description,
+          filePath: f.filePath ?? null,
+          line: f.line ?? null,
+          ruleId: f.ruleId ?? null,
+          remediation: f.remediation ?? null,
+          status,
+        })),
+      }),
+      prisma.dependency.createMany({
+        data: result.dependencies.map((d) => ({
+          pullRequestId: pr.id,
+          ecosystem: d.ecosystem,
+          name: d.name,
+          version: d.version,
+          trustScore: d.trustScore,
+          riskLevel: d.riskLevel,
+          reason: d.reason ?? null,
+        })),
+      }),
+      prisma.secretFinding.createMany({
+        data: result.secrets.map((s) => ({
+          pullRequestId: pr.id,
+          secretType: s.secretType,
+          location: s.location,
+          maskedPreview: s.maskedPreview,
+          severity: s.severity,
+        })),
+      }),
+      prisma.pullRequest.update({
+        where: { id: pr.id },
+        data: { riskScore: result.riskScore, status: result.status },
+      }),
     ]),
   );
 
@@ -116,6 +135,22 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
       reason: data.reason,
     },
   });
+
+  // §10.5: log every detected prompt injection attempt.
+  const injections = result.findings.filter((f) => f.type === "prompt_injection");
+  if (injections.length) {
+    await recordAudit({
+      organizationId: pr.repository.organizationId,
+      actorType: "system",
+      action: "security.prompt_injection_detected",
+      resourceType: "pull_request",
+      resourceId: pr.id,
+      metadata: {
+        rules: [...new Set(injections.map((f) => f.ruleId ?? "unknown"))],
+        files: [...new Set(injections.map((f) => f.filePath ?? ""))].slice(0, 20),
+      },
+    });
+  }
 
   // ── Slack : alerte d'incident si la PR est bloquée ou expose un secret ──
   if (result.decision === "block" || result.secrets.length > 0) {

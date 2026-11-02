@@ -100,6 +100,7 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
       userId: user.id,
       organizationId: org.id,
       role: "owner",
+      mfa: false,
     });
     return reply.code(201).send({ token, mfaRequired: false });
   });
@@ -167,6 +168,7 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
       userId: user.id,
       organizationId: user.organizationId,
       role: user.role,
+      mfa: user.mfaEnabled,
     });
     return reply.send({ token, mfaRequired: false });
   });
@@ -227,7 +229,14 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
         resourceType: "user",
         resourceId: user.id,
       });
-      return { mfaEnabled: true };
+      // Fresh session carrying the second factor, so admin actions unlock now.
+      const token = app.jwt.sign({
+        userId: user.id,
+        organizationId: user.organizationId,
+        role: user.role,
+        mfa: true,
+      });
+      return { mfaEnabled: true, token };
     },
   );
 }

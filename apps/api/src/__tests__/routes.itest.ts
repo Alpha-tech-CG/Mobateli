@@ -19,6 +19,8 @@ process.env.JWT_SECRET = "integration_test_jwt_secret_0123456789abcd";
 process.env.ENCRYPTION_KEY = Buffer.from("0123456789abcdef0123456789abcdef").toString("base64");
 process.env.GITHUB_WEBHOOK_SECRET = "it_gh_secret";
 process.env.VERCEL_WEBHOOK_SECRET = "it_vercel_secret";
+// The suite drives admin routes with a fresh owner; MFA enforcement is unit-tested.
+process.env.MFA_REQUIRED_FOR_ADMINS = "false";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");
@@ -682,4 +684,54 @@ test("backup shield: job, run report, integrity, restore test, token required", 
   assert.equal(tampered.json().integrityOk, false);
   const report = await app.inject({ method: "GET", url: "/api/v1/reports/backup", headers: auth() });
   assert.equal(report.json().backups[0].status, "critical");
+});
+
+test("findings: false positive is suppressed for future analyses and rescored", async () => {
+  const pr = await prisma.pullRequest.findFirstOrThrow({ where: { repository: { provider: "github" } } });
+  const finding = await prisma.finding.create({
+    data: {
+      pullRequestId: pr.id,
+      type: "sast",
+      severity: "high",
+      title: "Utilisation de eval / Function dynamique",
+      description: "test",
+      filePath: "src/sandbox.ts",
+      line: 4,
+      ruleId: "DANGEROUS_EVAL",
+    },
+  });
+  const list = await app.inject({ method: "GET", url: "/api/v1/findings?status=open", headers: auth() });
+  assert.ok(list.json().findings.some((f: { id: string }) => f.id === finding.id));
+
+  const fp = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/findings/${finding.id}`,
+    headers: auth(),
+    payload: { status: "false_positive", reason: "eval sur une constante de test" },
+  });
+  assert.equal(fp.statusCode, 200);
+  assert.equal(fp.json().pullRequest.riskScore, 0, "a false positive no longer counts");
+  const sup = await prisma.findingSuppression.findFirst({ where: { repositoryId: pr.repositoryId } });
+  assert.equal(sup?.fingerprint, "DANGEROUS_EVAL|src/sandbox.ts");
+
+  const { analyzeDiff } = await import("../analysis/analyzer.js");
+  const diff = [
+    "diff --git a/src/sandbox.ts b/src/sandbox.ts",
+    "--- a/src/sandbox.ts",
+    "+++ b/src/sandbox.ts",
+    "@@ -1,0 +10,1 @@",
+    "+const r = eval('1+1');",
+  ].join("\n");
+  const again = analyzeDiff(diff, new Set([sup!.fingerprint]));
+  assert.equal(again.findings.length, 0, "suppressed on re-analysis even if the line moved");
+  assert.equal(again.suppressed.length, 1);
+
+  const reopen = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/findings/${finding.id}`,
+    headers: auth(),
+    payload: { status: "open" },
+  });
+  assert.equal(reopen.statusCode, 200);
+  assert.equal(await prisma.findingSuppression.count({ where: { repositoryId: pr.repositoryId } }), 0);
 });

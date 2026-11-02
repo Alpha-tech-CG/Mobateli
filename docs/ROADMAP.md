@@ -58,7 +58,9 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 - [ ] BruteForce Shield (suite) : tests OTP et reset password, CAPTCHA après N échecs
 - [x] **Backup Shield** : déclaration des exécutions, chiffrement / SHA-256 / rétention / immutabilité, revérification d'intégrité, restauration PostgreSQL isolée, score de récupération, découverte dans l'agent
 - [ ] Backup Shield (suite) : restauration MySQL / MongoDB, alerte proactive « sauvegarde manquante » (cron), lecture directe des réglages S3 Object Lock
-- [ ] GitHub App branchée sur l'API en ligne + écran « Connecter GitHub »
+- [x] Écran « Connecter GitHub » (installation, choix des dépôts, révocation) — reste : créer l'App GitHub et renseigner ses clés en production
+- [x] Faux positifs mémorisés (US02), vulnérabilités connues OSV + paquets inexistants (US04), prompt injection (§10.5)
+- [x] Sessions de 12 h, MFA obligatoire pour owner/admin (§10.2), page Sécurité du compte
 
 ## Reste à faire (post-MVP)
 - [ ] Moteur de scan Rust avancé (`services/scan-engine`)

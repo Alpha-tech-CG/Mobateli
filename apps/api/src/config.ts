@@ -26,6 +26,8 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v?.replace(/\\n/g, "\n")),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  // Public slug of the App (github.com/apps/<slug>) for the install link.
+  GITHUB_APP_SLUG: z.string().optional(),
 
   // ─── Vercel ───────────────────────────────────────────
   VERCEL_WEBHOOK_SECRET: z.string().optional(),
@@ -38,6 +40,9 @@ const envSchema = z.object({
       (v) => Buffer.from(v, "base64").length === 32,
       "ENCRYPTION_KEY doit être 32 octets encodés en base64",
     ),
+
+  // Owners/admins must enable MFA before administrative actions (§10.2).
+  MFA_REQUIRED_FOR_ADMINS: z.enum(["true", "false"]).default("true"),
 
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
   // Public base URL of this API — used to build SAML SP entityId/ACS URLs.

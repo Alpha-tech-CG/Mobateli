@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
 import type { PullRequestDetail } from "@/lib/types";
@@ -44,6 +44,27 @@ function Detail() {
       setTimeout(load, 2000);
     } finally {
       setTimeout(() => setRescanning(false), 2000);
+    }
+  }
+
+  async function triage(findingId: string, status: "open" | "false_positive") {
+    const reason =
+      status === "false_positive"
+        ? prompt("Pourquoi est-ce un faux positif ? (conservé dans le journal d'audit)") ?? undefined
+        : undefined;
+    if (status === "false_positive" && reason === undefined) return;
+    try {
+      await api(`/api/v1/findings/${findingId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status, ...(reason ? { reason } : {}) }),
+      });
+      load();
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.status === 403
+          ? "Seuls les rôles Owner, Admin et Security Manager (avec MFA) peuvent qualifier un faux positif."
+          : "Mise à jour impossible.",
+      );
     }
   }
 
@@ -133,7 +154,10 @@ function Detail() {
         {pr.findings.length ? (
           <ul className="divide-y divide-border">
             {pr.findings.map((f) => (
-              <li key={f.id} className="px-4 py-3 text-sm">
+              <li
+                key={f.id}
+                className={`px-4 py-3 text-sm ${f.status === "false_positive" ? "opacity-60" : ""}`}
+              >
                 <div className="flex items-center gap-2">
                   <SeverityBadge severity={f.severity} />
                   <span className="font-medium">{f.title}</span>
@@ -150,6 +174,28 @@ function Detail() {
                     <span className="font-medium">Correctif :</span> {f.remediation}
                   </p>
                 ) : null}
+                <div className="mt-2 flex items-center gap-3 text-xs">
+                  {f.status === "false_positive" ? (
+                    <>
+                      <span className="text-muted-foreground">Marqué faux positif — exclu du score</span>
+                      <button
+                        type="button"
+                        onClick={() => triage(f.id, "open")}
+                        className="cursor-pointer text-primary hover:underline"
+                      >
+                        Rouvrir
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => triage(f.id, "false_positive")}
+                      className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      Marquer comme faux positif
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

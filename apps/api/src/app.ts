@@ -19,6 +19,8 @@ import { webhookRoutes } from "./routes/webhooks.js";
 import { serverRoutes } from "./routes/servers.js";
 import { bruteForceRoutes } from "./routes/bruteforce.js";
 import { backupRoutes } from "./routes/backups.js";
+import { findingRoutes } from "./routes/findings.js";
+import { githubRoutes } from "./routes/github.js";
 import { getRedis } from "./lib/redis.js";
 import { createJobs } from "./lib/jobs.js";
 
@@ -57,7 +59,10 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
           },
   });
   await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
-  await app.register(authPlugin, { jwtSecret: config.JWT_SECRET });
+  await app.register(authPlugin, {
+    jwtSecret: config.JWT_SECRET,
+    mfaRequiredForAdmins: config.MFA_REQUIRED_FOR_ADMINS === "true",
+  });
 
   // Uniform validation errors — surface which field failed, never the value.
   app.setErrorHandler((err, _req, reply) => {
@@ -70,8 +75,13 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
         })),
       });
     }
-    if ((err as { statusCode?: number }).statusCode === 429) {
+    const statusCode = (err as { statusCode?: number }).statusCode;
+    if (statusCode === 429) {
       return reply.code(429).send({ error: "rate_limited" });
+    }
+    // Client errors raised by Fastify itself (bad JSON, body too large…).
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      return reply.code(statusCode).send({ error: "bad_request" });
     }
     reply.log.error(err);
     return reply.code(500).send({ error: "internal_error" });
@@ -90,6 +100,10 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   });
   await app.register(async (instance) => {
     await integrationRoutes(instance, config);
+  });
+  await app.register(findingRoutes);
+  await app.register(async (instance) => {
+    await githubRoutes(instance, config);
   });
   await app.register(auditRoutes);
   await app.register(agentGuardRoutes);
