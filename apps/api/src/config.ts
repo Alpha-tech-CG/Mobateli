@@ -23,6 +23,9 @@ const envSchema = z.object({
     .transform((v) => v?.replace(/\\n/g, "\n")),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
 
+  // ─── Vercel ───────────────────────────────────────────
+  VERCEL_WEBHOOK_SECRET: z.string().optional(),
+
   JWT_SECRET: z.string().min(32, "JWT_SECRET doit faire au moins 32 caractères"),
   // 32-byte key, base64-encoded, for AES-256-GCM at-rest encryption of secrets.
   ENCRYPTION_KEY: z

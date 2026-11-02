@@ -39,6 +39,32 @@ export async function organizationRoutes(app: FastifyInstance) {
     },
   );
 
+  /** List recent deployment security checks (Deploy Gate, cahier §5.5). */
+  app.get(
+    "/api/v1/deploy-checks",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const checks = await prisma.deployCheck.findMany({
+        where: { repository: { organizationId: req.principal.organizationId } },
+        include: { repository: { select: { name: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      });
+      return {
+        deployChecks: checks.map((c) => ({
+          id: c.id,
+          repository: c.repository.name,
+          provider: c.provider,
+          target: c.target,
+          commitSha: c.commitSha,
+          decision: c.decision,
+          reason: c.reason,
+          createdAt: c.createdAt,
+        })),
+      };
+    },
+  );
+
   /** List members of the current organization. */
   app.get(
     "/api/v1/organization/members",

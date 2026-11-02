@@ -102,6 +102,13 @@ enum AgentDecision {
   require_approval
 }
 
+enum DeployDecision {
+  authorized
+  warning
+  blocked
+  requires_approval
+}
+
 // ─── Core tenancy ───────────────────────────────────────
 
 model Organization {
@@ -158,6 +165,7 @@ model Repository {
   pullRequests  PullRequest[]
   policies      Policy[]
   agentPolicies AgentPolicy[]
+  deployChecks  DeployCheck[]
 
   @@unique([provider, externalId])
   @@index([organizationId])
@@ -243,6 +251,25 @@ model SecretFinding {
 
   @@index([pullRequestId])
   @@map("secret_findings")
+}
+
+/// Record of a pre-deployment security decision (cahier §5.5).
+model DeployCheck {
+  id            String         @id @default(uuid()) @db.Uuid
+  repositoryId  String         @db.Uuid
+  externalId    String
+  provider      String         @default("vercel")
+  target        String?
+  commitSha     String?
+  decision      DeployDecision
+  reason        String
+  createdAt     DateTime       @default(now())
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalId])
+  @@index([repositoryId])
+  @@map("deploy_checks")
 }
 
 /// Per-scope override of what an AI agent may do (cahier §5.4). A rule scoped

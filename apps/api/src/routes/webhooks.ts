@@ -2,10 +2,11 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Redis } from "ioredis";
 import { prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
-import { verifyGithubSignature } from "../lib/webhook-verify.js";
+import { verifyGithubSignature, verifyVercelSignature } from "../lib/webhook-verify.js";
 import { claimDelivery, releaseDelivery } from "../lib/redis.js";
 import { enqueuePrAnalysis } from "../queues/pr-analysis.js";
 import { recordAudit } from "../lib/audit.js";
+import { evaluateDeployGate } from "../analysis/deploy-gate.js";
 
 /** Heuristic: was this PR likely opened by an AI coding agent? (cahier §5.1) */
 function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
@@ -125,6 +126,77 @@ async function handleInstallationRepositories(payload: any): Promise<void> {
   }
 }
 
+async function handleVercelDeployment(req: FastifyRequest, payload: any): Promise<void> {
+  const deployment = payload.payload?.deployment ?? payload.deployment;
+  const meta = deployment?.meta ?? {};
+  const org: string | undefined = meta.githubCommitOrg;
+  const name: string | undefined = meta.githubCommitRepo;
+  const deploymentId: string | undefined = deployment?.id ?? payload.payload?.deployment?.id;
+  if (!org || !name || !deploymentId) {
+    req.log.warn("vercel deployment without git repo metadata — skipped");
+    return;
+  }
+  const fullName = `${org}/${name}`;
+
+  const repo = await prisma.repository.findFirst({
+    where: { provider: "github", name: fullName },
+    select: { id: true, organizationId: true, protectionLevel: true },
+  });
+  if (!repo) {
+    req.log.warn({ fullName }, "vercel deploy for unknown repository — skipped");
+    return;
+  }
+
+  // Gather the security posture of what's being shipped.
+  const prWhere = { pullRequest: { repositoryId: repo.id } };
+  const [openSecrets, criticalFindings, highFindings, criticalDependencies, latestPr] =
+    await Promise.all([
+      prisma.secretFinding.count({ where: { ...prWhere, status: "open" } }),
+      prisma.finding.count({ where: { ...prWhere, severity: "critical", status: "open" } }),
+      prisma.finding.count({ where: { ...prWhere, severity: "high", status: "open" } }),
+      prisma.dependency.count({ where: { ...prWhere, riskLevel: "critical" } }),
+      prisma.pullRequest.findFirst({
+        where: { repositoryId: repo.id },
+        orderBy: { createdAt: "desc" },
+        select: { status: true },
+      }),
+    ]);
+
+  const result = evaluateDeployGate(
+    {
+      openSecrets,
+      criticalFindings,
+      highFindings,
+      criticalDependencies,
+      latestPrBlocked: latestPr?.status === "blocked",
+    },
+    repo.protectionLevel,
+  );
+
+  await prisma.deployCheck.upsert({
+    where: { provider_externalId: { provider: "vercel", externalId: deploymentId } },
+    create: {
+      repositoryId: repo.id,
+      provider: "vercel",
+      externalId: deploymentId,
+      target: meta.githubCommitRef ?? deployment?.target ?? null,
+      commitSha: meta.githubCommitSha ?? null,
+      decision: result.decision,
+      reason: result.reason,
+    },
+    update: { decision: result.decision, reason: result.reason },
+  });
+
+  await recordAudit({
+    organizationId: repo.organizationId,
+    actorType: "system",
+    action: `deploy.${result.decision}`,
+    resourceType: "repository",
+    resourceId: repo.id,
+    metadata: { deploymentId, decision: result.decision, reason: result.reason },
+  });
+}
+
 async function handleInstallationDeleted(payload: any): Promise<void> {
   const installationId: number | undefined = payload.installation?.id;
   if (!installationId) return;
@@ -198,6 +270,42 @@ export async function webhookRoutes(
     } catch (err) {
       req.log.error({ err, event }, "webhook handler error");
       // Release the idempotency claim so GitHub's retry is processed afresh.
+      if (deliveryId) await releaseDelivery(connection, deliveryId);
+      return reply.code(500).send({ error: "handler_error" });
+    }
+
+    return reply.code(202).send({ status: "accepted" });
+  });
+
+  app.post("/webhooks/vercel", async (req, reply) => {
+    if (!config.VERCEL_WEBHOOK_SECRET) {
+      return reply.code(503).send({ error: "vercel_not_configured" });
+    }
+
+    const raw = req.body as Buffer;
+    const signature = req.headers["x-vercel-signature"] as string | undefined;
+    if (!verifyVercelSignature(raw, signature, config.VERCEL_WEBHOOK_SECRET)) {
+      return reply.code(401).send({ error: "invalid_signature" });
+    }
+
+    const deliveryId = req.headers["x-vercel-id"] as string | undefined;
+    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+      return reply.code(200).send({ status: "duplicate" });
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      return reply.code(400).send({ error: "invalid_json" });
+    }
+
+    try {
+      if ((payload as { type?: string }).type === "deployment.created") {
+        await handleVercelDeployment(req, payload);
+      }
+    } catch (err) {
+      req.log.error({ err }, "vercel webhook handler error");
       if (deliveryId) await releaseDelivery(connection, deliveryId);
       return reply.code(500).send({ error: "handler_error" });
     }

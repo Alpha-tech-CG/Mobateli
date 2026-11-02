@@ -33,6 +33,19 @@ export interface Policy {
   createdAt: string;
 }
 
+export type DeployDecision = "authorized" | "warning" | "blocked" | "requires_approval";
+
+export interface DeployCheckRow {
+  id: string;
+  repository: string;
+  provider: string;
+  target: string | null;
+  commitSha: string | null;
+  decision: DeployDecision;
+  reason: string;
+  createdAt: string;
+}
+
 export interface Repository {
   id: string;
   name: string;

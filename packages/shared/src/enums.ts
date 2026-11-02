@@ -81,3 +81,12 @@ export type AgentPermission = (typeof AGENT_PERMISSIONS)[number];
 
 export const AGENT_DECISIONS = ["allow", "deny", "require_approval"] as const;
 export type AgentDecision = (typeof AGENT_DECISIONS)[number];
+
+/** Outcome of the Vercel Deploy Gate — cf. cahier §5.5 */
+export const DEPLOY_DECISIONS = [
+  "authorized",
+  "warning",
+  "blocked",
+  "requires_approval",
+] as const;
+export type DeployDecision = (typeof DEPLOY_DECISIONS)[number];
