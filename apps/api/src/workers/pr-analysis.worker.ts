@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import type { Redis } from "ioredis";
-import { prisma } from "@codegate/db";
+import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
 import { analyzeDiff } from "../analysis/analyzer.js";
@@ -58,8 +58,10 @@ export function createPrAnalysisWorker(
       const result = analyzeDiff(diff);
 
       // Replace previous findings for this PR (idempotent re-analysis), then
-      // persist the new set and the decision — atomically.
-      await prisma.$transaction([
+      // persist the new set and the decision — atomically, with retry on a
+      // transient connection drop.
+      await withDbRetry(() =>
+        prisma.$transaction([
         prisma.finding.deleteMany({ where: { pullRequestId: pr.id } }),
         prisma.dependency.deleteMany({ where: { pullRequestId: pr.id } }),
         prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
@@ -99,7 +101,8 @@ export function createPrAnalysisWorker(
           where: { id: pr.id },
           data: { riskScore: result.riskScore, status: result.status },
         }),
-      ]);
+        ]),
+      );
 
       await recordAudit({
         organizationId: pr.repository.organizationId,

@@ -1,9 +1,13 @@
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { startDbKeepAlive } from "@codegate/db";
 
 async function main() {
   const config = loadConfig();
   const app = await buildApp(config);
+
+  // Keep the DB connection warm (Docker/NAT idle-drop mitigation).
+  startDbKeepAlive();
 
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, "shutting down");

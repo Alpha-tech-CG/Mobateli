@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.js";
 import { getRedis } from "./lib/redis.js";
 import { createPrAnalysisWorker } from "./workers/pr-analysis.worker.js";
+import { startDbKeepAlive } from "@codegate/db";
 import pino from "pino";
 
 /**
@@ -11,6 +12,7 @@ function main() {
   const config = loadConfig();
   const log = pino({ level: config.NODE_ENV === "production" ? "info" : "debug" });
   const connection = getRedis(config.REDIS_URL);
+  startDbKeepAlive();
 
   const worker = createPrAnalysisWorker(connection, config);
 
