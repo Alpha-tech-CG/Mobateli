@@ -10,10 +10,13 @@ export function Reveal({
   children,
   delay = 0,
   className = "",
+  tilt = false,
 }: {
   children: ReactNode;
   delay?: number;
   className?: string;
+  /** Card straightens up from a tilted angle instead of sliding up. */
+  tilt?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
@@ -39,7 +42,7 @@ export function Reveal({
   return (
     <div
       ref={ref}
-      className={`reveal ${shown ? "in" : ""} ${className}`}
+      className={`reveal ${tilt ? "tilt" : ""} ${shown ? "in" : ""} ${className}`}
       style={{ transitionDelay: `${delay}ms` }}
     >
       {children}
