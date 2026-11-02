@@ -1,71 +1,72 @@
 @import "tailwindcss";
 
 /*
- * Design system: "Data-Dense Dashboard" (ui-ux-pro-max).
- * Blue data + amber highlights. Tokens defined as CSS variables so they adapt
- * to light/dark, then mapped into Tailwind's theme via @theme inline.
+ * CodeGate brand — neutral near-black, brick-red primary, sage-green accent.
+ * Shared by the public marketing site and the internal dashboard so the look
+ * is consistent inside and out. Tokens are CSS variables mapped into Tailwind
+ * via @theme inline; they adapt to light/dark.
  */
 
 :root {
-  --background: #f8fafc;
-  --foreground: #1e3a8a;
+  --background: #ffffff;
+  --foreground: #15181a;
   --card: #ffffff;
-  --card-foreground: #1e3a8a;
-  --primary: #1e40af;
+  --card-foreground: #15181a;
+  --primary: #bb3e2c;
   --on-primary: #ffffff;
-  --secondary: #3b82f6;
-  --accent: #d97706;
+  --secondary: #3f7a52;
+  --accent: #bb3e2c;
   --on-accent: #ffffff;
-  --muted: #e9eef6;
-  --muted-foreground: #475569;
-  --border: #dbeafe;
-  --destructive: #dc2626;
+  --muted: #f1f3f4;
+  --muted-foreground: #5b6468;
+  --border: #e4e7e9;
+  --destructive: #bb3e2c;
   --on-destructive: #ffffff;
-  --success: #15803d;
-  --warning: #b45309;
-  --ring: #1e40af;
+  --success: #3f7a52;
+  --warning: #b06a16;
+  --ring: #bb3e2c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --background: #0b1220;
-    --foreground: #e2e8f0;
-    --card: #111a2e;
-    --card-foreground: #e2e8f0;
-    --primary: #3b82f6;
-    --on-primary: #06101f;
-    --secondary: #60a5fa;
-    --accent: #f59e0b;
-    --on-accent: #1a1203;
-    --muted: #1b2740;
-    --muted-foreground: #94a3b8;
-    --border: #1e2b47;
-    --destructive: #f87171;
-    --on-destructive: #1a0606;
-    --success: #4ade80;
-    --warning: #fbbf24;
-    --ring: #3b82f6;
+    --background: #0a0c0d;
+    --foreground: #eef1f2;
+    --card: #121517;
+    --card-foreground: #eef1f2;
+    --primary: #cf4a34;
+    --on-primary: #ffffff;
+    --secondary: #8ac898;
+    --accent: #cf4a34;
+    --on-accent: #ffffff;
+    --muted: #191d20;
+    --muted-foreground: #9aa3a8;
+    --border: #24282c;
+    --destructive: #e5533d;
+    --on-destructive: #ffffff;
+    --success: #8ac898;
+    --warning: #e0a44a;
+    --ring: #cf4a34;
   }
 }
 
 :root[data-theme="dark"] {
-  --background: #0b1220;
-  --foreground: #e2e8f0;
-  --card: #111a2e;
-  --card-foreground: #e2e8f0;
-  --primary: #3b82f6;
-  --on-primary: #06101f;
-  --secondary: #60a5fa;
-  --accent: #f59e0b;
-  --on-accent: #1a1203;
-  --muted: #1b2740;
-  --muted-foreground: #94a3b8;
-  --border: #1e2b47;
-  --destructive: #f87171;
-  --on-destructive: #1a0606;
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --ring: #3b82f6;
+  --background: #0a0c0d;
+  --foreground: #eef1f2;
+  --card: #121517;
+  --card-foreground: #eef1f2;
+  --primary: #cf4a34;
+  --on-primary: #ffffff;
+  --secondary: #8ac898;
+  --accent: #cf4a34;
+  --on-accent: #ffffff;
+  --muted: #191d20;
+  --muted-foreground: #9aa3a8;
+  --border: #24282c;
+  --destructive: #e5533d;
+  --on-destructive: #ffffff;
+  --success: #8ac898;
+  --warning: #e0a44a;
+  --ring: #cf4a34;
 }
 
 @theme inline {
@@ -87,7 +88,7 @@
   --color-warning: var(--warning);
   --color-ring: var(--ring);
 
-  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Fira Code", ui-monospace, "SFMono-Regular", monospace;
 }
 
@@ -106,13 +107,43 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Respect reduced motion (pre-delivery checklist). */
+/* ─── Marketing helpers ─────────────────────────────────── */
+
+/* Subtle technical grid background (hero / dark sections). */
+.cg-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--foreground) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--foreground) 6%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+/* Radial glow accent. */
+.cg-glow {
+  background: radial-gradient(60% 60% at 50% 0%, color-mix(in srgb, var(--primary) 22%, transparent), transparent 70%);
+}
+
+/* Scroll-reveal animation (Framer-like fade + slide up). */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+  will-change: opacity, transform;
+}
+.reveal.in {
+  opacity: 1;
+  transform: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }

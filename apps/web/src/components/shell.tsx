@@ -17,7 +17,7 @@ import {
 import { clearToken, getToken } from "@/lib/api";
 
 const NAV = [
-  { href: "/", label: "Vue d'ensemble", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
   { href: "/policies", label: "Politiques", icon: ScrollText },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },

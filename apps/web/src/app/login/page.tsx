@@ -26,7 +26,7 @@ export default function LoginPage() {
         body: JSON.stringify(body),
       });
       setToken(res.token);
-      router.replace("/");
+      router.replace("/dashboard");
     } catch (err) {
       if (err instanceof ApiError && err.code === "mfa_required") {
         setMfa(true);
