@@ -72,6 +72,9 @@ importers:
       '@types/pdfkit':
         specifier: ^0.13.9
         version: 0.13.9
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       pino-pretty:
         specifier: ^13.0.0
         version: 13.2.0

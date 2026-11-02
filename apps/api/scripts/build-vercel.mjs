@@ -1,0 +1,88 @@
+// Assemble a self-contained Vercel deployment for the API in .vercel-deploy/.
+//
+// The monorepo's workspace packages (@codegate/db, @codegate/shared) are
+// bundled into a single serverless function with esbuild; third-party
+// packages stay external and are installed by Vercel with npm from a
+// generated package.json (no pnpm workspace needed on Vercel's side).
+import { build } from "esbuild";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const apiDir = join(here, "..");
+const repo = join(apiDir, "..", "..");
+const out = join(apiDir, ".vercel-deploy");
+
+const readPkg = (p) => JSON.parse(readFileSync(join(p, "package.json"), "utf8"));
+const apiPkg = readPkg(apiDir);
+const dbPkg = readPkg(join(repo, "packages", "db"));
+const sharedPkg = readPkg(join(repo, "packages", "shared"));
+
+// Runtime dependencies = everything non-workspace the bundle imports.
+const deps = {};
+for (const pkg of [apiPkg.dependencies, dbPkg.dependencies, sharedPkg.dependencies]) {
+  for (const [name, version] of Object.entries(pkg ?? {})) {
+    if (!String(version).startsWith("workspace:")) deps[name] = version;
+  }
+}
+deps.prisma = dbPkg.devDependencies.prisma; // needed for `prisma generate` on Vercel
+
+rmSync(out, { recursive: true, force: true });
+mkdirSync(join(out, "api"), { recursive: true });
+mkdirSync(join(out, "prisma"), { recursive: true });
+mkdirSync(join(out, "public"), { recursive: true });
+
+await build({
+  entryPoints: [join(apiDir, "src", "vercel.ts")],
+  outfile: join(out, "api", "index.js"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  external: Object.keys(deps),
+  logLevel: "warning",
+});
+
+cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
+writeFileSync(join(out, "public", "robots.txt"), "User-agent: *\nDisallow: /\n");
+
+writeFileSync(
+  join(out, "package.json"),
+  JSON.stringify(
+    {
+      name: "codegate-api",
+      private: true,
+      type: "module",
+      engines: { node: "22.x" },
+      scripts: { build: "prisma generate" },
+      dependencies: deps,
+    },
+    null,
+    2,
+  ),
+);
+
+writeFileSync(
+  join(out, "vercel.json"),
+  JSON.stringify(
+    {
+      $schema: "https://openapi.vercel.sh/vercel.json",
+      framework: null,
+      installCommand: "npm install",
+      buildCommand: "npm run build",
+      outputDirectory: "public",
+      functions: {
+        "api/index.js": {
+          maxDuration: 30,
+          includeFiles: "node_modules/pdfkit/js/data/**",
+        },
+      },
+      rewrites: [{ source: "/(.*)", destination: "/api" }],
+    },
+    null,
+    2,
+  ),
+);
+
+console.log(`Vercel bundle ready in ${out}`);

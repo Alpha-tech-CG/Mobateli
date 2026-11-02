@@ -42,8 +42,30 @@ export async function withDbRetry<T>(fn: () => Promise<T>, attempts = 4): Promis
   throw lastErr;
 }
 
+/**
+ * Neon's pooled endpoint (host contains "-pooler") runs PgBouncer in
+ * transaction mode: Prisma must be told (pgbouncer=true), and a cold compute
+ * needs a longer connect timeout.
+ */
+function datasourceUrl(): string | undefined {
+  const raw = process.env.DATABASE_URL;
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    if (u.hostname.includes("-pooler") && !u.searchParams.has("pgbouncer")) {
+      u.searchParams.set("pgbouncer", "true");
+      if (!u.searchParams.has("connect_timeout")) u.searchParams.set("connect_timeout", "15");
+    }
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
 function createClient() {
+  const url = datasourceUrl();
   const base = new PrismaClient({
+    ...(url ? { datasourceUrl: url } : {}),
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });
 

@@ -2,13 +2,15 @@ import { Redis } from "ioredis";
 
 /**
  * Shared ioredis connection factory. BullMQ requires `maxRetriesPerRequest:
- * null` on the connection it uses for blocking commands.
+ * null` on the connection it uses for blocking commands. Lazy: nothing
+ * connects until a command is issued, so routes that never touch Redis (auth,
+ * dashboard reads) work without it — important on serverless.
  */
 let connection: Redis | undefined;
 
 export function getRedis(url: string): Redis {
   if (!connection) {
-    connection = new Redis(url, { maxRetriesPerRequest: null });
+    connection = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: true });
   }
   return connection;
 }
