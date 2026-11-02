@@ -100,6 +100,14 @@ export const connectSlackSchema = z.object({
 });
 export type ConnectSlackInput = z.infer<typeof connectSlackSchema>;
 
+export const connectJiraSchema = z.object({
+  baseUrl: z.string().url().max(300),
+  email: emailSchema,
+  apiToken: z.string().min(10).max(500),
+  projectKey: z.string().min(1).max(50),
+});
+export type ConnectJiraInput = z.infer<typeof connectJiraSchema>;
+
 /** Pagination shared across list endpoints. */
 export const paginationSchema = z.object({
   cursor: z.string().uuid().optional(),

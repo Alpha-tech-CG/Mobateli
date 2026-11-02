@@ -280,6 +280,30 @@ test("gitlab: connect token governs the MR webhook", async () => {
   assert.equal(gl.aiGenerated, true);
 });
 
+test("jira integration: connect, status hides the token", async () => {
+  const con = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/jira",
+    headers: auth(),
+    payload: {
+      baseUrl: "https://acme.atlassian.net",
+      email: "sec@acme.test",
+      apiToken: "jira_api_token_secret_value",
+      projectKey: "SEC",
+    },
+  });
+  assert.equal(con.statusCode, 201);
+  const status = await app.inject({
+    method: "GET",
+    url: "/api/v1/integrations/jira",
+    headers: auth(),
+  });
+  const body = status.json();
+  assert.equal(body.connected, true);
+  assert.equal(body.projectKey, "SEC");
+  assert.ok(!("apiToken" in body));
+});
+
 test("audit export returns a JSON evidence pack", async () => {
   const res = await app.inject({
     method: "POST",

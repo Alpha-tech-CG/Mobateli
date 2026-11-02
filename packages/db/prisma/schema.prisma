@@ -126,6 +126,7 @@ model Organization {
   linearConnection LinearConnection?
   slackConnection  SlackConnection?
   gitlabConnection GitlabConnection?
+  jiraConnection   JiraConnection?
   agentPolicies    AgentPolicy[]
 
   @@map("organizations")
@@ -346,6 +347,21 @@ model GitlabConnection {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("gitlab_connections")
+}
+
+/// Jira Cloud connection (cahier §12.2 P3). API token encrypted at rest.
+model JiraConnection {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @unique @db.Uuid
+  baseUrl         String
+  email           String
+  apiTokenEncrypted String
+  projectKey      String
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("jira_connections")
 }
 
 /// Remediation ticket created in an external tracker for a PR (cahier §5.7).

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plug, Bell, Gitlab } from "lucide-react";
+import { CheckCircle2, Plug, Bell, Gitlab, Ticket } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
@@ -136,7 +136,111 @@ function Integrations() {
 
       <SlackCard />
       <GitlabCard />
+      <JiraCard />
     </div>
+  );
+}
+
+function JiraCard() {
+  const [connected, setConnected] = useState(false);
+  const [projectKey, setProjectKey] = useState<string | null>(null);
+  const [form, setForm] = useState({ baseUrl: "", email: "", apiToken: "", projectKey: "" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function load() {
+    api<{ connected: boolean; projectKey: string | null }>("/api/v1/integrations/jira")
+      .then((r) => {
+        setConnected(r.connected);
+        setProjectKey(r.projectKey);
+      })
+      .catch(() => {});
+  }
+  useEffect(load, []);
+
+  async function connect(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api("/api/v1/integrations/jira", { method: "POST", body: JSON.stringify(form) });
+      setForm({ baseUrl: "", email: "", apiToken: "", projectKey: "" });
+      setMsg("Jira connecté.");
+      load();
+    } catch {
+      setMsg("Connexion impossible (identifiants ou droits).");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setBusy(true);
+    try {
+      await api("/api/v1/integrations/jira", { method: "DELETE" });
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (key: keyof typeof form, label: string, type = "text", ph = "") => (
+    <label className="block">
+      <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
+      <input
+        type={type}
+        required
+        value={form[key]}
+        onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+        placeholder={ph}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      />
+    </label>
+  );
+
+  return (
+    <Card className="mt-6 max-w-xl p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <Ticket className="size-5 text-primary" aria-hidden />
+        <div>
+          <h2 className="font-semibold">Jira</h2>
+          <p className="text-xs text-muted-foreground">
+            Crée une issue de remédiation Jira (entreprise) sur risque bloquant.
+          </p>
+        </div>
+      </div>
+
+      {connected ? (
+        <div className="space-y-3">
+          <p className="flex items-center gap-2 text-sm text-success">
+            <CheckCircle2 className="size-4" aria-hidden />
+            Connecté — projet <span className="font-mono">{projectKey}</span>
+          </p>
+          <button
+            onClick={disconnect}
+            disabled={busy}
+            className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm text-destructive transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+          >
+            Déconnecter
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={connect} className="space-y-3">
+          {field("baseUrl", "URL Jira", "url", "https://votre-org.atlassian.net")}
+          {field("email", "Email", "email", "vous@entreprise.com")}
+          {field("apiToken", "Jeton API", "password", "jeton Atlassian")}
+          {field("projectKey", "Clé de projet", "text", "SEC")}
+          <button
+            type="submit"
+            disabled={busy}
+            className="cursor-pointer rounded-md bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? "Connexion…" : "Connecter Jira"}
+          </button>
+        </form>
+      )}
+      {msg ? <p className="mt-3 text-sm text-muted-foreground">{msg}</p> : null}
+    </Card>
   );
 }
 

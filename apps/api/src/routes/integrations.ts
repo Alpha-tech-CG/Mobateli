@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@codegate/db";
-import { connectLinearSchema, connectSlackSchema } from "@codegate/shared";
+import { connectLinearSchema, connectSlackSchema, connectJiraSchema } from "@codegate/shared";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
 import { sendSlackAlert } from "../lib/slack.js";
@@ -216,6 +216,80 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
         actorType: "user",
         actorId: req.principal.userId,
         action: "integration.gitlab_disconnected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return { connected: false };
+    },
+  );
+
+  // ─── Jira ─────────────────────────────────────────────
+
+  app.get(
+    "/api/v1/integrations/jira",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const conn = await prisma.jiraConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { baseUrl: true, projectKey: true },
+      });
+      return {
+        connected: conn !== null,
+        baseUrl: conn?.baseUrl ?? null,
+        projectKey: conn?.projectKey ?? null,
+      };
+    },
+  );
+
+  app.post(
+    "/api/v1/integrations/jira",
+    {
+      preHandler: [app.authenticate, app.requireRole("owner", "admin", "security_manager")],
+    },
+    async (req, reply) => {
+      const body = connectJiraSchema.parse(req.body);
+      const apiTokenEncrypted = encrypt(body.apiToken, config.ENCRYPTION_KEY);
+      await prisma.jiraConnection.upsert({
+        where: { organizationId: req.principal.organizationId },
+        create: {
+          organizationId: req.principal.organizationId,
+          baseUrl: body.baseUrl,
+          email: body.email,
+          apiTokenEncrypted,
+          projectKey: body.projectKey,
+        },
+        update: {
+          baseUrl: body.baseUrl,
+          email: body.email,
+          apiTokenEncrypted,
+          projectKey: body.projectKey,
+        },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.jira_connected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+        metadata: { projectKey: body.projectKey },
+      });
+      return reply.code(201).send({ connected: true, projectKey: body.projectKey });
+    },
+  );
+
+  app.delete(
+    "/api/v1/integrations/jira",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req) => {
+      await prisma.jiraConnection.deleteMany({
+        where: { organizationId: req.principal.organizationId },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.jira_disconnected",
         resourceType: "organization",
         resourceId: req.principal.organizationId,
       });

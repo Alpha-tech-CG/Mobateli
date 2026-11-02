@@ -12,6 +12,7 @@ import {
   createLinearIssue,
   shouldCreateRemediation,
 } from "../lib/linear.js";
+import { buildJiraIssue, createJiraIssue } from "../lib/jira.js";
 import { decrypt } from "../lib/crypto.js";
 import { notifySlack } from "../lib/notify.js";
 import { PR_ANALYSIS_QUEUE, type PrAnalysisJob } from "../queues/pr-analysis.js";
@@ -177,6 +178,61 @@ export function createPrAnalysisWorker(
               resourceType: "pull_request",
               resourceId: pr.id,
               metadata: { provider: "linear", error: err instanceof Error ? err.message : "unknown" },
+            });
+          }
+        }
+      }
+
+      // ── Jira : issue de remédiation (cahier §12.2 P3), idempotente ──
+      if (shouldCreateRemediation(result)) {
+        const jira = await prisma.jiraConnection.findUnique({
+          where: { organizationId: pr.repository.organizationId },
+        });
+        const existing = await prisma.remediationIssue.findUnique({
+          where: { pullRequestId_provider: { pullRequestId: pr.id, provider: "jira" } },
+        });
+        if (jira && !existing) {
+          try {
+            const issue = buildJiraIssue({
+              repository: pr.repository.name,
+              prNumber: pr.number,
+              prTitle: pr.title,
+              result,
+            });
+            const ref = await createJiraIssue(
+              {
+                baseUrl: jira.baseUrl,
+                email: jira.email,
+                apiToken: decrypt(jira.apiTokenEncrypted, config.ENCRYPTION_KEY),
+                projectKey: jira.projectKey,
+              },
+              issue,
+            );
+            await prisma.remediationIssue.create({
+              data: {
+                pullRequestId: pr.id,
+                provider: "jira",
+                externalId: ref.key,
+                identifier: ref.key,
+                url: ref.url,
+              },
+            });
+            await recordAudit({
+              organizationId: pr.repository.organizationId,
+              actorType: "system",
+              action: "remediation.created",
+              resourceType: "pull_request",
+              resourceId: pr.id,
+              metadata: { provider: "jira", identifier: ref.key, url: ref.url },
+            });
+          } catch (err) {
+            await recordAudit({
+              organizationId: pr.repository.organizationId,
+              actorType: "system",
+              action: "remediation.failed",
+              resourceType: "pull_request",
+              resourceId: pr.id,
+              metadata: { provider: "jira", error: err instanceof Error ? err.message : "unknown" },
             });
           }
         }
