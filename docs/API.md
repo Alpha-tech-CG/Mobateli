@@ -93,11 +93,74 @@ Un compte désactivé ne peut plus se connecter (`login` → 403 `account_disabl
 | GET | `/api/v1/audit-events` | tous | Journal filtrable `{ from?, to?, action?, limit? }` |
 | POST | `/api/v1/audit/export` | tous | Dossier de preuves `{ format: json\|csv\|pdf, repositoryId?, from?, to?, severityThreshold? }` (fichier téléchargeable) |
 
+## Infra Shield — serveurs (extension §3)
+
+Un agent **en lecture seule** (`/agent/codegate-agent.py`, Python 3 sans dépendance) tourne sur le serveur et envoie ses constats. CodeGate ne scanne jamais un hôte depuis l'extérieur : détenir le token d'agent sur la machine vaut preuve de propriété.
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| POST | `/api/v1/servers/connect` | owner/admin/security_manager | `{ name, environment?, provider? }` → serveur + **token d'agent affiché une seule fois** (`cg_srv_…`, stocké haché) |
+| GET | `/api/v1/servers` | tous | Liste avec score et compteurs (critique / élevé / total) |
+| GET | `/api/v1/servers/:id` | tous | Détail : constats triés par gravité + derniers faits remontés |
+| GET | `/api/v1/servers/:id/security-score` | tous | `{ securityScore, lastReportAt }` |
+| POST | `/api/v1/servers/:id/rotate-token` | owner/admin/security_manager | Révoque l'ancien token, en émet un nouveau |
+| DELETE | `/api/v1/servers/:id` | owner/admin/security_manager | Retire le serveur et ses constats |
+| GET | `/api/v1/reports/infrastructure` | tous | Rapport d'organisation (score moyen, constats par serveur) |
+| POST | `/api/v1/agent/report` | bearer `cg_srv_…` | Ingestion du rapport d'agent → règles → constats + score 0–100 ; alerte Slack si critique |
+
+Contrôles : ports dangereux publics (Docker API, bases, Redis, Elasticsearch, Memcached, 8080 — y compris ports publiés par Docker), SSH (root, mot de passe, MaxAuthTries), firewall (UFW / nftables / iptables), Fail2ban / CrowdSec si SSH est exposé, conteneurs (socket Docker, privileged, capacités, root, limite mémoire), mises à jour de sécurité en attente et automatiques. Une valeur non vérifiable (agent non root) est signalée comme telle, jamais considérée comme sûre.
+
+## BruteForce Shield (extension §4)
+
+**Protection de CodeGate lui-même** (`/api/v1/auth/*`) : compteurs en base, par compte **et** par IP.
+
+| Point d'entrée | Seuil | Blocage |
+|---|---|---|
+| Login, par compte | 5 échecs / 10 min | 5 min, doublé à chaque récidive (max 1 h) |
+| Login, par IP | 20 échecs / 10 min | idem |
+| Code MFA (TOTP), par compte | 3 échecs / 5 min | idem |
+| Inscription, par IP | 5 demandes / heure | 1 h |
+
+Réponse en cas de blocage : `429 { error: "too_many_attempts", message, retry_after }` + en-tête `Retry-After`. Un email inconnu coûte le même temps de hachage qu'un mauvais mot de passe (pas d'énumération par le temps). Verrouillage d'un compte → audit `auth.lockout` + alerte Slack.
+
+**Tests autorisés des applications du client** — uniquement sur une origine HTTPS vérifiée (DNS TXT `_codegate-verification.<hôte>` = `codegate-verification=<token>`, ou fichier `/.well-known/codegate-verification.txt`), adresses publiques uniquement, pas de redirection suivie, 20 requêtes max, espacées, 10 tests / heure / organisation, confirmation explicite pour la production.
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/bruteforce/policies` | tous | Politiques attendues |
+| POST | `/api/v1/bruteforce/policies` | owner/admin/security_manager | Upsert par endpoint `{ endpoint, maxAttempts, windowSeconds, lockoutSeconds, strategy?, applyTo?, captchaAfter?, alertAfter? }` |
+| DELETE | `/api/v1/bruteforce/policies/:id` | owner/admin/security_manager | Supprimer |
+| GET / POST | `/api/v1/bruteforce/targets` | tous / gestion | Cibles `{ name, origin (https), environment }` → token de vérification |
+| POST | `/api/v1/bruteforce/targets/:id/verify` | gestion | Vérifie la preuve DNS ou fichier |
+| DELETE | `/api/v1/bruteforce/targets/:id` | gestion | Retirer la cible et ses résultats |
+| POST | `/api/v1/bruteforce/tests` | gestion | `{ targetId, testType: login_lockout\|account_enumeration, endpoint, testAccount, emailField?, passwordField?, maxAttempts? (≤20), confirmProduction? }` → résultat `pass/warn/fail`, seuil mesuré, portée (compte / IP), preuves |
+| GET | `/api/v1/bruteforce/tests[/:id]` | tous | Historique et détail |
+
+## Backup Shield — sauvegardes (extension §5)
+
+CodeGate ne reçoit **jamais** les données : l'outil `codegate-backup` (`/agent/codegate-backup.py`, Python 3 sans dépendance) déclare des métadonnées avec un token par job (`cg_bkp_…`, stocké haché).
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/backups` | tous | Jobs avec statut (`healthy`/`attention`/`critical`), score de récupération, prêt-ransomware |
+| POST | `/api/v1/backups` | gestion | `{ name, type: postgres\|mysql\|mongodb\|files\|other, frequencyHours?, serverId? }` → token affiché une fois |
+| GET | `/api/v1/backups/:id` | tous | Job, 30 dernières exécutions, 10 derniers tests de restauration, contrôles §5.4 |
+| POST | `/api/v1/backups/:id/verify` | tous | Réévalue maintenant (chiffrement, intégrité, fraîcheur…) |
+| POST | `/api/v1/backups/:id/restore-test` | gestion | Renvoie la commande de restauration isolée à lancer côté client (PostgreSQL) |
+| POST | `/api/v1/backups/:id/rotate-token` | gestion | Nouveau token, l'ancien est révoqué |
+| DELETE | `/api/v1/backups/:id` | gestion | Retire le suivi (les sauvegardes ne sont pas touchées) |
+| GET | `/api/v1/reports/backup` | tous | Score de récupération, part chiffrée, part testée par restauration |
+| POST | `/api/v1/backups/agent/run` | bearer `cg_bkp_` | Exécution : sha256, taille, chiffrement détecté, transit, emplacement de clé, stockage, immutabilité, rétention |
+| POST | `/api/v1/backups/agent/verify` | bearer `cg_bkp_` | `{ sha256 }` d'une copie re-téléchargée → intègre ou altérée (alerte) |
+| POST | `/api/v1/backups/agent/restore-test` | bearer `cg_bkp_` | Résultat d'une restauration dans un conteneur jetable `--network none` |
+
+Contrôles : exécution reçue, fraîcheur (> 1,5 × fréquence ⇒ sauvegarde manquante, détectée à la lecture), succès, chiffrement au repos (algorithme détecté depuis l'en-tête : age, OpenPGP, openssl…), en transit, clé hors serveur, SHA-256, intégrité revérifiée, copie hors site, compte séparé, rétention ≥ 30 j, immutabilité, restauration testée < 30 j. L'agent Infra (v1.1) signale aussi une base de données sans aucun job de sauvegarde (noms d'outils uniquement, jamais les lignes de commande).
+
 ## Webhooks
 
 | Méthode | Route | Signature | Description |
 |---|---|---|---|
-| POST | `/webhooks/github` | `x-hub-signature-256` (HMAC-SHA256) | `pull_request` (opened/synchronize/reopened) → upsert + enqueue analyse ; `installation*` |
+| POST | `/webhooks/github` | `x-hub-signature-256` (HMAC-SHA256) | `pull_request` (opened/synchronize/reopened) → upsert + analyse (file Redis, ou inline si `ANALYSIS_MODE=inline`) ; `installation*` |
 | POST | `/webhooks/gitlab` | `x-gitlab-token` (secret partagé, haché) | `Merge Request Hook` (open/reopen/update) → upsert + enqueue analyse |
 | POST | `/webhooks/vercel` | `x-vercel-signature` (HMAC-SHA1) | `deployment.created` → Deploy Gate → décision persistée |
 
@@ -105,4 +168,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.

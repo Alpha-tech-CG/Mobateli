@@ -142,3 +142,151 @@ export interface PullRequestDetail {
   dependencies: Dependency[];
   secretFindings: SecretFinding[];
 }
+
+// ─── Infra Shield ───────────────────────────────────────
+
+export type InfraCategory = "ports" | "ssh" | "firewall" | "bruteforce" | "docker" | "updates";
+
+export interface ServerRow {
+  id: string;
+  name: string;
+  provider: string | null;
+  environment: string;
+  hostname: string | null;
+  os: string | null;
+  securityScore: number | null;
+  lastReportAt: string | null;
+  createdAt: string;
+  counts: { critical: number; high: number; total: number };
+}
+
+export interface ServerFinding {
+  id: string;
+  category: InfraCategory;
+  checkId: string;
+  severity: Severity;
+  title: string;
+  detail: string;
+  recommendation: string;
+}
+
+export interface ServerDetail extends Omit<ServerRow, "counts"> {
+  agentVersion: string | null;
+  lastReport: {
+    listening: { proto: string; address: string; port: number; process: string | null }[];
+  } | null;
+  findings: ServerFinding[];
+}
+
+// ─── BruteForce Shield ──────────────────────────────────
+
+export interface BruteForcePolicy {
+  id: string;
+  endpoint: string;
+  maxAttempts: number;
+  windowSeconds: number;
+  lockoutSeconds: number;
+  strategy: "fixed" | "progressive";
+  applyTo: string[];
+  captchaAfter: number | null;
+  alertAfter: number | null;
+}
+
+export interface BruteForceTarget {
+  id: string;
+  name: string;
+  origin: string;
+  environment: string;
+  verificationToken: string;
+  verifiedAt: string | null;
+}
+
+export type BruteForceResult = "pass" | "warn" | "fail";
+
+export interface BruteForceTestRow {
+  id: string;
+  testType: "login_lockout" | "account_enumeration";
+  endpoint: string;
+  attempts: number;
+  blockedAfter: number | null;
+  scope: "account" | "ip" | null;
+  result: BruteForceResult;
+  summary: string;
+  evidence: {
+    observations?: { attempt: number; status: number; ms: number; blocked: boolean }[];
+    existing?: { attempt: number; status: number; ms: number }[];
+    missing?: { attempt: number; status: number; ms: number }[];
+    testAccount?: string;
+  };
+  createdAt: string;
+  target: { name: string; origin: string; environment: string };
+}
+
+// ─── Backup Shield ──────────────────────────────────────
+
+export type BackupStatus = "healthy" | "attention" | "critical";
+
+export interface BackupRow {
+  id: string;
+  name: string;
+  type: string;
+  frequencyHours: number;
+  server: string | null;
+  lastRunAt: string | null;
+  lastRestoreAt: string | null;
+  score: number;
+  status: BackupStatus;
+  ransomwareReady: boolean;
+  failedChecks: number;
+}
+
+export interface BackupCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  severity: Severity;
+  detail: string;
+  recommendation: string | null;
+}
+
+export interface BackupRunRow {
+  id: string;
+  finishedAt: string;
+  status: string;
+  sizeBytes: number | null;
+  durationSeconds: number | null;
+  sha256: string | null;
+  encrypted: boolean;
+  encryptionAlgorithm: string | null;
+  storageProvider: string | null;
+  storageLocation: string;
+  integrityOk: boolean | null;
+}
+
+export interface RestoreTestRow {
+  id: string;
+  engine: string;
+  completedAt: string;
+  durationSeconds: number;
+  result: string;
+  restoredTables: number | null;
+  restoredRecords: number | null;
+  detail: string | null;
+}
+
+export interface BackupDetail {
+  id: string;
+  name: string;
+  type: string;
+  frequencyHours: number;
+  server: { id: string; name: string } | null;
+  runs: BackupRunRow[];
+  restoreTests: RestoreTestRow[];
+}
+
+export interface BackupEvaluation {
+  score: number;
+  status: BackupStatus;
+  ransomwareReady: boolean;
+  checks: BackupCheck[];
+}

@@ -11,6 +11,10 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url().default("redis://127.0.0.1:6380"),
+  // "queue": BullMQ on Redis + separate worker process (VPS, local dev).
+  // "inline": no Redis — analysis runs in the API process after the webhook is
+  // acknowledged, and delivery idempotence lives in Postgres (serverless).
+  ANALYSIS_MODE: z.enum(["queue", "inline"]).default("queue"),
 
   // ─── GitHub App ───────────────────────────────────────
   // Optional so the API boots in dev without a configured App. The webhook

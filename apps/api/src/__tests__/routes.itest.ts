@@ -47,6 +47,7 @@ before(async () => {
   await prisma.$executeRawUnsafe(
     `TRUNCATE TABLE organizations RESTART IDENTITY CASCADE;`,
   );
+  await prisma.$executeRawUnsafe(`TRUNCATE TABLE auth_throttles, webhook_deliveries;`);
 });
 
 after(async () => {
@@ -453,4 +454,232 @@ test("audit export returns a JSON evidence pack", async () => {
   const pack = res.json();
   assert.equal(pack.organization.name, "Acme");
   assert.ok(pack.summary.auditEvents > 0);
+});
+
+test("infra shield: connect server, agent report scored, token required", async () => {
+  const con = await app.inject({
+    method: "POST",
+    url: "/api/v1/servers/connect",
+    headers: auth(),
+    payload: { name: "vps-prod", environment: "production" },
+  });
+  assert.equal(con.statusCode, 201);
+  const { server, agentToken } = con.json();
+  assert.ok(agentToken.startsWith("cg_srv_"));
+
+  const report = {
+    agentVersion: "1.0.0",
+    hostname: "vps-prod",
+    os: "Ubuntu 24.04",
+    listening: [
+      { proto: "tcp", address: "0.0.0.0", port: 22, process: "sshd" },
+      { proto: "tcp", address: "0.0.0.0", port: 6379, process: "redis-server" },
+    ],
+    ssh: { permitRootLogin: "yes", passwordAuthentication: true, pubkeyAuthentication: true, maxAuthTries: 3 },
+    firewall: { ufw: "active", nftablesRules: null, iptablesRules: null },
+    bruteforce: { fail2ban: true, crowdsec: false },
+    docker: null,
+    updates: { manager: "apt", pendingSecurity: 0, autoUpdates: true },
+  };
+
+  const denied = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/report",
+    headers: { authorization: "Bearer cg_srv_wrong" },
+    payload: report,
+  });
+  assert.equal(denied.statusCode, 401);
+
+  const ok = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/report",
+    headers: { authorization: `Bearer ${agentToken}` },
+    payload: report,
+  });
+  assert.equal(ok.statusCode, 202);
+  // Redis public (critical 25) + root login (12) + password auth (12)
+  assert.equal(ok.json().score, 51);
+
+  const detail = await app.inject({ method: "GET", url: `/api/v1/servers/${server.id}`, headers: auth() });
+  assert.equal(detail.statusCode, 200);
+  const s = detail.json().server;
+  assert.equal(s.securityScore, 51);
+  assert.equal(s.findings[0].checkId, "port.public.6379");
+  assert.equal(JSON.stringify(detail.json()).includes("agentTokenHash"), false);
+
+  const rotated = await app.inject({
+    method: "POST",
+    url: `/api/v1/servers/${server.id}/rotate-token`,
+    headers: auth(),
+  });
+  const stale = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/report",
+    headers: { authorization: `Bearer ${agentToken}` },
+    payload: report,
+  });
+  assert.equal(stale.statusCode, 401, "old token is revoked after rotation");
+  assert.ok(rotated.json().agentToken.startsWith("cg_srv_"));
+});
+
+test("bruteforce shield: CodeGate login locks an account after 5 failures", async () => {
+  const attempt = () =>
+    app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "ghost@acme.test", password: "wrong-password-123" },
+    });
+  for (let i = 1; i <= 5; i++) {
+    const r = await attempt();
+    assert.equal(r.statusCode, 401);
+    assert.equal(r.json().error, "invalid_credentials");
+  }
+  const locked = await attempt();
+  assert.equal(locked.statusCode, 429);
+  assert.equal(locked.json().error, "too_many_attempts");
+  assert.ok(Number(locked.headers["retry-after"]) > 0);
+  // Another account from the same IP is not locked (per-account counter).
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "owner@acme.test", password: "supersecret-password" },
+  });
+  assert.equal(other.statusCode, 200);
+});
+
+test("bruteforce shield: policies, target ownership and test guard rails", async () => {
+  const pol = await app.inject({
+    method: "POST",
+    url: "/api/v1/bruteforce/policies",
+    headers: auth(),
+    payload: { endpoint: "/api/auth/login", maxAttempts: 5, windowSeconds: 600, lockoutSeconds: 300 },
+  });
+  assert.equal(pol.statusCode, 201);
+  const list = await app.inject({ method: "GET", url: "/api/v1/bruteforce/policies", headers: auth() });
+  assert.equal(list.json().policies.length, 1);
+
+  const httpTarget = await app.inject({
+    method: "POST",
+    url: "/api/v1/bruteforce/targets",
+    headers: auth(),
+    payload: { name: "insecure", origin: "http://example.com" },
+  });
+  assert.equal(httpTarget.statusCode, 400, "HTTPS is mandatory");
+
+  const tgt = await app.inject({
+    method: "POST",
+    url: "/api/v1/bruteforce/targets",
+    headers: auth(),
+    payload: { name: "staging", origin: "https://staging.example.com/some/path" },
+  });
+  assert.equal(tgt.statusCode, 201);
+  const target = tgt.json().target;
+  assert.equal(target.origin, "https://staging.example.com");
+  assert.ok(target.verificationToken.startsWith("cg-verify-"));
+
+  const run = await app.inject({
+    method: "POST",
+    url: "/api/v1/bruteforce/tests",
+    headers: auth(),
+    payload: { targetId: target.id, testType: "login_lockout", endpoint: "/api/auth/login", testAccount: "qa@example.com" },
+  });
+  assert.equal(run.statusCode, 409);
+  assert.equal(run.json().error, "target_not_verified");
+
+  const local = await app.inject({
+    method: "POST",
+    url: "/api/v1/bruteforce/targets",
+    headers: auth(),
+    payload: { name: "local", origin: "https://localhost" },
+  });
+  const verify = await app.inject({
+    method: "POST",
+    url: `/api/v1/bruteforce/targets/${local.json().target.id}/verify`,
+    headers: auth(),
+  });
+  assert.equal(verify.statusCode, 400);
+  assert.equal(verify.json().error, "private_address");
+});
+
+test("backup shield: job, run report, integrity, restore test, token required", async () => {
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/v1/backups",
+    headers: auth(),
+    payload: { name: "pg-daily", type: "postgres", frequencyHours: 24 },
+  });
+  assert.equal(create.statusCode, 201);
+  const { backup, reportToken } = create.json();
+  assert.ok(reportToken.startsWith("cg_bkp_"));
+  const agent = { authorization: `Bearer ${reportToken}` };
+  const sha = "b".repeat(64);
+
+  const denied = await app.inject({
+    method: "POST",
+    url: "/api/v1/backups/agent/run",
+    headers: { authorization: "Bearer cg_bkp_nope" },
+    payload: {},
+  });
+  assert.equal(denied.statusCode, 401);
+
+  const run = await app.inject({
+    method: "POST",
+    url: "/api/v1/backups/agent/run",
+    headers: agent,
+    payload: {
+      finishedAt: new Date().toISOString(),
+      status: "success",
+      sha256: sha,
+      sizeBytes: 5_000_000_000,
+      encrypted: true,
+      encryptionAlgorithm: "AES-256-GCM",
+      inTransit: "tls1.3",
+      keyLocation: "external_kms",
+      storageLocation: "offsite",
+      immutable: true,
+      versioning: true,
+      separateAccount: true,
+      retentionDays: 90,
+    },
+  });
+  assert.equal(run.statusCode, 202);
+  assert.equal(run.json().status, "attention", "no integrity re-check nor restore test yet");
+
+  const ok = await app.inject({ method: "POST", url: "/api/v1/backups/agent/verify", headers: agent, payload: { sha256: sha } });
+  assert.equal(ok.json().integrityOk, true);
+
+  const now = new Date();
+  const restore = await app.inject({
+    method: "POST",
+    url: "/api/v1/backups/agent/restore-test",
+    headers: agent,
+    payload: {
+      engine: "postgres",
+      startedAt: new Date(now.getTime() - 252_000).toISOString(),
+      completedAt: now.toISOString(),
+      durationSeconds: 252,
+      result: "success",
+      restoredTables: 30,
+      restoredRecords: 1200,
+    },
+  });
+  assert.equal(restore.statusCode, 201);
+
+  const detail = await app.inject({ method: "GET", url: `/api/v1/backups/${backup.id}`, headers: auth() });
+  const body = detail.json();
+  assert.equal(body.evaluation.score, 100);
+  assert.equal(body.evaluation.status, "healthy");
+  assert.equal(body.evaluation.ransomwareReady, true);
+  assert.equal(body.backup.runs[0].sizeBytes, 5_000_000_000);
+  assert.equal(JSON.stringify(body).includes("tokenHash"), false);
+
+  const tampered = await app.inject({
+    method: "POST",
+    url: "/api/v1/backups/agent/verify",
+    headers: agent,
+    payload: { sha256: "c".repeat(64) },
+  });
+  assert.equal(tampered.json().integrityOk, false);
+  const report = await app.inject({ method: "GET", url: "/api/v1/reports/backup", headers: auth() });
+  assert.equal(report.json().backups[0].status, "critical");
 });

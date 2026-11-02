@@ -1,11 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { Redis } from "ioredis";
 import { createHash } from "node:crypto";
 import { prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
 import { verifyGithubSignature, verifyVercelSignature } from "../lib/webhook-verify.js";
-import { claimDelivery, releaseDelivery } from "../lib/redis.js";
-import { enqueuePrAnalysis } from "../queues/pr-analysis.js";
+import type { Jobs } from "../lib/jobs.js";
 import { recordAudit } from "../lib/audit.js";
 import { evaluateDeployGate } from "../analysis/deploy-gate.js";
 import { notifySlack } from "../lib/notify.js";
@@ -77,7 +75,7 @@ async function upsertRepository(
 async function handlePullRequest(
   req: FastifyRequest,
   payload: any,
-  connection: Redis,
+  jobs: Jobs,
   devAutoLink: boolean,
 ): Promise<void> {
   const action: string = payload.action;
@@ -133,7 +131,7 @@ async function handlePullRequest(
     metadata: { number: pr.number, aiGenerated },
   });
 
-  await enqueuePrAnalysis(connection, {
+  await jobs.dispatchPrAnalysis({
     pullRequestId: row.id,
     reason: action as "opened" | "synchronize" | "reopened",
   });
@@ -158,7 +156,7 @@ async function handleInstallationRepositories(payload: any): Promise<void> {
 async function handleGitlabMergeRequest(
   organizationId: string,
   payload: any,
-  connection: Redis,
+  jobs: Jobs,
 ): Promise<void> {
   const attrs = payload.object_attributes ?? {};
   const action: string = attrs.action;
@@ -211,7 +209,7 @@ async function handleGitlabMergeRequest(
     metadata: { provider: "gitlab", iid: attrs.iid, aiGenerated },
   });
 
-  await enqueuePrAnalysis(connection, {
+  await jobs.dispatchPrAnalysis({
     pullRequestId: row.id,
     reason: action === "open" ? "opened" : action === "reopen" ? "reopened" : "synchronize",
   });
@@ -319,7 +317,7 @@ async function handleInstallationDeleted(payload: any): Promise<void> {
 export async function webhookRoutes(
   app: FastifyInstance,
   config: AppConfig,
-  connection: Redis,
+  jobs: Jobs,
 ) {
   // Capture the raw body (needed for signature verification) instead of the
   // default JSON parse. Scoped to this plugin only.
@@ -341,7 +339,7 @@ export async function webhookRoutes(
     }
 
     const deliveryId = req.headers["x-github-delivery"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+    if (deliveryId && !(await jobs.claimDelivery(deliveryId))) {
       // Replay of an already-processed delivery — acknowledge and stop.
       return reply.code(200).send({ status: "duplicate" });
     }
@@ -358,7 +356,7 @@ export async function webhookRoutes(
     try {
       switch (event) {
         case "pull_request":
-          await handlePullRequest(req, payload, connection, devAutoLink);
+          await handlePullRequest(req, payload, jobs, devAutoLink);
           break;
         case "installation_repositories":
           await handleInstallationRepositories(payload);
@@ -389,7 +387,7 @@ export async function webhookRoutes(
     } catch (err) {
       req.log.error({ err, event }, "webhook handler error");
       // Release the idempotency claim so GitHub's retry is processed afresh.
-      if (deliveryId) await releaseDelivery(connection, deliveryId);
+      if (deliveryId) await jobs.releaseDelivery(deliveryId);
       return reply.code(500).send({ error: "handler_error" });
     }
 
@@ -410,7 +408,7 @@ export async function webhookRoutes(
     if (!conn) return reply.code(401).send({ error: "invalid_token" });
 
     const deliveryId = req.headers["x-gitlab-event-uuid"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+    if (deliveryId && !(await jobs.claimDelivery(deliveryId))) {
       return reply.code(200).send({ status: "duplicate" });
     }
 
@@ -423,11 +421,11 @@ export async function webhookRoutes(
 
     try {
       if (payload.object_kind === "merge_request") {
-        await handleGitlabMergeRequest(conn.organizationId, payload, connection);
+        await handleGitlabMergeRequest(conn.organizationId, payload, jobs);
       }
     } catch (err) {
       req.log.error({ err }, "gitlab webhook handler error");
-      if (deliveryId) await releaseDelivery(connection, deliveryId);
+      if (deliveryId) await jobs.releaseDelivery(deliveryId);
       return reply.code(500).send({ error: "handler_error" });
     }
 
@@ -446,7 +444,7 @@ export async function webhookRoutes(
     }
 
     const deliveryId = req.headers["x-vercel-id"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+    if (deliveryId && !(await jobs.claimDelivery(deliveryId))) {
       return reply.code(200).send({ status: "duplicate" });
     }
 
@@ -463,7 +461,7 @@ export async function webhookRoutes(
       }
     } catch (err) {
       req.log.error({ err }, "vercel webhook handler error");
-      if (deliveryId) await releaseDelivery(connection, deliveryId);
+      if (deliveryId) await jobs.releaseDelivery(deliveryId);
       return reply.code(500).send({ error: "handler_error" });
     }
 

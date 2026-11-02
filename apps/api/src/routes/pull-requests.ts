@@ -1,14 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import type { Redis } from "ioredis";
 import { prisma } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
-import { enqueuePrAnalysis } from "../queues/pr-analysis.js";
+import type { Jobs } from "../lib/jobs.js";
 
 /**
  * Read endpoints for the dashboard (cahier §13.3), plus manual rescan.
  * Everything is scoped to the caller's organization via the repository.
  */
-export async function pullRequestRoutes(app: FastifyInstance, connection: Redis) {
+export async function pullRequestRoutes(app: FastifyInstance, jobs: Jobs) {
   // List analyzed pull requests for the org.
   app.get(
     "/api/v1/pull-requests",
@@ -65,7 +64,7 @@ export async function pullRequestRoutes(app: FastifyInstance, connection: Redis)
     },
   );
 
-  // Manual rescan — re-enqueues analysis for this PR.
+  // Manual rescan — re-dispatches analysis for this PR.
   app.post(
     "/api/v1/pull-requests/:id/rescan",
     { preHandler: [app.authenticate] },
@@ -77,7 +76,7 @@ export async function pullRequestRoutes(app: FastifyInstance, connection: Redis)
       });
       if (!pr) return reply.code(404).send({ error: "not_found" });
 
-      await enqueuePrAnalysis(connection, { pullRequestId: pr.id, reason: "manual_rescan" });
+      await jobs.dispatchPrAnalysis({ pullRequestId: pr.id, reason: "manual_rescan" });
       await recordAudit({
         organizationId: pr.repository.organizationId,
         actorType: "user",

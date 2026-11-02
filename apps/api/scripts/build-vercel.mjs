@@ -45,6 +45,9 @@ await build({
 });
 
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
+cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), {
+  recursive: true,
+});
 writeFileSync(join(out, "public", "robots.txt"), "User-agent: *\nDisallow: /\n");
 
 writeFileSync(
@@ -55,7 +58,12 @@ writeFileSync(
       private: true,
       type: "module",
       engines: { node: "22.x" },
-      scripts: { build: "prisma generate" },
+      // Sensitive Neon vars can't be pulled locally, so migrations run here,
+      // on Vercel, against the direct (non-PgBouncer) endpoint.
+      scripts: {
+        build:
+          'DATABASE_URL="${DATABASE_URL_UNPOOLED:-$DATABASE_URL}" prisma migrate deploy && prisma generate',
+      },
       dependencies: deps,
     },
     null,

@@ -116,6 +116,187 @@ export const connectJiraSchema = z.object({
 });
 export type ConnectJiraInput = z.infer<typeof connectJiraSchema>;
 
+// ─── Infra Shield (extension §3) ──────────────────────────
+
+export const connectServerSchema = z.object({
+  name: z.string().min(1).max(100),
+  provider: z.string().max(60).optional(),
+  environment: z.enum(["production", "staging", "development"]).default("production"),
+});
+export type ConnectServerInput = z.infer<typeof connectServerSchema>;
+
+/**
+ * Facts collected by the read-only CodeGate agent on a server. `null` means
+ * "could not be determined" (tool missing, not run as root) — never "safe".
+ * The agent never sends file contents, secrets or environment variables.
+ */
+export const agentReportSchema = z.object({
+  agentVersion: z.string().max(20),
+  hostname: z.string().max(255),
+  os: z.string().max(120).nullable(),
+  listening: z
+    .array(
+      z.object({
+        proto: z.enum(["tcp", "udp"]),
+        address: z.string().max(64),
+        port: z.number().int().min(0).max(65535),
+        process: z.string().max(80).nullable(),
+      }),
+    )
+    .max(2000),
+  ssh: z.object({
+    permitRootLogin: z.string().max(40).nullable(),
+    passwordAuthentication: z.boolean().nullable(),
+    pubkeyAuthentication: z.boolean().nullable(),
+    maxAuthTries: z.number().int().nullable(),
+  }).nullable(),
+  firewall: z.object({
+    ufw: z.enum(["active", "inactive"]).nullable(),
+    nftablesRules: z.number().int().nullable(),
+    iptablesRules: z.number().int().nullable(),
+  }),
+  bruteforce: z.object({
+    fail2ban: z.boolean().nullable(),
+    crowdsec: z.boolean().nullable(),
+  }),
+  docker: z
+    .object({
+      containers: z
+        .array(
+          z.object({
+            name: z.string().max(255),
+            image: z.string().max(500),
+            user: z.string().max(100),
+            privileged: z.boolean(),
+            dockerSocketMounted: z.boolean(),
+            capAdd: z.array(z.string().max(60)).max(60),
+            publishedPorts: z
+              .array(z.object({ hostIp: z.string().max(64), hostPort: z.number().int() }))
+              .max(200),
+            readOnlyRootfs: z.boolean(),
+            memoryLimit: z.number().int().nonnegative(),
+          }),
+        )
+        .max(500),
+    })
+    .nullable(),
+  updates: z.object({
+    manager: z.string().max(20).nullable(),
+    pendingSecurity: z.number().int().nonnegative().nullable(),
+    autoUpdates: z.boolean().nullable(),
+  }),
+  /** Backup Discovery (§5.3): tool names found in cron / systemd timers only. */
+  backups: z
+    .object({
+      jobs: z.number().int().nonnegative(),
+      tools: z.array(z.string().max(30)).max(30),
+      codegateReporting: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+});
+export type AgentReport = z.infer<typeof agentReportSchema>;
+
+// ─── BruteForce Shield (extension §4) ─────────────────────
+
+const endpointPath = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^\/(?!\/)[^\s?#]*$/, "chemin absolu attendu, ex. /api/auth/login");
+
+export const bruteForcePolicySchema = z.object({
+  endpoint: endpointPath,
+  maxAttempts: z.number().int().min(1).max(1000),
+  windowSeconds: z.number().int().min(1).max(86_400),
+  lockoutSeconds: z.number().int().min(0).max(86_400),
+  strategy: z.enum(["fixed", "progressive"]).default("progressive"),
+  applyTo: z.array(z.enum(["ip", "account", "device"])).min(1).default(["ip", "account"]),
+  captchaAfter: z.number().int().min(1).max(1000).optional(),
+  alertAfter: z.number().int().min(1).max(1000).optional(),
+});
+export type BruteForcePolicyInput = z.infer<typeof bruteForcePolicySchema>;
+
+export const createBruteForceTargetSchema = z.object({
+  name: z.string().min(1).max(100),
+  /** Origin only (scheme + host [+ port]); HTTPS required. */
+  origin: z
+    .string()
+    .url()
+    .max(300)
+    .refine((v) => v.startsWith("https://"), "HTTPS obligatoire"),
+  environment: z.enum(["production", "staging", "development"]).default("staging"),
+});
+export type CreateBruteForceTargetInput = z.infer<typeof createBruteForceTargetSchema>;
+
+export const BRUTEFORCE_TEST_TYPES = ["login_lockout", "account_enumeration"] as const;
+
+export const runBruteForceTestSchema = z.object({
+  targetId: z.string().uuid(),
+  testType: z.enum(BRUTEFORCE_TEST_TYPES),
+  endpoint: endpointPath,
+  /** A dedicated test account — never a real user's (US03). */
+  testAccount: z.string().min(1).max(320),
+  emailField: z.string().min(1).max(50).default("email"),
+  passwordField: z.string().min(1).max(50).default("password"),
+  maxAttempts: z.number().int().min(1).max(20).default(12),
+  /** Mandatory acknowledgement when the target is a production environment. */
+  confirmProduction: z.boolean().default(false),
+});
+export type RunBruteForceTestInput = z.infer<typeof runBruteForceTestSchema>;
+
+// ─── Backup Shield (extension §5) ─────────────────────────
+
+export const BACKUP_TYPES = ["postgres", "mysql", "mongodb", "files", "other"] as const;
+export const KEY_LOCATIONS = ["external_kms", "secret_manager", "offline", "same_server", "unknown"] as const;
+export const STORAGE_LOCATIONS = ["offsite", "same_server", "local_disk", "unknown"] as const;
+
+export const createBackupJobSchema = z.object({
+  name: z.string().min(1).max(100),
+  type: z.enum(BACKUP_TYPES),
+  frequencyHours: z.number().int().min(1).max(24 * 31).default(24),
+  serverId: z.string().uuid().optional(),
+});
+export type CreateBackupJobInput = z.infer<typeof createBackupJobSchema>;
+
+/** One backup execution, as declared by `codegate-backup report`. */
+export const backupRunReportSchema = z.object({
+  finishedAt: z.string().datetime(),
+  status: z.enum(["success", "failed"]),
+  sizeBytes: z.number().nonnegative().nullable().default(null),
+  durationSeconds: z.number().int().nonnegative().nullable().default(null),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().default(null),
+  encrypted: z.boolean(),
+  encryptionAlgorithm: z.string().max(40).nullable().default(null),
+  inTransit: z.enum(["tls1.3", "tls1.2", "ssh", "none", "unknown"]).default("unknown"),
+  keyLocation: z.enum(KEY_LOCATIONS).default("unknown"),
+  signed: z.boolean().default(false),
+  storageProvider: z.string().max(60).nullable().default(null),
+  storageLocation: z.enum(STORAGE_LOCATIONS).default("unknown"),
+  immutable: z.boolean().nullable().default(null),
+  versioning: z.boolean().nullable().default(null),
+  separateAccount: z.boolean().nullable().default(null),
+  retentionDays: z.number().int().min(0).max(36500).nullable().default(null),
+});
+export type BackupRunReport = z.infer<typeof backupRunReportSchema>;
+
+/** Re-hash of a stored copy, compared to what was recorded at backup time. */
+export const backupVerifyReportSchema = z.object({
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+export const restoreTestReportSchema = z.object({
+  engine: z.enum(["postgres", "mysql", "mongodb", "files"]),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime(),
+  durationSeconds: z.number().int().nonnegative(),
+  result: z.enum(["success", "failed"]),
+  restoredTables: z.number().int().nonnegative().nullable().default(null),
+  restoredRecords: z.number().nonnegative().nullable().default(null),
+  detail: z.string().max(500).nullable().default(null),
+});
+export type RestoreTestReport = z.infer<typeof restoreTestReportSchema>;
+
 /** Pagination shared across list endpoints. */
 export const paginationSchema = z.object({
   cursor: z.string().uuid().optional(),

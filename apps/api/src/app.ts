@@ -16,10 +16,18 @@ import { agentGuardRoutes } from "./routes/agent-guard.js";
 import { scimRoutes } from "./routes/scim.js";
 import { samlRoutes } from "./routes/saml.js";
 import { webhookRoutes } from "./routes/webhooks.js";
+import { serverRoutes } from "./routes/servers.js";
+import { bruteForceRoutes } from "./routes/bruteforce.js";
+import { backupRoutes } from "./routes/backups.js";
 import { getRedis } from "./lib/redis.js";
+import { createJobs } from "./lib/jobs.js";
 
 export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   const app = Fastify({
+    // On Vercel the client IP comes from x-forwarded-for, set by Vercel's
+    // edge; without this every request would share the proxy's IP and the
+    // per-IP rate limits / lockouts would hit all users at once.
+    trustProxy: process.env.VERCEL === "1",
     logger: {
       level: config.NODE_ENV === "production" ? "info" : "debug",
       // Redact anything that could carry a secret from the logs (cahier §10.3).
@@ -69,7 +77,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     return reply.code(500).send({ error: "internal_error" });
   });
 
-  const connection = getRedis(config.REDIS_URL);
+  const jobs = createJobs(config, getRedis(config.REDIS_URL), app.log);
 
   await app.register(healthRoutes);
   await app.register(async (instance) => {
@@ -78,7 +86,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(organizationRoutes);
   await app.register(policyRoutes);
   await app.register(async (instance) => {
-    await pullRequestRoutes(instance, connection);
+    await pullRequestRoutes(instance, jobs);
   });
   await app.register(async (instance) => {
     await integrationRoutes(instance, config);
@@ -87,11 +95,20 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(agentGuardRoutes);
   await app.register(scimRoutes);
   await app.register(async (instance) => {
+    await serverRoutes(instance, config);
+  });
+  await app.register(async (instance) => {
+    await bruteForceRoutes(instance, config);
+  });
+  await app.register(async (instance) => {
+    await backupRoutes(instance, config);
+  });
+  await app.register(async (instance) => {
     await samlRoutes(instance, config);
   });
   // Encapsulated scope: the raw-body parser applies to webhooks only.
   await app.register(async (instance) => {
-    await webhookRoutes(instance, config, connection);
+    await webhookRoutes(instance, config, jobs);
   });
 
   return app;

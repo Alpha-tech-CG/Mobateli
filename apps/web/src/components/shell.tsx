@@ -11,6 +11,9 @@ import {
   FileClock,
   Bot,
   Rocket,
+  Server,
+  KeyRound,
+  DatabaseBackup,
   LogOut,
 } from "lucide-react";
 import { clearToken, getToken } from "@/lib/api";
@@ -21,6 +24,9 @@ const NAV = [
   { href: "/policies", label: "Politiques", icon: ScrollText },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
   { href: "/deployments", label: "Déploiements", icon: Rocket },
+  { href: "/servers", label: "Serveurs", icon: Server },
+  { href: "/bruteforce", label: "Brute force", icon: KeyRound },
+  { href: "/backups", label: "Sauvegardes", icon: DatabaseBackup },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
 ];

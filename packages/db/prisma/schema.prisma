@@ -132,6 +132,10 @@ model Organization {
   scimToken        ScimToken?
   samlConnection   SamlConnection?
   agentPolicies    AgentPolicy[]
+  servers          Server[]
+  bruteforcePolicies BruteForcePolicy[]
+  bruteforceTargets  BruteForceTarget[]
+  backupJobs         BackupJob[]
 
   @@map("organizations")
 }
@@ -279,6 +283,221 @@ model DeployCheck {
   @@unique([provider, externalId])
   @@index([repositoryId])
   @@map("deploy_checks")
+}
+
+enum InfraCategory {
+  ports
+  ssh
+  firewall
+  bruteforce
+  docker
+  updates
+  backups
+}
+
+/// A VPS / server monitored by Infra Shield (extension §3). Ownership is
+/// proven by the agent running on it with a per-server token — CodeGate never
+/// scans a host from the outside.
+model Server {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  name           String
+  provider       String?
+  environment    String    @default("production")
+  // sha256 of the agent token; the token itself is shown once at creation.
+  agentTokenHash String    @unique
+  hostname       String?
+  os             String?
+  agentVersion   String?
+  securityScore  Int?
+  // Last normalized facts reported by the agent (no secrets — see agent).
+  lastReport     Json?
+  lastReportAt   DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  findings     ServerFinding[]
+  backupJobs   BackupJob[]
+
+  @@index([organizationId])
+  @@map("servers")
+}
+
+/// One failed Infra Shield control on a server; replaced at every report.
+model ServerFinding {
+  id             String        @id @default(uuid()) @db.Uuid
+  serverId       String        @db.Uuid
+  category       InfraCategory
+  checkId        String
+  severity       Severity
+  title          String
+  detail         String
+  recommendation String
+  createdAt      DateTime      @default(now())
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId])
+  @@map("server_findings")
+}
+
+/// Failure counter + progressive lockout for CodeGate's own auth endpoints
+/// (BruteForce Shield §4.4). Keyed per account and per IP so a distributed
+/// attack on one account is still caught (OWASP).
+model AuthThrottle {
+  key         String    @id
+  failures    Int       @default(0)
+  windowStart DateTime  @default(now())
+  lockedUntil DateTime?
+  lockouts    Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@map("auth_throttles")
+}
+
+/// Expected anti brute force behaviour for one endpoint of the customer's app
+/// (extension §4.7). Tests are graded against it.
+model BruteForcePolicy {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  endpoint       String
+  maxAttempts    Int
+  windowSeconds  Int
+  lockoutSeconds Int
+  strategy       String   @default("progressive")
+  applyTo        String[] @default(["ip", "account"])
+  captchaAfter   Int?
+  alertAfter     Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, endpoint])
+  @@map("bruteforce_policies")
+}
+
+/// An application origin the organization proved it controls (DNS TXT or
+/// /.well-known file). No test ever runs against an unverified target.
+model BruteForceTarget {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @db.Uuid
+  name              String
+  origin            String
+  environment       String    @default("staging")
+  verificationToken String
+  verifiedAt        DateTime?
+  createdAt         DateTime  @default(now())
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tests        BruteForceTest[]
+
+  @@unique([organizationId, origin])
+  @@map("bruteforce_targets")
+}
+
+/// Result of one authorized, low-volume brute force test (US03).
+model BruteForceTest {
+  id           String   @id @default(uuid()) @db.Uuid
+  targetId     String   @db.Uuid
+  testType     String
+  endpoint     String
+  attempts     Int
+  blockedAfter Int?
+  scope        String?
+  result       String
+  summary      String
+  evidence     Json
+  createdById  String?  @db.Uuid
+  createdAt    DateTime @default(now())
+
+  target BruteForceTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([targetId])
+  @@map("bruteforce_tests")
+}
+
+/// A backup the organization expects to run (Backup Shield, extension §5).
+/// The backup host reports each run with a per-job token; CodeGate never
+/// reads, stores or restores the backup data itself.
+model BackupJob {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  serverId       String?  @db.Uuid
+  name           String
+  type           String
+  frequencyHours Int      @default(24)
+  tokenHash      String   @unique
+  createdAt      DateTime @default(now())
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  server       Server?             @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  runs         BackupRun[]
+  restoreTests BackupRestoreTest[]
+
+  @@index([organizationId])
+  @@map("backup_jobs")
+}
+
+/// One reported backup execution and the protections it was produced with.
+model BackupRun {
+  id                  String    @id @default(uuid()) @db.Uuid
+  jobId               String    @db.Uuid
+  finishedAt          DateTime
+  status              String
+  sizeBytes           Float?
+  durationSeconds     Int?
+  sha256              String?
+  encrypted           Boolean
+  encryptionAlgorithm String?
+  inTransit           String?
+  keyLocation         String    @default("unknown")
+  signed              Boolean   @default(false)
+  storageProvider     String?
+  storageLocation     String    @default("unknown")
+  immutable           Boolean?
+  versioning          Boolean?
+  separateAccount     Boolean?
+  retentionDays       Int?
+  // Set when a later re-hash of the stored copy was compared to sha256.
+  integrityCheckedAt  DateTime?
+  integrityOk         Boolean?
+  createdAt           DateTime  @default(now())
+
+  job BackupJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, finishedAt])
+  @@map("backup_runs")
+}
+
+/// Restore of a backup into a throwaway, isolated environment (US06).
+model BackupRestoreTest {
+  id              String   @id @default(uuid()) @db.Uuid
+  jobId           String   @db.Uuid
+  engine          String
+  startedAt       DateTime
+  completedAt     DateTime
+  durationSeconds Int
+  result          String
+  restoredTables  Int?
+  restoredRecords Float?
+  detail          String?
+  createdAt       DateTime @default(now())
+
+  job BackupJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, completedAt])
+  @@map("backup_restore_tests")
+}
+
+/// Webhook delivery ids already processed — idempotence when the API runs
+/// without Redis (serverless, ANALYSIS_MODE=inline). cahier §13.4.
+model WebhookDelivery {
+  id        String   @id
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("webhook_deliveries")
 }
 
 /// Per-scope override of what an AI agent may do (cahier §5.4). A rule scoped

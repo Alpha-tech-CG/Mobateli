@@ -37,6 +37,9 @@ venv/
 coverage/
 .nyc_output/
 
+# Local test accounts / scratch (never commit)
+.devtest/
+
 # Vercel
 .vercel/
 .vercel-deploy/

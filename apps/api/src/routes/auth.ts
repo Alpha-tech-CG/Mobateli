@@ -9,13 +9,58 @@ import {
 import { hashPassword, verifyPassword } from "../lib/password.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
+import { notifySlack } from "../lib/notify.js";
+import {
+  RULES,
+  clearThrottle,
+  lockedFor,
+  registerFailure,
+  throttleKey,
+  tooManyAttempts,
+} from "../lib/throttle.js";
 import type { AppConfig } from "../config.js";
 
+// Verified against when the email is unknown, so a missing account costs the
+// same argon2 time as a wrong password (no timing-based enumeration).
+let dummyHash: Promise<string> | undefined;
+const getDummyHash = () => (dummyHash ??= hashPassword("codegate-timing-equalizer"));
+
+const INVALID_CREDENTIALS = {
+  error: "invalid_credentials",
+  message: "Email ou mot de passe incorrect.",
+} as const;
+
 export async function authRoutes(app: FastifyInstance, config: AppConfig) {
+  /** Audit + Slack when an account gets locked (alert_after, §4.3). */
+  async function reportLockout(organizationId: string, userId: string, factor: "password" | "totp") {
+    await recordAudit({
+      organizationId,
+      actorType: "system",
+      action: "auth.lockout",
+      resourceType: "user",
+      resourceId: userId,
+      metadata: { factor },
+    });
+    await notifySlack(organizationId, config.ENCRYPTION_KEY, {
+      title: "Compte verrouillé après des tentatives répétées",
+      severity: "warning",
+      repository: "Authentification CodeGate",
+      detail: `Un compte de l'organisation a été verrouillé temporairement (échecs ${
+        factor === "totp" ? "de code MFA" : "de mot de passe"
+      }). Vérifiez le journal d'audit.`,
+    });
+  }
+
   /**
    * Signup bootstraps an organization and its first user as `owner`.
    */
   app.post("/api/v1/auth/signup", async (req, reply) => {
+    // 5 signups per IP per hour (extension §4.4), counted before validation.
+    const ipKey = throttleKey("signup:ip", req.ip);
+    const retry = await lockedFor([ipKey]);
+    if (retry) return reply.code(429).header("retry-after", retry).send(tooManyAttempts(retry));
+    await registerFailure(ipKey, RULES.signupIp);
+
     const body = signupSchema.parse(req.body);
 
     const existing = await prisma.user.findUnique({ where: { email: body.email } });
@@ -65,10 +110,24 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
   app.post("/api/v1/auth/login", async (req, reply) => {
     const body = loginSchema.parse(req.body);
 
+    // Locked by account or by IP → refuse before touching the password.
+    const accountKey = throttleKey("login:acct", body.email);
+    const ipKey = throttleKey("login:ip", req.ip);
+    const retry = await lockedFor([accountKey, ipKey]);
+    if (retry) return reply.code(429).header("retry-after", retry).send(tooManyAttempts(retry));
+
     const user = await prisma.user.findUnique({ where: { email: body.email } });
-    // Constant-ish response regardless of whether the user exists.
-    if (!user || !(await verifyPassword(user.passwordHash, body.password))) {
-      return reply.code(401).send({ error: "invalid_credentials" });
+    const passwordOk = user
+      ? await verifyPassword(user.passwordHash, body.password)
+      : (await verifyPassword(await getDummyHash(), body.password), false);
+
+    if (!user || !passwordOk) {
+      const [accountLocked] = await Promise.all([
+        registerFailure(accountKey, RULES.loginAccount),
+        registerFailure(ipKey, RULES.loginIp),
+      ]);
+      if (accountLocked && user) await reportLockout(user.organizationId, user.id, "password");
+      return reply.code(401).send(INVALID_CREDENTIALS);
     }
     // Deprovisioned (SCIM-deactivated) users cannot sign in.
     if (!user.active) {
@@ -79,11 +138,21 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
       if (!body.totp) {
         return reply.code(401).send({ error: "mfa_required", mfaRequired: true });
       }
+      const totpKey = throttleKey("totp:acct", user.id);
+      const totpRetry = await lockedFor([totpKey]);
+      if (totpRetry) {
+        return reply.code(429).header("retry-after", totpRetry).send(tooManyAttempts(totpRetry));
+      }
       const secret = decrypt(user.mfaSecret!, config.ENCRYPTION_KEY);
       if (!authenticator.verify({ token: body.totp, secret })) {
+        if (await registerFailure(totpKey, RULES.totpAccount)) {
+          await reportLockout(user.organizationId, user.id, "totp");
+        }
         return reply.code(401).send({ error: "invalid_totp" });
       }
+      await clearThrottle(totpKey);
     }
+    await clearThrottle(accountKey);
 
     await recordAudit({
       organizationId: user.organizationId,
@@ -137,10 +206,15 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
       if (!user.mfaSecret) {
         return reply.code(400).send({ error: "mfa_not_initialized" });
       }
+      const totpKey = throttleKey("totp:acct", user.id);
+      const retry = await lockedFor([totpKey]);
+      if (retry) return reply.code(429).header("retry-after", retry).send(tooManyAttempts(retry));
       const secret = decrypt(user.mfaSecret, config.ENCRYPTION_KEY);
       if (!authenticator.verify({ token: body.totp, secret })) {
+        await registerFailure(totpKey, RULES.totpAccount);
         return reply.code(401).send({ error: "invalid_totp" });
       }
+      await clearThrottle(totpKey);
       await prisma.user.update({
         where: { id: user.id },
         data: { mfaEnabled: true },

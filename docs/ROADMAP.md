@@ -50,6 +50,16 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 - [x] SCIM 2.0 (provisioning d'utilisateurs, `User.active`)
 - [x] SAML SSO (SP par org : métadonnées, login, ACS)
 
+## Étape 8 — Mise en ligne & extension infra 🚧
+- [x] API serverless sur Vercel + Neon (migrations au build)
+- [x] Analyse des PR sans Redis (`ANALYSIS_MODE=inline`, idempotence en base)
+- [x] **Infra Shield** : agent VPS en lecture seule, règles ports/SSH/firewall/Docker/mises à jour, score, page Serveurs
+- [x] **BruteForce Shield** : verrouillage progressif compte + IP sur l'auth CodeGate, politiques, cibles vérifiées, tests login / énumération
+- [ ] BruteForce Shield (suite) : tests OTP et reset password, CAPTCHA après N échecs
+- [x] **Backup Shield** : déclaration des exécutions, chiffrement / SHA-256 / rétention / immutabilité, revérification d'intégrité, restauration PostgreSQL isolée, score de récupération, découverte dans l'agent
+- [ ] Backup Shield (suite) : restauration MySQL / MongoDB, alerte proactive « sauvegarde manquante » (cron), lecture directe des réglages S3 Object Lock
+- [ ] GitHub App branchée sur l'API en ligne + écran « Connecter GitHub »
+
 ## Reste à faire (post-MVP)
 - [ ] Moteur de scan Rust avancé (`services/scan-engine`)
 - [ ] Observabilité (OpenTelemetry), CI/CD, déploiement UE
