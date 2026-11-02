@@ -115,7 +115,7 @@ const RESOURCES = [
 
 export default function Landing() {
   return (
-    <div className="font-sans text-[#111]" style={{ background: DARK }}>
+    <div className="overflow-x-clip font-sans text-[#111]" style={{ background: DARK }}>
       {/* ── Header ─────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 bg-[#111111]/90 backdrop-blur">
         <div className="mx-auto flex h-[76px] max-w-[1280px] items-center justify-between px-6">
