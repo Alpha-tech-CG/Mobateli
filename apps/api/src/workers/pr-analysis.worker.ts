@@ -13,6 +13,7 @@ import {
   shouldCreateRemediation,
 } from "../lib/linear.js";
 import { decrypt } from "../lib/crypto.js";
+import { notifySlack } from "../lib/notify.js";
 import { PR_ANALYSIS_QUEUE, type PrAnalysisJob } from "../queues/pr-analysis.js";
 import type { AppConfig } from "../config.js";
 
@@ -122,6 +123,16 @@ export function createPrAnalysisWorker(
           reason: job.data.reason,
         },
       });
+
+      // ── Slack : alerte d'incident si la PR est bloquée ou expose un secret ──
+      if (result.decision === "block" || result.secrets.length > 0) {
+        await notifySlack(pr.repository.organizationId, config.ENCRYPTION_KEY, {
+          title: result.secrets.length ? "Secret détecté dans une PR" : "Pull request bloquée",
+          severity: "critical",
+          repository: pr.repository.name,
+          detail: `PR #${pr.number} « ${pr.title} » — risque ${result.riskScore}/100, décision ${result.decision}.`,
+        });
+      }
 
       // ── Linear : issue de remédiation (cahier §5.7), idempotente ──
       if (shouldCreateRemediation(result)) {

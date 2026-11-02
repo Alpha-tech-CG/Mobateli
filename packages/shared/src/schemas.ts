@@ -95,6 +95,11 @@ export const connectLinearSchema = z.object({
 });
 export type ConnectLinearInput = z.infer<typeof connectLinearSchema>;
 
+export const connectSlackSchema = z.object({
+  webhookUrl: z.string().url().max(500),
+});
+export type ConnectSlackInput = z.infer<typeof connectSlackSchema>;
+
 /** Pagination shared across list endpoints. */
 export const paginationSchema = z.object({
   cursor: z.string().uuid().optional(),

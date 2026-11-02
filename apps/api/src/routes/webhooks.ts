@@ -7,6 +7,7 @@ import { claimDelivery, releaseDelivery } from "../lib/redis.js";
 import { enqueuePrAnalysis } from "../queues/pr-analysis.js";
 import { recordAudit } from "../lib/audit.js";
 import { evaluateDeployGate } from "../analysis/deploy-gate.js";
+import { notifySlack } from "../lib/notify.js";
 
 /** Heuristic: was this PR likely opened by an AI coding agent? (cahier §5.1) */
 function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
@@ -126,7 +127,11 @@ async function handleInstallationRepositories(payload: any): Promise<void> {
   }
 }
 
-async function handleVercelDeployment(req: FastifyRequest, payload: any): Promise<void> {
+async function handleVercelDeployment(
+  req: FastifyRequest,
+  payload: any,
+  encryptionKey: string,
+): Promise<void> {
   const deployment = payload.payload?.deployment ?? payload.deployment;
   const meta = deployment?.meta ?? {};
   const org: string | undefined = meta.githubCommitOrg;
@@ -195,6 +200,15 @@ async function handleVercelDeployment(req: FastifyRequest, payload: any): Promis
     resourceId: repo.id,
     metadata: { deploymentId, decision: result.decision, reason: result.reason },
   });
+
+  if (result.decision === "blocked") {
+    await notifySlack(repo.organizationId, encryptionKey, {
+      title: "Déploiement bloqué",
+      severity: "critical",
+      repository: fullName,
+      detail: result.reason,
+    });
+  }
 }
 
 async function handleInstallationDeleted(payload: any): Promise<void> {
@@ -302,7 +316,7 @@ export async function webhookRoutes(
 
     try {
       if ((payload as { type?: string }).type === "deployment.created") {
-        await handleVercelDeployment(req, payload);
+        await handleVercelDeployment(req, payload, config.ENCRYPTION_KEY);
       }
     } catch (err) {
       req.log.error({ err }, "vercel webhook handler error");

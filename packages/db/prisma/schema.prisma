@@ -124,6 +124,7 @@ model Organization {
   auditEvents      AuditEvent[]
   installations    GithubInstallation[]
   linearConnection LinearConnection?
+  slackConnection  SlackConnection?
   agentPolicies    AgentPolicy[]
 
   @@map("organizations")
@@ -319,6 +320,18 @@ model LinearConnection {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("linear_connections")
+}
+
+/// Slack incoming-webhook for incident alerts (cahier §9.5). URL encrypted.
+model SlackConnection {
+  id                  String   @id @default(uuid()) @db.Uuid
+  organizationId      String   @unique @db.Uuid
+  webhookUrlEncrypted String
+  createdAt           DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("slack_connections")
 }
 
 /// Remediation ticket created in an external tracker for a PR (cahier §5.7).

@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "@codegate/db";
-import { connectLinearSchema } from "@codegate/shared";
-import { encrypt } from "../lib/crypto.js";
+import { connectLinearSchema, connectSlackSchema } from "@codegate/shared";
+import { encrypt, decrypt } from "../lib/crypto.js";
 import { recordAudit } from "../lib/audit.js";
+import { sendSlackAlert } from "../lib/slack.js";
 import type { AppConfig } from "../config.js";
 
 /**
@@ -72,6 +73,88 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
         actorType: "user",
         actorId: req.principal.userId,
         action: "integration.linear_disconnected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return { connected: false };
+    },
+  );
+
+  // ─── Slack ────────────────────────────────────────────
+
+  app.get(
+    "/api/v1/integrations/slack",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const conn = await prisma.slackConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { createdAt: true },
+      });
+      return { connected: conn !== null };
+    },
+  );
+
+  app.post(
+    "/api/v1/integrations/slack",
+    {
+      preHandler: [app.authenticate, app.requireRole("owner", "admin", "security_manager")],
+    },
+    async (req, reply) => {
+      const body = connectSlackSchema.parse(req.body);
+      await prisma.slackConnection.upsert({
+        where: { organizationId: req.principal.organizationId },
+        create: {
+          organizationId: req.principal.organizationId,
+          webhookUrlEncrypted: encrypt(body.webhookUrl, config.ENCRYPTION_KEY),
+        },
+        update: { webhookUrlEncrypted: encrypt(body.webhookUrl, config.ENCRYPTION_KEY) },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.slack_connected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return reply.code(201).send({ connected: true });
+    },
+  );
+
+  app.post(
+    "/api/v1/integrations/slack/test",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const conn = await prisma.slackConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+      });
+      if (!conn) return reply.code(404).send({ error: "not_connected" });
+      try {
+        await sendSlackAlert(decrypt(conn.webhookUrlEncrypted, config.ENCRYPTION_KEY), {
+          title: "Test d'alerte CodeGate",
+          severity: "info",
+          repository: "—",
+          detail: "Ceci est un test de connexion Slack depuis CodeGate.",
+        });
+        return { sent: true };
+      } catch {
+        return reply.code(502).send({ error: "slack_send_failed" });
+      }
+    },
+  );
+
+  app.delete(
+    "/api/v1/integrations/slack",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req) => {
+      await prisma.slackConnection.deleteMany({
+        where: { organizationId: req.principal.organizationId },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.slack_disconnected",
         resourceType: "organization",
         resourceId: req.principal.organizationId,
       });
