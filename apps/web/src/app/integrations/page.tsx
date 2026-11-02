@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plug, Bell } from "lucide-react";
+import { CheckCircle2, Plug, Bell, Gitlab } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
@@ -135,7 +135,105 @@ function Integrations() {
       </Card>
 
       <SlackCard />
+      <GitlabCard />
     </div>
+  );
+}
+
+function GitlabCard() {
+  const [connected, setConnected] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function load() {
+    api<{ connected: boolean }>("/api/v1/integrations/gitlab")
+      .then((r) => setConnected(r.connected))
+      .catch(() => {});
+  }
+  useEffect(load, []);
+
+  async function connect() {
+    setBusy(true);
+    try {
+      const r = await api<{ webhookToken: string }>("/api/v1/integrations/gitlab", {
+        method: "POST",
+      });
+      setToken(r.webhookToken);
+      setConnected(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setBusy(true);
+    try {
+      await api("/api/v1/integrations/gitlab", { method: "DELETE" });
+      setToken(null);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mt-6 max-w-xl p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <Gitlab className="size-5 text-primary" aria-hidden />
+        <div>
+          <h2 className="font-semibold">GitLab</h2>
+          <p className="text-xs text-muted-foreground">
+            Analyse les merge requests comme un 2ᵉ fournisseur SCM.
+          </p>
+        </div>
+      </div>
+
+      {token ? (
+        <div className="space-y-2">
+          <p className="text-sm">
+            Collez ce <span className="font-medium">Secret token</span> dans le webhook GitLab
+            (événement « Merge request »), URL <code className="font-mono">/webhooks/gitlab</code> :
+          </p>
+          <code className="block break-all rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs">
+            {token}
+          </code>
+          <p className="text-xs text-muted-foreground">
+            Copiez-le maintenant — il ne sera plus affiché.
+          </p>
+        </div>
+      ) : connected ? (
+        <div className="space-y-3">
+          <p className="flex items-center gap-2 text-sm text-success">
+            <CheckCircle2 className="size-4" aria-hidden />
+            Connecté
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={connect}
+              disabled={busy}
+              className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+            >
+              Régénérer le token
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={busy}
+              className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm text-destructive transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+            >
+              Déconnecter
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={connect}
+          disabled={busy}
+          className="cursor-pointer rounded-md bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? "Génération…" : "Connecter GitLab"}
+        </button>
+      )}
+    </Card>
   );
 }
 

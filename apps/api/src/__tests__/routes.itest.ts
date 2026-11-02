@@ -7,7 +7,7 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 
 // Env must be set before the app/db modules load their config.
 process.env.NODE_ENV = "test";
@@ -160,7 +160,7 @@ test("github webhook: bad signature 401, signed PR 202 and persisted", async () 
   const ok = await app.inject({
     method: "POST",
     url: "/webhooks/github",
-    headers: { "content-type": "application/json", "x-github-event": "pull_request", "x-github-delivery": "d2", "x-hub-signature-256": ghSig(payload) },
+    headers: { "content-type": "application/json", "x-github-event": "pull_request", "x-github-delivery": randomUUID(), "x-hub-signature-256": ghSig(payload) },
     payload,
   });
   assert.equal(ok.statusCode, 202);
@@ -221,7 +221,7 @@ test("vercel deploy gate: signed deployment 202 and recorded", async () => {
   const res = await app.inject({
     method: "POST",
     url: "/webhooks/vercel",
-    headers: { "content-type": "application/json", "x-vercel-signature": vercelSig(payload), "x-vercel-id": "v1" },
+    headers: { "content-type": "application/json", "x-vercel-signature": vercelSig(payload), "x-vercel-id": randomUUID() },
     payload,
   });
   assert.equal(res.statusCode, 202);
@@ -230,6 +230,54 @@ test("vercel deploy gate: signed deployment 202 and recorded", async () => {
   const list = checks.json().deployChecks;
   assert.equal(list.length, 1);
   assert.ok(["authorized", "warning", "blocked", "requires_approval"].includes(list[0].decision));
+});
+
+test("gitlab: connect token governs the MR webhook", async () => {
+  const con = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/gitlab",
+    headers: auth(),
+  });
+  assert.equal(con.statusCode, 201);
+  const gitlabToken: string = con.json().webhookToken;
+  assert.ok(gitlabToken.length > 10);
+
+  const payload = JSON.stringify({
+    object_kind: "merge_request",
+    user: { username: "cursor-bot" },
+    project: { id: 42, path_with_namespace: "acme/infra", default_branch: "main" },
+    object_attributes: {
+      iid: 9,
+      title: "Harden config",
+      description: "Generated with Cursor",
+      action: "open",
+      last_commit: { id: "abcdef1" },
+    },
+  });
+
+  // Wrong token → 401.
+  const bad = await app.inject({
+    method: "POST",
+    url: "/webhooks/gitlab",
+    headers: { "content-type": "application/json", "x-gitlab-token": "nope", "x-gitlab-event": "Merge Request Hook" },
+    payload,
+  });
+  assert.equal(bad.statusCode, 401);
+
+  // Valid token → 202 and the MR is persisted as a PR.
+  const ok = await app.inject({
+    method: "POST",
+    url: "/webhooks/gitlab",
+    headers: { "content-type": "application/json", "x-gitlab-token": gitlabToken, "x-gitlab-event": "Merge Request Hook" },
+    payload,
+  });
+  assert.equal(ok.statusCode, 202);
+
+  const prs = await app.inject({ method: "GET", url: "/api/v1/pull-requests", headers: auth() });
+  const gl = prs.json().pullRequests.find((p: { repository: string }) => p.repository === "acme/infra");
+  assert.ok(gl, "GitLab MR should appear as a pull request");
+  assert.equal(gl.number, 9);
+  assert.equal(gl.aiGenerated, true);
 });
 
 test("audit export returns a JSON evidence pack", async () => {

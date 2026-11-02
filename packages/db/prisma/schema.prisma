@@ -125,6 +125,7 @@ model Organization {
   installations    GithubInstallation[]
   linearConnection LinearConnection?
   slackConnection  SlackConnection?
+  gitlabConnection GitlabConnection?
   agentPolicies    AgentPolicy[]
 
   @@map("organizations")
@@ -332,6 +333,19 @@ model SlackConnection {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("slack_connections")
+}
+
+/// GitLab project connection (cahier §12.2 P3). Webhook authenticated by a
+/// shared token; we store only its SHA-256 hash and look up the org by it.
+model GitlabConnection {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @unique @db.Uuid
+  tokenHash      String   @unique
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_connections")
 }
 
 /// Remediation ticket created in an external tracker for a PR (cahier §5.7).

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@codegate/db";
 import { connectLinearSchema, connectSlackSchema } from "@codegate/shared";
 import { encrypt, decrypt } from "../lib/crypto.js";
@@ -155,6 +156,66 @@ export async function integrationRoutes(app: FastifyInstance, config: AppConfig)
         actorType: "user",
         actorId: req.principal.userId,
         action: "integration.slack_disconnected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      return { connected: false };
+    },
+  );
+
+  // ─── GitLab ───────────────────────────────────────────
+
+  app.get(
+    "/api/v1/integrations/gitlab",
+    { preHandler: [app.authenticate] },
+    async (req) => {
+      const conn = await prisma.gitlabConnection.findUnique({
+        where: { organizationId: req.principal.organizationId },
+        select: { createdAt: true },
+      });
+      return { connected: conn !== null };
+    },
+  );
+
+  // (Re)generate the webhook token. Returned once; only its hash is stored.
+  app.post(
+    "/api/v1/integrations/gitlab",
+    {
+      preHandler: [app.authenticate, app.requireRole("owner", "admin", "security_manager")],
+    },
+    async (req, reply) => {
+      const token = randomBytes(24).toString("base64url");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      await prisma.gitlabConnection.upsert({
+        where: { organizationId: req.principal.organizationId },
+        create: { organizationId: req.principal.organizationId, tokenHash },
+        update: { tokenHash },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.gitlab_connected",
+        resourceType: "organization",
+        resourceId: req.principal.organizationId,
+      });
+      // The token goes in the GitLab project webhook's "Secret token" field.
+      return reply.code(201).send({ connected: true, webhookToken: token });
+    },
+  );
+
+  app.delete(
+    "/api/v1/integrations/gitlab",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req) => {
+      await prisma.gitlabConnection.deleteMany({
+        where: { organizationId: req.principal.organizationId },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "integration.gitlab_disconnected",
         resourceType: "organization",
         resourceId: req.principal.organizationId,
       });
