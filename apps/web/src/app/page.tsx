@@ -166,7 +166,7 @@ export default function Landing() {
           </Reveal>
           <Reveal delay={180}>
             <div className="mt-9 flex justify-center gap-3">
-              <Pill href="/login">Commencer</Pill>
+              <Pill href="/signup">Commencer</Pill>
               <Pill href="#about" variant="dark">En savoir plus</Pill>
             </div>
           </Reveal>
@@ -328,7 +328,7 @@ export default function Landing() {
                   <div>
                     <h3 className="font-display text-[32px] text-[#111]">{c.title}</h3>
                     <p className="mt-4 max-w-[440px] text-[15px] leading-6 text-[#555b60]">{c.text}</p>
-                    <Link href="/login" className="mt-6 inline-flex items-center gap-2 text-[14px] font-medium text-[#bb3e2c]">
+                    <Link href="/signup" className="mt-6 inline-flex items-center gap-2 text-[14px] font-medium text-[#bb3e2c]">
                       Essayer <ArrowRight className="size-4" aria-hidden />
                     </Link>
                   </div>
@@ -487,7 +487,7 @@ export default function Landing() {
               Prêt à livrer le code IA sans risque ?
             </h2>
             <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-              <Pill href="/login" variant="white">Créer un compte</Pill>
+              <Pill href="/signup" variant="white">Créer un compte</Pill>
               <Pill href="/login" variant="dark">Se connecter</Pill>
             </div>
           </div>
@@ -507,7 +507,7 @@ export default function Landing() {
             <p className="font-display mt-6 max-w-[420px] text-[24px] leading-[1.3] text-white">
               La couche de sécurité entre l&apos;IA et votre production
             </p>
-            <Link href="/login" className="mt-8 flex h-12 max-w-[420px] items-center justify-between rounded-[40px] bg-[#232527] pl-5 pr-1.5 text-[14px] text-white/60 transition-colors hover:text-white">
+            <Link href="/signup" className="mt-8 flex h-12 max-w-[420px] items-center justify-between rounded-[40px] bg-[#232527] pl-5 pr-1.5 text-[14px] text-white/60 transition-colors hover:text-white">
               Créer un compte gratuitement
               <span className="flex size-9 items-center justify-center rounded-full bg-white text-[#111]">
                 <ArrowRight className="size-4" aria-hidden />
@@ -526,7 +526,7 @@ export default function Landing() {
             </div>
             <div className="space-y-3">
               <Link href="/login" className="block hover:text-white">Connexion</Link>
-              <Link href="/login" className="block hover:text-white">Créer un compte</Link>
+              <Link href="/signup" className="block hover:text-white">Créer un compte</Link>
               <Link href="/dashboard" className="block hover:text-white">Dashboard</Link>
             </div>
           </div>
