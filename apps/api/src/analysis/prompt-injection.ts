@@ -76,8 +76,12 @@ const RULES: Rule[] = [
       "Le texte demande d'envoyer des secrets (.env, tokens, clés) vers l'extérieur — schéma typique d'attaque d'agent.",
     remediation: "Supprimez immédiatement ce contenu, vérifiez qu'aucun agent ne l'a exécuté et faites tourner les secrets exposés.",
     test: (l) =>
-      // A concrete external destination is required (URL, webhook, paste, email).
-      /\b(send|post|upload|exfiltrate|leak|forward|share|envoie[rz]?|transmet(s|tre|tez))\b.{0,60}(\.env\b|secrets?|tokens?|api[ _-]?keys?|credentials|private[ _-]?key|mots? de passe|clés?)\b.{0,80}(https?:\/\/|webhook|pastebin|discord|telegram|ngrok|\b[\w.+-]+@[\w-]+\.[a-z]{2,})/i.test(l),
+      // A concrete external destination is required (URL, webhook, paste,
+      // email). Upper-case HTTP verbs ("POST /api/…" in API docs) are routes,
+      // not instructions.
+      /\b(send|post|upload|exfiltrate|leak|forward|share|envoie[rz]?|transmet(s|tre|tez))\b.{0,60}(\.env\b|secrets?|tokens?|api[ _-]?keys?|credentials|private[ _-]?key|mots? de passe|clés?)\b.{0,80}(https?:\/\/|webhook|pastebin|discord|telegram|ngrok|\b[\w.+-]+@[\w-]+\.[a-z]{2,})/i.test(
+        l.replace(/\b(GET|POST|PUT|PATCH|DELETE)\b/g, ""),
+      ),
   },
   {
     id: "PI_INVISIBLE_CHARACTERS",

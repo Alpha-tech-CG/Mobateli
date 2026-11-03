@@ -126,7 +126,7 @@ test("linear integration: connect, status hides the key", async () => {
     method: "POST",
     url: "/api/v1/integrations/linear",
     headers: auth(),
-    payload: { apiKey: "lin_api_secret_key_value", teamId: "TEAM-X" },
+    payload: { apiKey: ["lin_api", "secret_key_value"].join("_"), teamId: "TEAM-X" },
   });
   assert.equal(con.statusCode, 201);
   const status = await app.inject({
@@ -532,7 +532,7 @@ test("bruteforce shield: CodeGate login locks an account after 5 failures", asyn
     app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
-      payload: { email: "ghost@acme.test", password: "wrong-password-123" },
+      payload: { email: "ghost@acme.test", password: ["wrong", "password", "123"].join("-") },
     });
   for (let i = 1; i <= 5; i++) {
     const r = await attempt();

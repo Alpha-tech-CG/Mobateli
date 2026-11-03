@@ -8,8 +8,9 @@ services:
       POSTGRES_PASSWORD: codegate
       POSTGRES_DB: codegate
     ports:
-      # Host 5434 to avoid clashing with other local Postgres instances.
-      - "5434:5432"
+      # Host 5434 to avoid clashing with other local Postgres instances;
+      # loopback only, so the dev database is not reachable from the network.
+      - "127.0.0.1:5434:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +24,9 @@ services:
     container_name: codegate-redis
     restart: unless-stopped
     ports:
-      # Host 6380 to avoid clashing with other local Redis instances.
-      - "6380:6379"
+      # Host 6380 to avoid clashing with other local Redis instances;
+      # loopback only (Redis has no password in dev).
+      - "127.0.0.1:6380:6379"
     volumes:
       - ./data/redis:/data
     healthcheck:

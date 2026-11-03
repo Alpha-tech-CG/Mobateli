@@ -99,3 +99,35 @@ test("PyPI: non-existent package is critical; Go: missing module too", async () 
   assert.match(out[0]!.reason!, /PyPI/);
   assert.equal(out[1]!.riskLevel, "critical");
 });
+
+test("local workspace packages are not looked up on a registry", async () => {
+  let calls = 0;
+  const counting = (async () => {
+    calls++;
+    return json({}, 404);
+  }) as unknown as typeof fetch;
+  const input = [dep("@codegate/db", "workspace:*"), dep("@codegate/shared", "link:../shared")];
+  assert.deepEqual(await enrichDependencies(input, counting, now), input);
+  assert.equal(calls, 0);
+});
+
+test("established package: single maintainer / native install step are not risks", async () => {
+  const out = await enrichDependencies(
+    [dep("argon2", "^0.45.2")],
+    fakeFetch({
+      querybatch: () => json({ results: [{}] }),
+      "registry.npmjs.org/argon2": () =>
+        json({
+          time: { created: "2015-12-19T13:22:29Z" },
+          maintainers: [{}],
+          license: "MIT",
+          "dist-tags": { latest: "0.45.2" },
+          versions: { "0.45.2": { scripts: { install: "node-gyp-build" } } },
+        }),
+      "last-week/argon2": () => json({ downloads: 3_429_668 }),
+    }),
+    now,
+  );
+  assert.equal(out[0]!.riskLevel, "low");
+  assert.equal(out[0]!.trustScore, 80);
+});

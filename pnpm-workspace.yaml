@@ -23,3 +23,12 @@ onlyBuiltDependencies:
   - esbuild
   - prisma
   - sharp
+
+# Security: transitive zod < 4.6.6 is vulnerable (GHSA-mrhx-c7xc-m3w5),
+# pulled by @vercel/functions → @vercel/oidc → @vercel/cli-config.
+overrides:
+  zod: ^4.6.7
+  # GHSA-ggr8-5vv4-36mx (stack exhaustion) — via prisma → @prisma/config.
+  deepmerge-ts: ^8.0.2
+  # GHSA-qx2v-qp2m-jg93 & co. (XSS in stringify) — next pins postcss 8.4.31.
+  postcss: ^8.5.32

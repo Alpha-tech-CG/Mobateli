@@ -105,7 +105,7 @@ fn secrets_match_the_typescript_engine() {
         &[
             &format!("const id = '{key}';"),
             "const password = 'changeme-please';",
-            "const api_key = 'Zx9!qL2#vR7$mT4&pW';",
+            &["const api_key = 'Zx9!qL2#", "vR7$mT4&pW';"].concat(),
         ],
     ));
     let types: Vec<_> = out.secrets.iter().map(|s| (s.secret_type.as_str(), s.location.as_str())).collect();

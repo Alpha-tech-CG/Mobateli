@@ -37,9 +37,9 @@ test("secret scanner detects provider keys", () => {
   const d = diffFor("config.ts", [
     // Split so the fixture isn't a contiguous literal (secret scanners flag it).
     'const stripe = "sk_live_' + 'abcdefABCDEF0123456789xyz";',
-    'const aws = "AKIAIOSFODNN7EXAMPLE";',
-    "-----BEGIN RSA PRIVATE KEY-----",
-    'const db = "postgres://user:secretpw@host:5432/db";',
+    'const aws = "AKIA' + 'IOSFODNN7EXAMPLE";',
+    "-----BEGIN RSA PRIVATE" + " KEY-----",
+    'const db = "postgres' + '://user:secretpw@host:5432/db";',
   ]);
   const secrets = scanSecrets(parseUnifiedDiff(d).addedLines);
   const types = secrets.map((s) => s.secretType);
@@ -53,7 +53,7 @@ test("secret scanner detects provider keys", () => {
 
 test("secret scanner: generic high-entropy flagged, low-entropy ignored", () => {
   const flagged = scanSecrets(
-    parseUnifiedDiff(diffFor("a.ts", ['const apiKey = "aG7xQ2pLzR9mKv3wT1nB8d";'])).addedLines,
+    parseUnifiedDiff(diffFor("a.ts", ['const apiKey = "aG7xQ2pL' + 'zR9mKv3wT1nB8d";'])).addedLines,
   );
   assert.equal(flagged.length, 1);
   const ignored = scanSecrets(

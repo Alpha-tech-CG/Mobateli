@@ -61,6 +61,11 @@ interface NpmDoc {
   "dist-tags"?: { latest?: string };
 }
 
+/** workspace:/link:/file:/portal: — resolved locally, not from a registry. */
+export function isLocalSpec(version: string): boolean {
+  return /^(workspace|link|file|portal):/.test(version.trim());
+}
+
 const REGISTRY_NAME: Record<string, string> = { npm: "npm", PyPI: "PyPI", Go: "le proxy Go" };
 
 interface RegistryFacts {
@@ -134,6 +139,8 @@ export async function enrichDependencies(
 ): Promise<DependencyResult[]> {
   const npm = deps
     .filter((d) => d.ecosystem === "npm" || d.ecosystem === "PyPI" || d.ecosystem === "Go")
+    // Local monorepo / path packages are never fetched from a registry.
+    .filter((d) => !isLocalSpec(d.version))
     .slice(0, MAX_PACKAGES);
   if (!npm.length) return deps;
 
@@ -190,18 +197,25 @@ export async function enrichDependencies(
           ].join(" "),
         };
       }
+      // A long-lived, massively used package: one maintainer or a native
+      // install step (node-gyp) are normal, not risk signals. Known
+      // vulnerabilities above still count.
+      const established =
+        registry.created !== undefined &&
+        now.getTime() - registry.created.getTime() > 2 * 365 * DAY &&
+        (registry.weeklyDownloads ?? 0) >= 50_000;
       if (registry.created && now.getTime() - registry.created.getTime() < 30 * DAY) {
         trust -= 25;
         risk = raise(risk, "medium");
         const days = Math.max(0, Math.round((now.getTime() - registry.created.getTime()) / DAY));
         reasons.push(`Publié il y a ${days} jour(s).`);
       }
-      if (registry.maintainers === 1) {
+      if (registry.maintainers === 1 && !established) {
         trust -= 5;
         reasons.push("Un seul mainteneur.");
       }
       if (registry.license === null) reasons.push("Aucune licence déclarée.");
-      if (registry.installHooks.length) {
+      if (registry.installHooks.length && !established) {
         trust -= 15;
         risk = raise(risk, "medium");
         reasons.push(`Exécute du code à l'installation (${registry.installHooks.join(", ")}).`);

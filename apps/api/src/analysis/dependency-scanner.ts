@@ -167,7 +167,8 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   }
 
   // Pinned to a brand-new-looking 0.0.x or using a URL/git spec.
-  if (/^(git\+|https?:|file:|github:)/.test(dep.version)) {
+  // Remote, unpinned sources (git / URL); local file: paths are the user's own code.
+  if (/^(git\+|git:|https?:|github:)/.test(dep.version)) {
     trust -= 25;
     if (risk === "low") risk = "medium";
     reasons.push("Source non-registre (git/url) — contenu non vérifié par le registre.");

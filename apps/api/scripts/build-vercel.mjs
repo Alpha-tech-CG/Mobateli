@@ -67,6 +67,8 @@ writeFileSync(
           'DATABASE_URL="${DATABASE_URL_UNPOOLED:-$DATABASE_URL}" prisma migrate deploy && prisma generate',
       },
       dependencies: deps,
+      // Same security overrides as the monorepo (see pnpm-workspace.yaml).
+      overrides: { zod: deps.zod },
     },
     null,
     2,

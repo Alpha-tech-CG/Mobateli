@@ -77,14 +77,6 @@ const RULES: Rule[] = [
   },
 ];
 
-/** Config/sensitive-file awareness (cahier §5.1 — .env, workflows, vercel.json). */
-const SENSITIVE_FILES = [
-  ".env",
-  "docker-compose.yml",
-  "vercel.json",
-  "Dockerfile",
-];
-
 /**
  * Languages these line rules are written for. Docs (.md), config and other
  * languages (Rust, Go…) are skipped: matching JavaScript API names in them
@@ -121,31 +113,5 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
     }
   }
 
-  return findings;
-}
-
-/** Flags added lines inside sensitive config files for reviewer attention. */
-export function flagSensitiveFiles(files: string[]): FindingResult[] {
-  const findings: FindingResult[] = [];
-  for (const file of files) {
-    const base = file.split("/").pop() ?? file;
-    if (
-      SENSITIVE_FILES.includes(base) ||
-      file.includes(".github/workflows/")
-    ) {
-      findings.push({
-        type: "config",
-        // A review reminder, not a risk by itself: what the change contains
-        // (secrets, weakened settings…) is caught by the other rules.
-        severity: "info",
-        title: `Fichier sensible modifié : ${base}`,
-        description:
-          "Une modification touche un fichier de configuration sensible (secrets, CI/CD ou déploiement).",
-        filePath: file,
-        ruleId: "SENSITIVE_FILE_CHANGED",
-        remediation: "Vérifiez qu'aucun secret ni affaiblissement de configuration n'est introduit.",
-      });
-    }
-  }
   return findings;
 }
