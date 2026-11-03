@@ -69,6 +69,19 @@ test("levenshtein + typosquat detection", () => {
   assert.ok(squat && squat.target === "react-router-dom");
 });
 
+test("dependency scanner: legitimate near-miss packages are not typosquats", () => {
+  // Real, popular packages that sit a short edit distance from the curated
+  // list — previously flagged as critical typosquats (the false positives).
+  const legit = ["preact", "knex", "yup", "joi", "got", "jose", "redux", "chai", "bootstrap", "vite"];
+  for (const name of legit) {
+    assert.equal(nearestPopular(name), null, `${name} should not be a typosquat`);
+    const [dep] = scanDependencies(
+      parseUnifiedDiff(diffFor("package.json", [`    "${name}": "1.0.0",`])),
+    );
+    assert.equal(dep!.riskLevel, "low", `${name} should score low risk`);
+  }
+});
+
 test("dependency scanner scores a typosquat as critical", () => {
   const d = diffFor("package.json", ['    "react-router-domm": "1.0.0",']);
   const deps = scanDependencies(parseUnifiedDiff(d));

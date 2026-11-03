@@ -18,6 +18,18 @@ const POPULAR_NPM = [
   "jsonwebtoken", "cors", "body-parser", "mongoose", "pg", "redis", "ioredis",
 ];
 
+// Well-known, legitimate packages whose names happen to sit a short edit
+// distance from a popular one (preact≈react, redux≈redis, knex≈next…). Without
+// this list a pure edit-distance check flags them as critical typosquats and
+// blocks the PR — the dominant source of false positives. Exact matches here
+// are never treated as suspicious.
+const KNOWN_LEGIT = new Set([
+  "preact", "redux", "@reduxjs/toolkit", "react-redux", "bootstrap",
+  "knex", "yup", "joi", "jose", "got", "ky", "ora", "zx", "chai", "mocha",
+  "nanoid", "esbuild", "tslib", "clsx", "swr", "mobx", "luxon", "undici",
+  "pino", "cosmiconfig", "picocolors", "date-fns",
+]);
+
 export function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
@@ -37,13 +49,24 @@ export function levenshtein(a: string, b: string): number {
   return prev[n]!;
 }
 
-/** Closest popular package within a small edit distance (a typosquat target). */
+/**
+ * Closest popular package within a small edit distance (a typosquat target).
+ *
+ * The edit-distance threshold scales with name length: a distance of 2 between
+ * two 3–5 letter names (knex/next, yup/vue, redux/redis) is coincidence, not a
+ * squat. We require `min(len) >= 4 * distance`, so distance 1 needs ≥4 shared
+ * length and distance 2 needs ≥8 — long enough that the resemblance is real
+ * (react-router-dom vs react-router-domm) rather than two unrelated short
+ * names colliding. Known-legitimate packages are never flagged.
+ */
 export function nearestPopular(name: string): { target: string; distance: number } | null {
+  if (KNOWN_LEGIT.has(name)) return null;
   let best: { target: string; distance: number } | null = null;
   for (const pkg of POPULAR_NPM) {
     if (pkg === name) return null; // exact match ⇒ legitimate, not a squat
     const d = levenshtein(name, pkg);
-    if (d >= 1 && d <= 2 && (!best || d < best.distance)) {
+    const minLen = Math.min(name.length, pkg.length);
+    if (d >= 1 && d <= 2 && minLen >= 4 * d && (!best || d < best.distance)) {
       best = { target: pkg, distance: d };
     }
   }
@@ -78,6 +101,12 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   const reasons: string[] = [];
   let trust = 80;
   let risk: DependencyResult["riskLevel"] = "low";
+
+  // Known-legitimate packages short-circuit every name heuristic (avoids e.g.
+  // flagging "bootstrap" as an install-script bait).
+  if (KNOWN_LEGIT.has(dep.name)) {
+    return { ecosystem: "npm", name: dep.name, version: dep.version, trustScore: trust, riskLevel: "low" };
+  }
 
   const squat = nearestPopular(dep.name);
   if (squat) {
