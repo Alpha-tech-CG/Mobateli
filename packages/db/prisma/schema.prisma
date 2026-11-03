@@ -120,23 +120,24 @@ model Organization {
   region    String   @default("eu")
   createdAt DateTime @default(now())
 
-  users            User[]
-  repositories     Repository[]
-  policies         Policy[]
-  auditEvents      AuditEvent[]
-  installations    GithubInstallation[]
-  linearConnection LinearConnection?
-  slackConnection  SlackConnection?
-  gitlabConnection GitlabConnection?
-  jiraConnection   JiraConnection?
-  scimToken        ScimToken?
-  samlConnection   SamlConnection?
-  agentPolicies    AgentPolicy[]
-  servers          Server[]
+  users              User[]
+  repositories       Repository[]
+  policies           Policy[]
+  auditEvents        AuditEvent[]
+  installations      GithubInstallation[]
+  linearConnection   LinearConnection?
+  slackConnection    SlackConnection?
+  gitlabConnection   GitlabConnection?
+  jiraConnection     JiraConnection?
+  scimToken          ScimToken?
+  samlConnection     SamlConnection?
+  agentPolicies      AgentPolicy[]
+  servers            Server[]
   bruteforcePolicies BruteForcePolicy[]
   bruteforceTargets  BruteForceTarget[]
   backupJobs         BackupJob[]
   approvalRequests   ApprovalRequest[]
+  auditReports       AuditReport[]
 
   @@map("organizations")
 }
@@ -177,7 +178,7 @@ model Repository {
   autoScan        Boolean         @default(true)
   createdAt       DateTime        @default(now())
 
-  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   pullRequests  PullRequest[]
   policies      Policy[]
   agentPolicies AgentPolicy[]
@@ -274,15 +275,15 @@ model SecretFinding {
 
 /// Record of a pre-deployment security decision (cahier §5.5).
 model DeployCheck {
-  id            String         @id @default(uuid()) @db.Uuid
-  repositoryId  String         @db.Uuid
-  externalId    String
-  provider      String         @default("vercel")
-  target        String?
-  commitSha     String?
-  decision      DeployDecision
-  reason        String
-  createdAt     DateTime       @default(now())
+  id           String         @id @default(uuid()) @db.Uuid
+  repositoryId String         @db.Uuid
+  externalId   String
+  provider     String         @default("vercel")
+  target       String?
+  commitSha    String?
+  decision     DeployDecision
+  reason       String
+  createdAt    DateTime       @default(now())
 
   repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
@@ -306,23 +307,23 @@ enum InfraCategory {
 /// proven by the agent running on it with a per-server token — CodeGate never
 /// scans a host from the outside.
 model Server {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @db.Uuid
-  name           String
-  provider       String?
-  environment    String    @default("production")
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @db.Uuid
+  name            String
+  provider        String?
+  environment     String    @default("production")
   // sha256 of the agent token; the token itself is shown once at creation.
-  agentTokenHash String    @unique
-  hostname       String?
-  os             String?
-  agentVersion   String?
-  securityScore  Int?
+  agentTokenHash  String    @unique
+  hostname        String?
+  os              String?
+  agentVersion    String?
+  securityScore   Int?
   // Last normalized facts reported by the agent (no secrets — see agent).
-  lastReport     Json?
-  lastReportAt   DateTime?
+  lastReport      Json?
+  lastReportAt    DateTime?
   // Set when a "silent agent" alert was sent; cleared by the next report.
   silentAlertedAt DateTime?
-  createdAt      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
 
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   findings     ServerFinding[]
@@ -430,16 +431,16 @@ model BruteForceTest {
 /// The backup host reports each run with a per-job token; CodeGate never
 /// reads, stores or restores the backup data itself.
 model BackupJob {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @db.Uuid
-  serverId       String?  @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @db.Uuid
+  serverId       String?   @db.Uuid
   name           String
   type           String
-  frequencyHours Int      @default(24)
-  tokenHash      String   @unique
+  frequencyHours Int       @default(24)
+  tokenHash      String    @unique
   // Set when a "missing backup" alert was sent; cleared by the next run.
   lateAlertedAt  DateTime?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   server       Server?             @relation(fields: [serverId], references: [id], onDelete: SetNull)
@@ -634,13 +635,13 @@ model GithubInstallation {
 
 /// Linear integration, one per organization. API key encrypted at rest.
 model LinearConnection {
-  id              String   @id @default(uuid()) @db.Uuid
-  organizationId  String   @unique @db.Uuid
-  apiKeyEncrypted String
-  teamId          String
+  id                     String   @id @default(uuid()) @db.Uuid
+  organizationId         String   @unique @db.Uuid
+  apiKeyEncrypted        String
+  teamId                 String
   // Signing secret of the Linear → CodeGate webhook (AES-256-GCM).
   webhookSecretEncrypted String?
-  createdAt       DateTime @default(now())
+  createdAt              DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -662,13 +663,13 @@ model SlackConnection {
 /// GitLab project connection (cahier §12.2 P3). Webhook authenticated by a
 /// shared token; we store only its SHA-256 hash and look up the org by it.
 model GitlabConnection {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @unique @db.Uuid
-  tokenHash      String   @unique
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @unique @db.Uuid
+  tokenHash         String   @unique
   // API access (read diffs, post statuses and MR notes): instance + token.
-  baseUrl           String  @default("https://gitlab.com")
+  baseUrl           String   @default("https://gitlab.com")
   apiTokenEncrypted String?
-  createdAt      DateTime @default(now())
+  createdAt         DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -705,13 +706,13 @@ model ScimToken {
 
 /// Jira Cloud connection (cahier §12.2 P3). API token encrypted at rest.
 model JiraConnection {
-  id              String   @id @default(uuid()) @db.Uuid
-  organizationId  String   @unique @db.Uuid
-  baseUrl         String
-  email           String
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @unique @db.Uuid
+  baseUrl           String
+  email             String
   apiTokenEncrypted String
-  projectKey      String
-  createdAt       DateTime @default(now())
+  projectKey        String
+  createdAt         DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -720,9 +721,9 @@ model JiraConnection {
 
 /// Remediation ticket created in an external tracker for a PR (cahier §5.7).
 model RemediationIssue {
-  id            String   @id @default(uuid()) @db.Uuid
-  pullRequestId String   @db.Uuid
-  provider      String   @default("linear")
+  id            String    @id @default(uuid()) @db.Uuid
+  pullRequestId String    @db.Uuid
+  provider      String    @default("linear")
   externalId    String
   identifier    String?
   url           String?
@@ -741,13 +742,13 @@ model RemediationIssue {
 // ─── Policy & audit ─────────────────────────────────────
 
 model Policy {
-  id                 String       @id @default(uuid()) @db.Uuid
-  organizationId     String       @db.Uuid
-  repositoryId       String?      @db.Uuid
-  rule               String
-  action             PolicyAction
-  severityThreshold  Severity
-  createdAt          DateTime     @default(now())
+  id                String       @id @default(uuid()) @db.Uuid
+  organizationId    String       @db.Uuid
+  repositoryId      String?      @db.Uuid
+  rule              String
+  action            PolicyAction
+  severityThreshold Severity
+  createdAt         DateTime     @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   repository   Repository?  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -772,4 +773,23 @@ model AuditEvent {
 
   @@index([organizationId, createdAt])
   @@map("audit_events")
+}
+
+/// Registry of signed audit reports (PDF). Only the fingerprint of the issued
+/// file is kept, so anyone holding a copy can check it is authentic and intact
+/// on the public verification page, without the report itself being stored.
+model AuditReport {
+  id                String   @id @db.Uuid
+  organizationId    String   @db.Uuid
+  generatedById     String?  @db.Uuid
+  sha256            String
+  signerFingerprint String
+  filters           Json
+  summary           Json
+  createdAt         DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@map("audit_reports")
 }

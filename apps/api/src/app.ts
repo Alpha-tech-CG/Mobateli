@@ -125,7 +125,9 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(async (instance) => {
     await githubRoutes(instance, config);
   });
-  await app.register(auditRoutes);
+  await app.register(async (instance) => {
+    await auditRoutes(instance, config);
+  });
   await app.register(async (instance) => {
     await agentGuardRoutes(instance, config);
   });

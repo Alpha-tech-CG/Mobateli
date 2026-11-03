@@ -46,6 +46,8 @@ await build({
 
 // Rust scan engine, loaded next to the bundle (new URL("./codegate_scan.wasm", import.meta.url)).
 cpSync(join(apiDir, "src", "analysis", "engine", "codegate_scan.wasm"), join(out, "api", "codegate_scan.wasm"));
+// Audit report branding, loaded next to the bundle (new URL("./assets/…", import.meta.url)).
+cpSync(join(apiDir, "src", "lib", "assets"), join(out, "api", "assets"), { recursive: true });
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
 cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), {
   recursive: true,
@@ -90,7 +92,7 @@ writeFileSync(
         "api/index.js": {
           // Whole-repository scans run after the response (waitUntil).
           maxDuration: 60,
-          includeFiles: "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm}",
+          includeFiles: "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm,api/assets/**}",
         },
       },
       rewrites: [{ source: "/(.*)", destination: "/api" }],

@@ -55,6 +55,11 @@ const envSchema = z.object({
   // Owners/admins must enable MFA before administrative actions (§10.2).
   MFA_REQUIRED_FOR_ADMINS: z.enum(["true", "false"]).default("true"),
 
+  // Optional trusted certificate (PKCS#12) for signing audit reports; without
+  // it CodeGate generates and keeps its own signing identity.
+  REPORT_SIGNING_P12_BASE64: z.string().optional(),
+  REPORT_SIGNING_P12_PASSPHRASE: z.string().optional(),
+
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
   // Public base URL of this API — used to build SAML SP entityId/ACS URLs.
   PUBLIC_API_URL: z.string().url().default("http://localhost:4000"),

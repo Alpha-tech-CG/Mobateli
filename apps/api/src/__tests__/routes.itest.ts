@@ -7,7 +7,7 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 
 // Env must be set before the app/db modules load their config.
 process.env.NODE_ENV = "test";
@@ -459,6 +459,33 @@ test("audit export returns a JSON evidence pack", async () => {
   const pack = res.json();
   assert.equal(pack.organization.name, "Acme");
   assert.ok(pack.summary.auditEvents > 0);
+});
+
+test("signed PDF report is registered and verifiable publicly", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/audit/export",
+    headers: auth(),
+    payload: { format: "pdf" },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"] as string, /application\/pdf/);
+  const reportId = res.headers["x-report-id"] as string;
+  assert.ok(reportId);
+  const sha = createHash("sha256").update(res.rawPayload).digest("hex");
+
+  // No account needed to verify, and the stored fingerprint matches the file.
+  const ok = await app.inject({ method: "GET", url: `/api/v1/reports/${reportId}/verify?sha256=${sha}` });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.json().matches, true);
+  assert.equal(ok.json().report.organization, "Acme");
+  const bad = await app.inject({ method: "GET", url: `/api/v1/reports/${reportId}/verify?sha256=${"0".repeat(64)}` });
+  assert.equal(bad.json().matches, false);
+  const unknown = await app.inject({ method: "GET", url: "/api/v1/reports/00000000-0000-4000-8000-000000000000/verify" });
+  assert.equal(unknown.statusCode, 404);
+
+  const list = await app.inject({ method: "GET", url: "/api/v1/reports", headers: auth() });
+  assert.ok(list.json().reports.some((r: { id: string }) => r.id === reportId));
 });
 
 test("infra shield: connect server, agent report scored, token required", async () => {

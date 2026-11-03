@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download } from "lucide-react";
+import Link from "next/link";
+import { Download, FileSignature } from "lucide-react";
 import { api, apiDownload } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
 import type { AuditEvent } from "@/lib/types";
+
+interface IssuedReport {
+  id: string;
+  createdAt: string;
+}
 
 export default function AuditPage() {
   return (
@@ -19,18 +25,28 @@ function Audit() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [reports, setReports] = useState<IssuedReport[]>([]);
+
+  function loadReports() {
+    api<{ reports: IssuedReport[] }>("/api/v1/reports")
+      .then((r) => setReports(r.reports))
+      .catch(() => {});
+  }
 
   useEffect(() => {
     api<{ events: AuditEvent[] }>("/api/v1/audit-events")
       .then((r) => setEvents(r.events))
       .catch(() => setError("Impossible de charger le journal d'audit."));
+    loadReports();
   }, []);
 
   async function exportAs(format: "json" | "csv" | "pdf") {
     setBusy(format);
     try {
       const stamp = new Date().toISOString().slice(0, 10);
-      await apiDownload("/api/v1/audit/export", { format }, `codegate-evidence-${stamp}.${format}`);
+      const name = format === "pdf" ? `codegate-rapport-audit-${stamp}.pdf` : `codegate-evidence-${stamp}.${format}`;
+      await apiDownload("/api/v1/audit/export", { format }, name);
+      if (format === "pdf") loadReports();
     } catch {
       setError("Export impossible.");
     } finally {
@@ -55,14 +71,35 @@ function Audit() {
               disabled={busy !== null}
               className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted disabled:opacity-50"
             >
-              <Download className="size-4" aria-hidden />
-              {busy === f ? "…" : f.toUpperCase()}
+              {f === "pdf" ? <FileSignature className="size-4" aria-hidden /> : <Download className="size-4" aria-hidden />}
+              {busy === f ? "…" : f === "pdf" ? "Rapport PDF signé" : f.toUpperCase()}
             </button>
           ))}
         </div>
       </header>
 
       {error ? <Card className="mb-4 p-4 text-sm text-destructive">{error}</Card> : null}
+
+      {reports.length ? (
+        <section className="mb-6">
+          <h2 className="mb-2 text-sm font-semibold">Rapports signés émis</h2>
+          <Card>
+            <ul className="divide-y divide-border text-sm">
+              {reports.slice(0, 10).map((r) => (
+                <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
+                  <span>
+                    <span className="font-mono text-xs">N° {r.id.slice(0, 8).toUpperCase()}</span>
+                    <span className="text-muted-foreground"> · {new Date(r.createdAt).toLocaleString("fr-FR")}</span>
+                  </span>
+                  <Link href={`/verify/${r.id}`} className="text-xs text-primary hover:underline">
+                    Page de vérification
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </section>
+      ) : null}
 
       <Card>
         <table className="w-full text-sm">
