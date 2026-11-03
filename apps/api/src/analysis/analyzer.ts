@@ -6,17 +6,25 @@ import { decide } from "./risk.js";
 import { enrichDependenciesWithOsv, type OsvOptions } from "./osv.js";
 import { scanSemgrep, type SemgrepOptions } from "./semgrep.js";
 import { runSca, mergeScaIntoDependencies, type ScaOptions } from "./sca.js";
+import {
+  runRustEngine,
+  filesFromDiff,
+  mergeRustFindings,
+  type RustEngineOptions,
+} from "./rust-engine.js";
 import type { AnalysisResult, FindingResult } from "./types.js";
 
 /**
  * Options for the network/subprocess-backed intelligence passes. OSV fields
- * stay at the top level for backward compatibility; Semgrep (semantic SAST) and
- * the full-tree SCA scan (Trivy/Grype over lockfiles and container images) are
- * opt-in and only run when their inputs/tools are available.
+ * stay at the top level for backward compatibility; Semgrep (semantic SAST),
+ * the full-tree SCA scan (Trivy/Grype over lockfiles and container images) and
+ * the Rust taint engine are opt-in and only run when their inputs/tools are
+ * available.
  */
 export interface IntelOptions extends OsvOptions {
   semgrep?: SemgrepOptions;
   sca?: ScaOptions;
+  rust?: RustEngineOptions;
 }
 
 /**
@@ -56,16 +64,19 @@ export function analyzeDiff(diff: string): AnalysisResult {
 }
 
 /**
- * Full analysis: the deterministic core plus network/subprocess-backed
- * intelligence, all fail-open and run concurrently:
+ * Full analysis: the deterministic core plus out-of-core intelligence that
+ * does I/O and therefore fails open — all four passes run concurrently and
+ * never block a PR on their own failure:
  *  - OSV known-vulnerability lookup on the dependencies added in the diff;
- *  - an optional full-tree SCA scan (Trivy/Grype over lockfiles and container
- *    images), merged into the dependencies without duplicating a CVE;
+ *  - a full-tree SCA scan (Trivy/Grype over lockfiles and container images),
+ *    merged into the dependencies without duplicating a CVE;
  *  - Semgrep semantic SAST, merged into the findings without duplicating a
- *    regex-rule hit on (rule|CWE, file, line).
- * The decision is recomputed after enrichment so a freshly discovered CVE,
- * restrictive license or Semgrep finding can change the verdict. If every
- * external pass is unreachable the result equals `analyzeDiff`.
+ *    regex-rule hit on (rule|CWE, file, line);
+ *  - the Rust taint engine (services/scan-engine), whose richer finding
+ *    supersedes a regex finding for the same issue.
+ * The decision is recomputed afterwards so a freshly discovered CVE,
+ * restrictive license, Semgrep finding or confirmed injection can change the
+ * verdict. With no external pass available the result equals `analyzeDiff`.
  */
 export async function analyzeDiffWithIntel(
   diff: string,
@@ -74,17 +85,19 @@ export async function analyzeDiffWithIntel(
   const base = analyzeDiff(diff);
   const parsed = parseUnifiedDiff(diff);
 
-  const [osvEnriched, scaDeps, semgrepFindings] = await Promise.all([
+  const [osvEnriched, scaDeps, semgrepFindings, rustFindings] = await Promise.all([
     enrichDependenciesWithOsv(base.dependencies, opts),
     runSca(opts.sca ?? {}),
     scanSemgrep(parsed.files, opts.semgrep),
+    runRustEngine(filesFromDiff(parsed), opts.rust ?? {}),
   ]);
 
   const dependencies = mergeScaIntoDependencies(osvEnriched, scaDeps);
 
-  // Merge Semgrep findings with the regex-rule findings, dropping any that
-  // duplicate an existing one on (rule|CWE, file, line).
-  const findings = [...base.findings];
+  // The Rust engine's richer finding supersedes a regex finding for the same
+  // issue; then Semgrep findings are added unless they duplicate an existing
+  // one on (rule|CWE, file, line).
+  const findings = mergeRustFindings(base.findings, rustFindings);
   for (const finding of semgrepFindings) {
     if (!isDuplicateFinding(finding, findings)) findings.push(finding);
   }
