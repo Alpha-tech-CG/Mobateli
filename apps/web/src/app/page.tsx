@@ -16,6 +16,11 @@ import {
   Building2,
   Briefcase,
   Users,
+  ScanSearch,
+  Server,
+  DatabaseBackup,
+  FileSignature,
+  BookOpen,
 } from "lucide-react";
 import { Reveal } from "@/components/reveal";
 import { Voices } from "@/components/landing/voices";
@@ -36,9 +41,9 @@ import {
 } from "@/components/landing/art";
 
 export const metadata = {
-  title: "CodeGate — Protection IA pour le code des équipes modernes",
+  title: "CodeGate — La sécurité de tout votre code, avant la production",
   description:
-    "CodeGate analyse chaque pull request générée par IA, bloque les déploiements dangereux et vous donne une traçabilité complète.",
+    "CodeGate audite chaque pull request, qu'elle soit écrite par un développeur ou générée par IA, ainsi que vos dépôts, serveurs, accès et sauvegardes, et vous remet un rapport d'audit signé.",
 };
 
 const DARK = "#111111";
@@ -67,50 +72,55 @@ function Pill({ children, href, variant = "brick" }: { children: React.ReactNode
 }
 
 const SERVICES = [
-  { icon: Radar, color: "#bb3e2c", tag: "Détection", title: "Secrets exposés repérés avant le commit", text: "Clés API, tokens et mots de passe détectés et masqués dans chaque diff." },
-  { icon: Hexagon, color: "#3aa6b9", tag: "Analyse", title: "Revue de pull request par IA", text: "Routes, authentification et configuration expliquées en langage clair." },
-  { icon: Triangle, color: "#c4372b", tag: "Prévention", title: "Score de confiance des dépendances", text: "Typosquatting, mainteneurs et vulnérabilités évalués pour chaque paquet." },
-  { icon: Boxes, color: "#9b5fd0", tag: "Contrôle", title: "Garde-fous pour les agents IA", text: "Shell, réseau et déploiement encadrés. Les secrets, jamais." },
+  { icon: Radar, color: "#bb3e2c", tag: "Secret Shield", title: "Secrets exposés bloqués", text: "Clés API, tokens, mots de passe et fichiers .env repérés dans chaque diff, masqués, avec la procédure de révocation du fournisseur." },
+  { icon: Hexagon, color: "#3aa6b9", tag: "Revue de code", title: "Failles de code et de configuration", text: "Injections, XSS, authentification, CI GitHub Actions, Docker et CORS : chaque problème expliqué en clair, avec son correctif." },
+  { icon: Triangle, color: "#c4372b", tag: "Dependency Trust", title: "Dépendances vérifiées", text: "Vulnérabilités connues, typosquatting, paquets trop récents ou abandonnés : un score de confiance pour chaque paquet npm, PyPI et Go." },
+  { icon: Boxes, color: "#9b5fd0", tag: "Agent Guard", title: "Garde-fous pour les agents IA", text: "Instructions cachées (prompt injection) détectées ; shell, réseau et déploiement encadrés ; approbation humaine pour les actions sensibles." },
+  { icon: ScanSearch, color: "#8ac898", tag: "Audit de dépôt", title: "Le code existant audité", text: "Toute la branche principale d'un dépôt analysée en quelques secondes, puis réanalysée chaque jour quand elle change." },
+  { icon: Rocket, color: "#e0a13a", tag: "Deploy Gate", title: "Déploiements contrôlés", text: "Avant chaque déploiement Vercel, CodeGate vérifie le commit : un risque bloquant arrête la mise en production." },
+  { icon: Server, color: "#3aa6b9", tag: "Infra Shield", title: "Serveurs durcis", text: "Ports exposés, SSH, firewall, Docker et mises à jour de vos VPS audités par un agent en lecture seule, avec un score par serveur." },
+  { icon: KeyRound, color: "#bb3e2c", tag: "BruteForce Shield", title: "Connexions résistantes", text: "Vos pages de connexion testées contre les tentatives répétées, sur vos domaines vérifiés et avec un compte de test." },
+  { icon: DatabaseBackup, color: "#9b5fd0", tag: "Backup Shield", title: "Sauvegardes restaurables", text: "Chiffrement, intégrité, copie isolée et restauration réellement testée : prêtes le jour d'un rançongiciel." },
 ];
 
 const STEPS = [
-  { Art: IsoRadar, title: "1 - Analyser", text: "Chaque pull request générée par IA est analysée dès son ouverture." },
-  { Art: IsoChart, title: "2 - Détecter", text: "Secrets, dépendances piégées et failles sont repérés et expliqués." },
-  { Art: IsoShield, title: "3 - Décider", text: "Autoriser, corriger, bloquer ou escalader, avec une trace d'audit." },
+  { Art: IsoRadar, title: "1 - Analyser", text: "Chaque pull request, écrite par un développeur ou générée par IA, est analysée dès son ouverture, comme vos dépôts, serveurs et sauvegardes." },
+  { Art: IsoChart, title: "2 - Détecter", text: "Secrets, dépendances piégées, failles de code et de configuration sont repérés et expliqués, en distinguant le vrai du faux." },
+  { Art: IsoShield, title: "3 - Décider et prouver", text: "Autoriser, corriger, bloquer ou escalader, tracé dans un journal immuable et dans un rapport d'audit signé." },
 ];
 
 const CASES = [
   {
     title: "Développeur solo",
-    text: "Vous codez avec Cursor ou Claude Code et déployez sur Vercel. CodeGate bloque la clé Stripe oubliée avant qu'elle n'atteigne un commit public.",
+    text: "Vous codez à la main ou avec Cursor et Claude Code, et déployez sur Vercel. CodeGate bloque la clé Stripe oubliée avant qu'elle n'atteigne un commit public, et vérifie votre VPS.",
     stats: [["< 30 s", "Premier retour sur la PR"], ["0", "Secret envoyé en production"]],
     visual: { title: "Ajout du paiement Stripe", status: "bloqué", tone: BRICK },
   },
   {
     title: "Startup SaaS",
-    text: "Plusieurs développeurs et agents IA ouvrent des PR chaque jour. Chaque changement est analysé, priorisé et tracé avant la fusion.",
+    text: "Développeurs et agents IA ouvrent des PR chaque jour. Chaque changement, quel que soit son auteur, est analysé, priorisé et tracé avant la fusion.",
     stats: [["100 %", "Des PR tracées avant fusion"], ["4", "Intégrations natives"]],
     visual: { title: "Refonte de l'authentification", status: "autorisé", tone: "#2a2d2f" },
   },
   {
     title: "Agence web",
-    text: "Vous livrez des projets clients avec une politique de sécurité vérifiable, et exportez les preuves d'audit pour chaque livraison.",
-    stats: [["PDF · CSV · JSON", "Export des preuves"], ["AES-256", "Chiffrement au repos"]],
+    text: "Vous livrez des projets clients avec une politique de sécurité vérifiable, et remettez à chaque livraison un rapport d'audit PDF signé que votre client vérifie en ligne.",
+    stats: [["PDF signé", "Rapport d'audit vérifiable"], ["AES-256", "Chiffrement au repos"]],
     visual: { title: "Livraison client v2.4", status: "autorisé", tone: "#3f7a52" },
   },
 ];
 
 const AUDIENCES = [
-  { icon: Code2, name: "Développeurs", text: "Coder vite avec l'IA, sans fuite." },
-  { icon: Rocket, name: "Startups", text: "Des PR IA tracées avant production." },
+  { icon: Code2, name: "Développeurs", text: "Coder vite, avec ou sans IA, sans fuite." },
+  { icon: Rocket, name: "Startups", text: "Chaque PR tracée avant production." },
   { icon: Briefcase, name: "Agences", text: "Une sécurité vérifiable pour vos clients." },
   { icon: Building2, name: "Entreprises SaaS", text: "Des preuves pour vos audits." },
 ];
 
 const RESOURCES = [
-  { meta: "Guide — 6 min", title: "Sécuriser le code généré par Cursor ou Claude Code" },
-  { meta: "Guide — 4 min", title: "Typosquatting : repérer une dépendance piégée" },
-  { meta: "Guide — 8 min", title: "Préparer un audit SOC 2 avec les preuves CodeGate" },
+  { meta: "Guide d'utilisation — 15 min", title: "Bien démarrer avec CodeGate, module par module", href: "/guide" },
+  { meta: "Guide — 4 min", title: "Comprendre le score de risque et les décisions", href: "/guide#score" },
+  { meta: "Guide — 5 min", title: "Remettre un rapport d'audit signé à un client ou un auditeur", href: "/guide#rapport" },
 ];
 
 export default function Landing() {
@@ -129,7 +139,7 @@ export default function Landing() {
             <a href="#modules" className="transition-colors hover:text-white">Modules</a>
             <a href="#process" className="transition-colors hover:text-white">Processus</a>
             <a href="#cases" className="transition-colors hover:text-white">Cas d&apos;usage</a>
-            <a href="#resources" className="transition-colors hover:text-white">Ressources</a>
+            <Link href="/guide" className="transition-colors hover:text-white">Guide</Link>
           </nav>
           <Pill href="/login" variant="white">Connexion</Pill>
         </div>
@@ -153,15 +163,16 @@ export default function Landing() {
         <div className="relative mx-auto max-w-[900px] px-6 pt-24 text-center sm:pt-32">
           <Reveal>
             <h1 className="font-display text-[44px] leading-[1.1] text-white sm:text-[68px]">
-              Protection IA pour le code
+              La sécurité de tout votre code,
               <br />
-              des <span className="text-[#8ac898]">équipes modernes</span>
+              <span className="text-[#8ac898]">avant la production</span>
             </h1>
           </Reveal>
           <Reveal delay={100}>
             <p className="mx-auto mt-6 max-w-[620px] text-[16px] leading-6 text-white/85">
-              Sécurisez chaque pull request générée par IA : secrets, dépendances piégées et failles
-              sont détectés avant que le code n&apos;atteigne la production.
+              Écrit par vos développeurs ou généré par IA, chaque changement est audité : secrets,
+              dépendances piégées, failles de code, serveurs, accès et sauvegardes. Les preuves sont
+              réunies dans un rapport d&apos;audit signé.
             </p>
           </Reveal>
           <Reveal delay={180}>
@@ -201,7 +212,7 @@ export default function Landing() {
             <Reveal><Eyebrow>À propos</Eyebrow></Reveal>
             <Reveal delay={80}>
               <h2 className="font-display mt-5 text-[32px] leading-[1.2] text-[#111] sm:text-[40px]">
-                Allier l&apos;intelligence de l&apos;IA et une sécurité proactive pour protéger le code moderne
+                Une sécurité proactive pour tout le code que vous livrez, humain comme IA
               </h2>
             </Reveal>
             <Reveal delay={140}>
@@ -233,7 +244,7 @@ export default function Landing() {
             </Reveal>
             <Reveal delay={120}>
               <p className="mt-8 max-w-[280px] text-center text-[14px] text-[#555b60]">
-                Des analyses par IA qui anticipent les risques du code généré
+                Des audits qui anticipent les risques, du premier commit au serveur de production
               </p>
             </Reveal>
           </div>
@@ -244,33 +255,46 @@ export default function Landing() {
       <section id="modules" className="pb-28" style={{ background: DARK }}>
         <Bars color="#ffffff" className="mx-auto max-w-[1280px] px-6" />
         <div className="mx-auto mt-20 grid max-w-[1280px] gap-6 px-6 lg:grid-cols-3">
-          <div className="lg:pr-6">
-            <Reveal><Eyebrow dark>Nos modules</Eyebrow></Reveal>
+          <div className="lg:col-span-2">
+            <Reveal><Eyebrow dark>Nos audits</Eyebrow></Reveal>
             <Reveal delay={80}>
               <h2 className="font-display mt-5 text-[40px] leading-[1.15] text-white sm:text-[54px]">
-                Chaque PR,
+                Neuf audits,
                 <br />
-                <span className="text-[#8ac898]">sous contrôle</span>
+                <span className="text-[#8ac898]">une seule décision</span>
               </h2>
             </Reveal>
           </div>
-          {SERVICES.slice(0, 2).map((s, i) => (
-            <Reveal key={s.title} tilt delay={i * 120}>
-              <ServiceCard s={s} />
-            </Reveal>
-          ))}
-          {SERVICES.slice(2).map((s, i) => (
-            <Reveal key={s.title} tilt delay={i * 120}>
-              <ServiceCard s={s} />
-            </Reveal>
-          ))}
-          <Reveal delay={200}>
-            <div className="flex h-full flex-col justify-end gap-6 pb-2 lg:pl-6">
+          <Reveal delay={120}>
+            <div className="flex h-full flex-col justify-end gap-6 pb-2">
               <p className="text-[15px] leading-6 text-white/85">
-                Protégez votre chaîne de livraison avec des modules conçus pour détecter les risques,
-                réduire l&apos;exposition et renforcer la confiance dans le code généré par IA.
+                Du code de vos développeurs à celui de vos agents IA, de vos dépendances à vos serveurs et vos
+                sauvegardes : CodeGate couvre toute la chaîne de livraison et chiffre le risque sur 100.
               </p>
-              <div><Pill href="/login">Tous les modules</Pill></div>
+              <div className="flex flex-wrap gap-3">
+                <Pill href="/signup">Commencer</Pill>
+                <Pill href="/guide" variant="dark">Lire le guide</Pill>
+              </div>
+            </div>
+          </Reveal>
+          {SERVICES.map((s, i) => (
+            <Reveal key={s.title} tilt delay={(i % 3) * 120}>
+              <ServiceCard s={s} />
+            </Reveal>
+          ))}
+          <Reveal className="lg:col-span-3">
+            <div className="flex flex-col gap-5 rounded-[5px] border border-[#2c2f31] bg-[#191b1c] p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-4">
+                <FileSignature className="mt-1 size-9 shrink-0 text-[#bb3e2c]" strokeWidth={1.3} aria-hidden />
+                <div>
+                  <p className="font-display text-[24px] text-white">Rapport d&apos;audit signé</p>
+                  <p className="mt-1 max-w-[680px] text-[14px] leading-6 text-[#9aa3a8]">
+                    Tous ces audits réunis dans un PDF à l&apos;en-tête CodeGate, signé électroniquement et vérifiable
+                    en ligne par QR code : la preuve à remettre à un client, un auditeur ou pour un audit SOC 2.
+                  </p>
+                </div>
+              </div>
+              <Pill href="/guide#rapport" variant="white">Comment l&apos;obtenir</Pill>
             </div>
           </Reveal>
         </div>
@@ -287,7 +311,7 @@ export default function Landing() {
           <Reveal><Eyebrow dark center>Notre processus</Eyebrow></Reveal>
           <Reveal delay={80}>
             <h2 className="font-display mx-auto mt-5 max-w-[640px] text-[40px] leading-[1.15] text-white sm:text-[54px]">
-              Une décision claire pour <span className="text-[#8ac898]">chaque PR</span>
+              Une décision claire pour <span className="text-[#8ac898]">chaque changement</span>
             </h2>
           </Reveal>
         </div>
@@ -370,7 +394,7 @@ export default function Landing() {
             <Reveal><Eyebrow center>Pourquoi CodeGate</Eyebrow></Reveal>
             <Reveal delay={80}>
               <h2 className="font-display mx-auto mt-5 max-w-[620px] text-[40px] leading-[1.15] sm:text-[54px]">
-                Là où la sécurité rencontre l&apos;IA
+                La sécurité qui suit votre rythme
               </h2>
             </Reveal>
           </div>
@@ -424,8 +448,8 @@ export default function Landing() {
               <div className="flex h-full flex-col justify-between rounded-[5px] bg-white p-6">
                 <span className="self-start rounded-full bg-[#d6f0dc] px-3 py-1 text-[13px] text-[#2e7a45]">Principe</span>
                 <p className="font-display mt-6 text-[22px] leading-[1.35] text-[#111] sm:text-[26px]">
-                  « L&apos;IA peut accélérer le développement, mais aucune action sensible ne doit atteindre la
-                  production sans contrôle, traçabilité et décision explicite. »
+                  « Qu&apos;il soit écrit par un développeur ou par une IA, aucun changement sensible ne doit
+                  atteindre la production sans contrôle, traçabilité et décision explicite. »
                 </p>
                 <div className="mt-6 flex items-center gap-3">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -460,16 +484,20 @@ export default function Landing() {
               </h2>
             </Reveal>
           </div>
-          <Pill href="/login">Toutes les ressources</Pill>
+          <Pill href="/guide">Lire le guide</Pill>
         </div>
         <div className="mx-auto mt-12 max-w-[1280px] px-6">
           <div className="border-y border-[#d6d9dc] md:w-1/2 md:border-r">
             {RESOURCES.map((r, i) => (
               <Reveal key={r.title} delay={i * 80}>
-                <div className="border-b border-[#d6d9dc] px-2 py-7 last:border-b-0">
-                  <p className="text-[13px] text-[#6b7378]">{r.meta}</p>
-                  <p className="font-display mt-3 text-[22px] leading-[1.3] text-[#111] sm:text-[24px]">{r.title}</p>
-                </div>
+                <Link href={r.href} className="group block border-b border-[#d6d9dc] px-2 py-7 last:border-b-0">
+                  <p className="flex items-center gap-2 text-[13px] text-[#6b7378]">
+                    <BookOpen className="size-3.5" aria-hidden /> {r.meta}
+                  </p>
+                  <p className="font-display mt-3 text-[22px] leading-[1.3] text-[#111] transition-colors group-hover:text-[#bb3e2c] sm:text-[24px]">
+                    {r.title}
+                  </p>
+                </Link>
               </Reveal>
             ))}
           </div>
@@ -484,7 +512,7 @@ export default function Landing() {
             <CtaCircuit side="left" className="absolute left-0 top-1/2 hidden h-[260px] w-[260px] -translate-y-1/2 md:block" />
             <CtaCircuit side="right" className="absolute right-0 top-1/2 hidden h-[260px] w-[260px] -translate-y-1/2 md:block" />
             <h2 className="font-display relative max-w-[560px] text-[36px] leading-[1.15] text-white sm:text-[48px]">
-              Prêt à livrer le code IA sans risque ?
+              Prêt à livrer votre code sans risque ?
             </h2>
             <div className="relative mt-8 flex flex-wrap justify-center gap-3">
               <Pill href="/signup" variant="white">Créer un compte</Pill>
@@ -505,7 +533,7 @@ export default function Landing() {
               <span className="font-display text-[20px] text-white">CodeGate</span>
             </div>
             <p className="font-display mt-6 max-w-[420px] text-[24px] leading-[1.3] text-white">
-              La couche de sécurité entre l&apos;IA et votre production
+              La couche de sécurité entre votre code et votre production
             </p>
             <Link href="/signup" className="mt-8 flex h-12 max-w-[420px] items-center justify-between rounded-[40px] bg-[#232527] pl-5 pr-1.5 text-[14px] text-white/60 transition-colors hover:text-white">
               Créer un compte gratuitement
@@ -523,6 +551,7 @@ export default function Landing() {
             <div className="space-y-3">
               <a href="#cases" className="block hover:text-white">Cas d&apos;usage</a>
               <a href="#resources" className="block hover:text-white">Ressources</a>
+              <Link href="/guide" className="block hover:text-white">Guide d&apos;utilisation</Link>
             </div>
             <div className="space-y-3">
               <Link href="/login" className="block hover:text-white">Connexion</Link>
@@ -546,7 +575,7 @@ export default function Landing() {
 
 function ServiceCard({ s }: { s: (typeof SERVICES)[number] }) {
   return (
-    <div className="cg-noise flex h-[340px] flex-col justify-between rounded-[5px] p-6">
+    <div className="cg-noise flex h-full min-h-[320px] flex-col justify-between rounded-[5px] p-6">
       <s.icon className="size-12" style={{ color: s.color }} strokeWidth={1.1} aria-hidden />
       <div>
         <p className="flex items-center gap-2 text-[13px] text-[#111]">

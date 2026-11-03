@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "CodeGate",
-  description: "Security gate for AI-generated code",
+  description: "La sécurité de tout votre code, écrit par des développeurs ou généré par IA, avant la production.",
   icons: { icon: "/logo.webp" },
 };
 
