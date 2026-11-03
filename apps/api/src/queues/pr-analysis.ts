@@ -7,6 +7,8 @@ export const PR_ANALYSIS_QUEUE = "pr-analysis";
 export interface PrAnalysisJob {
   pullRequestId: string;
   reason: "opened" | "synchronize" | "reopened" | "manual_rescan";
+  /** Head commit being analyzed — part of the dedup key. */
+  headSha?: string | null;
 }
 
 let queue: Queue<PrAnalysisJob> | undefined;
@@ -30,9 +32,16 @@ export async function enqueuePrAnalysis(
   connection: Redis,
   data: PrAnalysisJob,
 ): Promise<void> {
-  // Deduplicate on PR + reason so a burst of synchronize events collapses.
+  // Deduplicate on PR + head commit so duplicate events for the same commit
+  // collapse. BullMQ ignores an add whose jobId still exists — completed jobs
+  // included (removeOnComplete keeps them) — so the key must change with each
+  // new push, and a manual rescan must always be unique.
   // BullMQ forbids ":" in a custom job id, so use "__" as separator.
+  const key =
+    data.reason !== "manual_rescan" && data.headSha
+      ? data.headSha
+      : `${data.reason}__${Date.now()}`;
   await getPrAnalysisQueue(connection).add("analyze", data, {
-    jobId: `${data.pullRequestId}__${data.reason}`,
+    jobId: `${data.pullRequestId}__${key}`,
   });
 }

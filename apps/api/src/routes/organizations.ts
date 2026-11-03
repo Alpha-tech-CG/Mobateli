@@ -95,6 +95,10 @@ export async function organizationRoutes(app: FastifyInstance) {
     { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
     async (req, reply) => {
       const body = inviteMemberSchema.parse(req.body);
+      // Only an owner may grant owner — otherwise an admin could escalate.
+      if (body.role === "owner" && req.principal.role !== "owner") {
+        return reply.code(403).send({ error: "forbidden" });
+      }
 
       const existing = await prisma.user.findUnique({ where: { email: body.email } });
       if (existing) {

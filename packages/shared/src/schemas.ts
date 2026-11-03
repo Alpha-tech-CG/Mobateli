@@ -95,8 +95,20 @@ export const connectLinearSchema = z.object({
 });
 export type ConnectLinearInput = z.infer<typeof connectLinearSchema>;
 
+/**
+ * The server POSTs to these URLs, so they are pinned to the real providers
+ * over HTTPS — an arbitrary URL would let a user aim the API at internal
+ * services (SSRF).
+ */
 export const connectSlackSchema = z.object({
-  webhookUrl: z.string().url().max(500),
+  webhookUrl: z
+    .string()
+    .url()
+    .max(500)
+    .refine(
+      (u) => u.startsWith("https://hooks.slack.com/"),
+      "URL de webhook Slack attendue (https://hooks.slack.com/…)",
+    ),
 });
 export type ConnectSlackInput = z.infer<typeof connectSlackSchema>;
 
@@ -109,7 +121,14 @@ export const connectSamlSchema = z.object({
 export type ConnectSamlInput = z.infer<typeof connectSamlSchema>;
 
 export const connectJiraSchema = z.object({
-  baseUrl: z.string().url().max(300),
+  baseUrl: z
+    .string()
+    .url()
+    .max(300)
+    .refine(
+      (u) => /^https:\/\/[a-z0-9-]+\.atlassian\.net(\/.*)?$/i.test(u),
+      "URL Jira Cloud attendue (https://<site>.atlassian.net)",
+    ),
   email: emailSchema,
   apiToken: z.string().min(10).max(500),
   projectKey: z.string().min(1).max(50),

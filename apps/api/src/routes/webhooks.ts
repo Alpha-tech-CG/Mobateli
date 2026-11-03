@@ -136,6 +136,7 @@ async function handlePullRequest(
   await enqueuePrAnalysis(connection, {
     pullRequestId: row.id,
     reason: action as "opened" | "synchronize" | "reopened",
+    headSha: pr.head?.sha ?? null,
   });
 }
 
@@ -155,6 +156,9 @@ async function handleInstallationRepositories(payload: any): Promise<void> {
   }
 }
 
+/** A GitLab webhook referenced a project owned by another organization. */
+class ForeignProjectError extends Error {}
+
 async function handleGitlabMergeRequest(
   organizationId: string,
   payload: any,
@@ -166,6 +170,16 @@ async function handleGitlabMergeRequest(
 
   const project = payload.project ?? {};
   if (!project.id || !project.path_with_namespace) return;
+
+  // The GitLab token only proves which org is calling, not that the project
+  // is theirs. Never attach an MR to a project another org already owns.
+  const owned = await prisma.repository.findUnique({
+    where: { provider_externalId: { provider: "gitlab", externalId: String(project.id) } },
+    select: { organizationId: true },
+  });
+  if (owned && owned.organizationId !== organizationId) {
+    throw new ForeignProjectError();
+  }
 
   const repoRow = await prisma.repository.upsert({
     where: { provider_externalId: { provider: "gitlab", externalId: String(project.id) } },
@@ -214,6 +228,7 @@ async function handleGitlabMergeRequest(
   await enqueuePrAnalysis(connection, {
     pullRequestId: row.id,
     reason: action === "open" ? "opened" : action === "reopen" ? "reopened" : "synchronize",
+    headSha: attrs.last_commit?.id ?? null,
   });
 }
 
@@ -340,18 +355,20 @@ export async function webhookRoutes(
       return reply.code(401).send({ error: "invalid_signature" });
     }
 
-    const deliveryId = req.headers["x-github-delivery"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
-      // Replay of an already-processed delivery — acknowledge and stop.
-      return reply.code(200).send({ status: "duplicate" });
-    }
-
     const event = req.headers["x-github-event"] as string | undefined;
     let payload: unknown;
     try {
       payload = JSON.parse(raw.toString("utf8"));
     } catch {
       return reply.code(400).send({ error: "invalid_json" });
+    }
+
+    // Claim only once the body is known-good, so a rejected delivery doesn't
+    // turn its retry into a "duplicate".
+    const deliveryId = req.headers["x-github-delivery"] as string | undefined;
+    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+      // Replay of an already-processed delivery — acknowledge and stop.
+      return reply.code(200).send({ status: "duplicate" });
     }
 
     const devAutoLink = config.NODE_ENV !== "production";
@@ -409,11 +426,6 @@ export async function webhookRoutes(
     });
     if (!conn) return reply.code(401).send({ error: "invalid_token" });
 
-    const deliveryId = req.headers["x-gitlab-event-uuid"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
-      return reply.code(200).send({ status: "duplicate" });
-    }
-
     let payload: any;
     try {
       payload = JSON.parse(raw.toString("utf8"));
@@ -421,11 +433,20 @@ export async function webhookRoutes(
       return reply.code(400).send({ error: "invalid_json" });
     }
 
+    const deliveryId = req.headers["x-gitlab-event-uuid"] as string | undefined;
+    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+      return reply.code(200).send({ status: "duplicate" });
+    }
+
     try {
       if (payload.object_kind === "merge_request") {
         await handleGitlabMergeRequest(conn.organizationId, payload, connection);
       }
     } catch (err) {
+      if (err instanceof ForeignProjectError) {
+        req.log.warn({ organizationId: conn.organizationId }, "gitlab MR for a project owned by another org — rejected");
+        return reply.code(403).send({ error: "project_not_owned" });
+      }
       req.log.error({ err }, "gitlab webhook handler error");
       if (deliveryId) await releaseDelivery(connection, deliveryId);
       return reply.code(500).send({ error: "handler_error" });
@@ -445,16 +466,16 @@ export async function webhookRoutes(
       return reply.code(401).send({ error: "invalid_signature" });
     }
 
-    const deliveryId = req.headers["x-vercel-id"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
-      return reply.code(200).send({ status: "duplicate" });
-    }
-
     let payload: unknown;
     try {
       payload = JSON.parse(raw.toString("utf8"));
     } catch {
       return reply.code(400).send({ error: "invalid_json" });
+    }
+
+    const deliveryId = req.headers["x-vercel-id"] as string | undefined;
+    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+      return reply.code(200).send({ status: "duplicate" });
     }
 
     try {

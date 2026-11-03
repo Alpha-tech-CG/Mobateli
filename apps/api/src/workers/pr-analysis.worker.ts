@@ -54,7 +54,28 @@ export function createPrAnalysisWorker(
           pr.repository.name,
           pr.number,
         );
-        if (fetched) diff = fetched;
+        // Fail closed: analyzing an empty diff would mark the PR "passed" and
+        // post a green check for code nobody looked at. Let BullMQ retry, and
+        // flag the PR for a human once retries are exhausted.
+        if (fetched == null) {
+          const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          await prisma.pullRequest.update({
+            where: { id: pr.id },
+            data: { status: lastAttempt ? "escalated" : "pending" },
+          });
+          if (lastAttempt) {
+            await recordAudit({
+              organizationId: pr.repository.organizationId,
+              actorType: "system",
+              action: "pr.analysis_failed",
+              resourceType: "pull_request",
+              resourceId: pr.id,
+              metadata: { reason: "diff_unavailable" },
+            });
+          }
+          throw new Error("diff_unavailable");
+        }
+        diff = fetched;
       }
 
       // Deterministic core + OSV known-vulnerability enrichment (fails open).

@@ -109,7 +109,16 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
   app.post(
     "/api/v1/auth/mfa/setup",
     { preHandler: [app.authenticate] },
-    async (req) => {
+    async (req, reply) => {
+      // Once MFA is on, re-running setup would silently swap the second
+      // factor — a stolen session could take over the account's MFA.
+      const current = await prisma.user.findUniqueOrThrow({
+        where: { id: req.principal.userId },
+        select: { mfaEnabled: true },
+      });
+      if (current.mfaEnabled) {
+        return reply.code(409).send({ error: "mfa_already_enabled" });
+      }
       const secret = authenticator.generateSecret();
       await prisma.user.update({
         where: { id: req.principal.userId },

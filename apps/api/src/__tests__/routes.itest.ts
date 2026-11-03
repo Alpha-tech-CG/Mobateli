@@ -283,6 +283,67 @@ test("gitlab: connect token governs the MR webhook", async () => {
   assert.ok(gl, "GitLab MR should appear as a pull request");
   assert.equal(gl.number, 9);
   assert.equal(gl.aiGenerated, true);
+
+  // Another org's GitLab token can't inject MRs into acme's project.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: {
+      email: "intruder@other.test",
+      password: "intruder-password-123",
+      name: "Intruder",
+      organizationName: "Other",
+    },
+  });
+  const otherCon = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/gitlab",
+    headers: { authorization: `Bearer ${other.json().token}` },
+  });
+  const hijack = await app.inject({
+    method: "POST",
+    url: "/webhooks/gitlab",
+    headers: {
+      "content-type": "application/json",
+      "x-gitlab-token": otherCon.json().webhookToken,
+      "x-gitlab-event": "Merge Request Hook",
+    },
+    payload: payload.replace('"iid":9', '"iid":10'),
+  });
+  assert.equal(hijack.statusCode, 403);
+});
+
+test("members: an admin cannot mint an owner", async () => {
+  const invite = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "admin2@acme.test", role: "admin" },
+  });
+  assert.equal(invite.statusCode, 201);
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "admin2@acme.test", password: invite.json().tempPassword },
+  });
+  const adminAuth = { authorization: `Bearer ${login.json().token}` };
+  const escalate = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: adminAuth,
+    payload: { email: "owner2@acme.test", role: "owner" },
+  });
+  assert.equal(escalate.statusCode, 403);
+});
+
+test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/slack",
+    headers: auth(),
+    payload: { webhookUrl: "http://169.254.169.254/latest/meta-data/" },
+  });
+  assert.equal(res.statusCode, 400);
 });
 
 test("jira integration: connect, status hides the token", async () => {
@@ -381,6 +442,10 @@ test("scim: provision, list, deactivate; deactivated user can't log in", async (
   assert.equal(blocked.statusCode, 403);
   assert.equal(blocked.json().error, "account_disabled");
 
+  // A token issued before deprovisioning stops working immediately.
+  const stale = await app.inject({ method: "GET", url: "/api/v1/organization", headers: auth() });
+  assert.equal(stale.statusCode, 401);
+
   // Reactivate so later tests / the session keep working.
   await app.inject({
     method: "PATCH",
@@ -439,6 +504,17 @@ test("saml: configure, metadata endpoint, ACS rejects invalid assertions", async
     payload: { SAMLResponse: Buffer.from("not-a-saml-response").toString("base64") },
   });
   assert.equal(garbage.statusCode, 401);
+
+  // Real IdPs use the HTTP-POST binding (form-encoded), not JSON.
+  const form = await app.inject({
+    method: "POST",
+    url: `/saml/${orgId}/acs`,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    payload: new URLSearchParams({
+      SAMLResponse: Buffer.from("not-a-saml-response").toString("base64"),
+    }).toString(),
+  });
+  assert.equal(form.statusCode, 401);
 });
 
 test("audit export returns a JSON evidence pack", async () => {
