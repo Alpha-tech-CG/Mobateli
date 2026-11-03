@@ -62,7 +62,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
             }
           },
   });
-  await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
+  await app.register(rateLimit, { max: config.RATE_LIMIT_PER_MINUTE, timeWindow: "1 minute" });
   await app.register(authPlugin, {
     jwtSecret: config.JWT_SECRET,
     mfaRequiredForAdmins: config.MFA_REQUIRED_FOR_ADMINS === "true",

@@ -22,6 +22,8 @@ process.env.VERCEL_WEBHOOK_SECRET = "it_vercel_secret";
 // The suite drives admin routes with a fresh owner; MFA enforcement is unit-tested.
 process.env.MFA_REQUIRED_FOR_ADMINS = "false";
 process.env.CRON_SECRET = "it_cron_secret_0123456789abcdef";
+// The whole suite runs from 127.0.0.1 in a few seconds on CI.
+process.env.RATE_LIMIT_PER_MINUTE = "100000";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");

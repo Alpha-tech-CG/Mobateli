@@ -49,6 +49,9 @@ const envSchema = z.object({
   RETENTION_DAYS: z.coerce.number().int().min(30).default(365),
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(365).default(730),
 
+  // Global per-IP rate limit on every route (cahier §13.4).
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).default(100),
+
   // Owners/admins must enable MFA before administrative actions (§10.2).
   MFA_REQUIRED_FOR_ADMINS: z.enum(["true", "false"]).default("true"),
 
