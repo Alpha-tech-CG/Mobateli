@@ -94,8 +94,20 @@ export interface PullRequestListItem {
   riskScore: number | null;
   status: PullRequestStatus;
   repository: string;
-  counts: { findings: number; secrets: number; dependencies: number };
+  repositoryId: string;
+  provider: "github" | "gitlab";
+  /** Problems only; `dependenciesAnalyzed` is every dependency the PR adds. */
+  counts: { findings: number; secrets: number; dependencies: number; dependenciesAnalyzed: number };
   createdAt: string;
+}
+
+export interface OpenPullRequest {
+  number: number;
+  title: string;
+  author: string;
+  url: string;
+  updatedAt: string;
+  analysis: { id: string; riskScore: number | null; status: PullRequestStatus; upToDate: boolean } | null;
 }
 
 export interface Finding {

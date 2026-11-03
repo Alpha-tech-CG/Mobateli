@@ -13,11 +13,25 @@ export async function pullRequestRoutes(app: FastifyInstance, jobs: Jobs) {
     "/api/v1/pull-requests",
     { preHandler: [app.authenticate] },
     async (req) => {
+      const { repositoryId } = req.query as { repositoryId?: string };
       const prs = await prisma.pullRequest.findMany({
-        where: { repository: { organizationId: req.principal.organizationId } },
+        where: {
+          repository: {
+            organizationId: req.principal.organizationId,
+            ...(repositoryId ? { id: repositoryId } : {}),
+          },
+        },
         include: {
-          repository: { select: { name: true } },
-          _count: { select: { findings: true, secretFindings: true, dependencies: true } },
+          repository: { select: { id: true, name: true, provider: true } },
+          _count: {
+            select: {
+              // Problems only: open findings, unrevoked secrets, risky deps.
+              findings: { where: { status: { in: ["open", "acknowledged"] }, severity: { not: "info" } } },
+              secretFindings: { where: { status: { notIn: ["resolved", "false_positive"] } } },
+              dependencies: true,
+            },
+          },
+          dependencies: { where: { riskLevel: { not: "low" } }, select: { id: true } },
         },
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -33,10 +47,14 @@ export async function pullRequestRoutes(app: FastifyInstance, jobs: Jobs) {
           riskScore: pr.riskScore,
           status: pr.status,
           repository: pr.repository.name,
+          repositoryId: pr.repository.id,
+          provider: pr.repository.provider,
           counts: {
             findings: pr._count.findings,
             secrets: pr._count.secretFindings,
-            dependencies: pr._count.dependencies,
+            // Every added dependency is analysed; only risky ones are problems.
+            dependencies: pr.dependencies.length,
+            dependenciesAnalyzed: pr._count.dependencies,
           },
           createdAt: pr.createdAt,
         })),

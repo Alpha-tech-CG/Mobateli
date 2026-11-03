@@ -120,7 +120,17 @@ function Detail() {
         )}
       </Section>
 
-      <Section title={`📦 Dépendances (${pr.dependencies.length})`}>
+      <Section
+        title={`📦 Dépendances — ${pr.dependencies.length} analysée(s), ${
+          pr.dependencies.filter((d) => d.riskLevel !== "low").length
+        } à risque`}
+      >
+        {pr.dependencies.length && !pr.dependencies.some((d) => d.riskLevel !== "low") ? (
+          <p className="border-b border-border px-4 py-2 text-xs text-success">
+            Toutes les dépendances ajoutées ou mises à jour sont saines (vulnérabilités connues, registre,
+            typosquatting vérifiés).
+          </p>
+        ) : null}
         {pr.dependencies.length ? (
           <ul className="divide-y divide-border">
             {pr.dependencies.map((d) => (

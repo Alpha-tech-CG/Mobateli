@@ -969,6 +969,29 @@ test("repository scans: pick a repo, guard rails, auto-scan toggle", async () =>
   assert.equal(detail.json().scan.status, "queued");
 });
 
+test("pull requests: problems counted apart from analysed deps, project filter, open PRs guard", async () => {
+  const pr = await prisma.pullRequest.findFirstOrThrow({ where: { repository: { provider: "github" } } });
+  await prisma.dependency.createMany({
+    data: [
+      { pullRequestId: pr.id, ecosystem: "npm", name: "zod", version: "^4.6.7", trustScore: 80, riskLevel: "low" },
+      { pullRequestId: pr.id, ecosystem: "npm", name: "fastify", version: "^5.12.8", trustScore: 80, riskLevel: "low" },
+    ],
+  });
+  const list = await app.inject({ method: "GET", url: `/api/v1/pull-requests?repositoryId=${pr.repositoryId}`, headers: auth() });
+  const row = list.json().pullRequests.find((p: { id: string }) => p.id === pr.id);
+  assert.equal(row.counts.dependencies, 0, "safe dependencies are not problems");
+  assert.ok(row.counts.dependenciesAnalyzed >= 2);
+  assert.ok(list.json().pullRequests.every((p: { repositoryId: string }) => p.repositoryId === pr.repositoryId));
+
+  const other = await app.inject({ method: "GET", url: "/api/v1/pull-requests?repositoryId=00000000-0000-0000-0000-000000000000", headers: auth() });
+  assert.equal(other.json().pullRequests.length, 0);
+
+  await prisma.repository.update({ where: { id: pr.repositoryId }, data: { installationId: null } });
+  const open = await app.inject({ method: "GET", url: `/api/v1/repositories/${pr.repositoryId}/open-pull-requests`, headers: auth() });
+  assert.equal(open.statusCode, 409);
+  assert.equal(open.json().error, "github_not_installed");
+});
+
 test("rgpd: export without secrets, then erase the organization", async () => {
   const exp = await app.inject({ method: "GET", url: "/api/v1/organization/export", headers: auth() });
   assert.equal(exp.statusCode, 200);

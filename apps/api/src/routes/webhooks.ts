@@ -16,7 +16,7 @@ import { notifySlack } from "../lib/notify.js";
 import { requestApproval } from "../lib/approvals.js";
 
 /** Heuristic: was this PR likely opened by an AI coding agent? (cahier §5.1) */
-function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
+export function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
   const needles = ["cursor", "claude", "copilot", "codex", "windsurf", "devin", "[bot]"];
   const hay = `${authorLogin} ${title} ${body}`.toLowerCase();
   return needles.some((n) => hay.includes(n)) || /generated with/i.test(body);
