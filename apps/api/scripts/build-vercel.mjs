@@ -86,7 +86,8 @@ writeFileSync(
       outputDirectory: "public",
       functions: {
         "api/index.js": {
-          maxDuration: 30,
+          // Whole-repository scans run after the response (waitUntil).
+          maxDuration: 60,
           includeFiles: "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm}",
         },
       },

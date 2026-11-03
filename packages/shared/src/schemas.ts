@@ -161,6 +161,10 @@ export const approvalDecisionSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
+export const updateRepositorySchema = z.object({
+  autoScan: z.boolean(),
+});
+
 export const deleteOrganizationSchema = z.object({
   /** The exact organization name, typed by the owner to confirm. */
   confirmName: z.string().min(1).max(200),

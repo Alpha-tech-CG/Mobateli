@@ -942,6 +942,33 @@ test("platform: GitHub App manifest flow is operator-only and stores credentials
   resetGithubAppCache();
 });
 
+test("repository scans: pick a repo, guard rails, auto-scan toggle", async () => {
+  const repo = await prisma.repository.findFirstOrThrow({ where: { provider: "github" } });
+  await prisma.repository.update({ where: { id: repo.id }, data: { installationId: null } });
+  const blocked = await app.inject({ method: "POST", url: `/api/v1/repositories/${repo.id}/scans`, headers: auth() });
+  assert.equal(blocked.statusCode, 409);
+  assert.equal(blocked.json().error, "github_not_installed");
+
+  const list = await app.inject({ method: "GET", url: "/api/v1/repositories", headers: auth() });
+  const row = list.json().repositories.find((r: { id: string }) => r.id === repo.id);
+  assert.equal(row.scannable, false);
+  assert.equal(row.autoScan, true);
+
+  const off = await app.inject({
+    method: "PATCH", url: `/api/v1/repositories/${repo.id}`, headers: auth(), payload: { autoScan: false },
+  });
+  assert.equal(off.json().autoScan, false);
+
+  const { createScan } = await import("../lib/repo-scan.js");
+  const a = await createScan({ repositoryId: repo.id, organizationId: repo.organizationId, trigger: "manual" });
+  const b = await createScan({ repositoryId: repo.id, organizationId: repo.organizationId, trigger: "manual" });
+  assert.equal(b.id, a.id, "a scan already queued is reused");
+  const scans = await app.inject({ method: "GET", url: "/api/v1/scans", headers: auth() });
+  assert.equal(scans.json().scans[0].id, a.id);
+  const detail = await app.inject({ method: "GET", url: `/api/v1/scans/${a.id}`, headers: auth() });
+  assert.equal(detail.json().scan.status, "queued");
+});
+
 test("rgpd: export without secrets, then erase the organization", async () => {
   const exp = await app.inject({ method: "GET", url: "/api/v1/organization/export", headers: auth() });
   assert.equal(exp.statusCode, 200);

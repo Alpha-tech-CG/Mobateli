@@ -32,10 +32,24 @@ export async function organizationRoutes(app: FastifyInstance) {
           provider: true,
           defaultBranch: true,
           protectionLevel: true,
+          autoScan: true,
+          installationId: true,
+          scans: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { id: true, status: true, riskScore: true, finishedAt: true, createdAt: true },
+          },
         },
         orderBy: { name: "asc" },
       });
-      return { repositories };
+      return {
+        repositories: repositories.map(({ installationId, scans, ...r }) => ({
+          ...r,
+          // A GitHub repo is scannable only while the App is installed on it.
+          scannable: r.provider !== "github" || installationId !== null,
+          lastScan: scans[0] ?? null,
+        })),
+      };
     },
   );
 

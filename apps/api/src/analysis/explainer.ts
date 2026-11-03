@@ -63,16 +63,26 @@ export function buildPrComment(result: {
     }
     lines.push("");
   }
-  if (result.findings.length) {
-    lines.push(`### 🔎 Problèmes de code (${result.findings.length})`);
-    for (const f of result.findings) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+  const risks = result.findings.filter((f) => f.severity !== "info");
+  const notes = result.findings.filter((f) => f.severity === "info");
+  if (risks.length) {
+    lines.push(`### 🔎 Problèmes de code (${risks.length})`);
+    for (const f of risks) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
     lines.push("");
   }
-  if (!result.secrets.length && !result.findings.length &&
+  if (!result.secrets.length && !risks.length &&
       !result.dependencies.some((d) => d.riskLevel !== "low")) {
     lines.push("Aucun risque détecté. ✅");
+    lines.push("");
   }
-
+  if (notes.length) {
+    // Shown for transparency, folded: they carry no risk and no score.
+    lines.push(`<details><summary>ℹ️ ${notes.length} information(s) sans impact sur le score</summary>`);
+    lines.push("");
+    for (const f of notes) lines.push(`- ${explainFinding(f)}`);
+    lines.push("");
+    lines.push("</details>");
+  }
   lines.push("");
   lines.push("<sub>CodeGate vérifie chaque PR générée par IA avant la production.</sub>");
   return lines.join("\n");

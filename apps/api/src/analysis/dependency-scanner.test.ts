@@ -36,3 +36,38 @@ test("go.mod: require lines and block entries", () => {
     ["Go", "golang.org/x/crypto", "v0.24.0"],
   ]);
 });
+
+test("package.json in a PR diff: scripts, engines and URLs are not dependencies", () => {
+  const deps = scanDependencies(
+    diffOf("package.json", [
+      '    "test": "mocha --require test/support/env",',
+      '    "lint": "eslint .",',
+      '    "node": ">= 18",',
+      '    "url": "https://opencollective.com/express",',
+      '    "qs": "^6.16.0",',
+      '    "lodahs": "^4.17.21",',
+    ]),
+  );
+  assert.deepEqual(deps.map((d) => [d.name, d.riskLevel]), [
+    ["qs", "low"],
+    ["lodahs", "critical"],
+  ]);
+});
+
+test("whole package.json (repository scan): only dependency sections are read", async () => {
+  const { analyzeFiles } = await import("./analyzer.js");
+  const r = analyzeFiles([
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        name: "app",
+        scripts: { test: "mocha", lint: "eslint ." },
+        engines: { node: ">= 18" },
+        dependencies: { express: "^5.0.0" },
+        devDependencies: { mocha: "^10.0.0" },
+      }, null, 2),
+    },
+  ]);
+  assert.deepEqual(r.dependencies.map((d) => d.name).sort(), ["express", "mocha"]);
+  assert.equal(r.riskScore, 0);
+});

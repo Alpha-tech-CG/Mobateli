@@ -1,4 +1,4 @@
-import { parseUnifiedDiff } from "./diff.js";
+import { parseUnifiedDiff, type ParsedDiff } from "./diff.js";
 import { scanSecrets } from "./secret-scanner.js";
 import { scanDependencies } from "./dependency-scanner.js";
 import { runSastRules, flagSensitiveFiles } from "./sast.js";
@@ -33,7 +33,29 @@ export function analyzeDiff(
   diff: string,
   suppressed: ReadonlySet<string> = new Set(),
 ): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
-  const parsed = parseUnifiedDiff(diff);
+  return analyzeParsed(parseUnifiedDiff(diff), suppressed);
+}
+
+/** Whole files of a repository snapshot, analysed as if every line were added. */
+export function analyzeFiles(
+  files: { path: string; content: string }[],
+  suppressed: ReadonlySet<string> = new Set(),
+): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
+  const parsed: ParsedDiff = { files: [], addedLines: [], addedByFile: new Map() };
+  for (const f of files) {
+    parsed.files.push(f.path);
+    parsed.addedByFile.set(f.path, f.content);
+    f.content.split("\n").forEach((content, i) => {
+      parsed.addedLines.push({ file: f.path, line: i + 1, content: content.replace(/\r$/, "") });
+    });
+  }
+  return analyzeParsed(parsed, suppressed);
+}
+
+function analyzeParsed(
+  parsed: ParsedDiff,
+  suppressed: ReadonlySet<string>,
+): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
 
   // Rust engine (WebAssembly) first: secrets + syntax-tree rules for JS/TS.
   // Files it could not parse, other languages, or no engine ⇒ line rules.
@@ -52,10 +74,10 @@ export function analyzeDiff(
     ...detectPromptInjection(parsed.addedLines, parsed.files),
   ];
   // Test code deliberately contains attacks and dangerous calls: still shown,
-  // but as low severity so it never blocks a merge on its own.
+  // as information, but it is not a risk and does not weigh on the score.
   const all = raw.map((f) =>
-    f.filePath && isTestPath(f.filePath) && (f.type === "sast" || f.type === "prompt_injection") && f.severity !== "low"
-      ? { ...f, severity: "low" as const, description: `${f.description} (fichier de test)` }
+    f.filePath && isTestPath(f.filePath) && (f.type === "sast" || f.type === "prompt_injection")
+      ? { ...f, severity: "info" as const, description: `${f.description} (fichier de test)` }
       : f,
   );
   // False positives marked by a human are kept for the record but no longer

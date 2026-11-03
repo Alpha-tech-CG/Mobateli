@@ -173,6 +173,8 @@ model Repository {
   protectionLevel ProtectionLevel @default(observe)
   // GitHub App installation that grants access to this repo (for token minting).
   installationId  BigInt?
+  // Re-scan the default branch automatically when it changes.
+  autoScan        Boolean         @default(true)
   createdAt       DateTime        @default(now())
 
   organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -181,6 +183,7 @@ model Repository {
   agentPolicies AgentPolicy[]
   deployChecks  DeployCheck[]
   suppressions  FindingSuppression[]
+  scans         RepositoryScan[]
 
   @@unique([provider, externalId])
   @@index([organizationId])
@@ -552,6 +555,35 @@ model PlatformSetting {
   updatedAt      DateTime @updatedAt
 
   @@map("platform_settings")
+}
+
+/// On-demand or automatic analysis of a repository's existing code (default
+/// branch), as opposed to a pull request diff. Results are kept as JSON: the
+/// code itself is never stored (cahier §11.2).
+model RepositoryScan {
+  id             String    @id @default(uuid()) @db.Uuid
+  repositoryId   String    @db.Uuid
+  organizationId String    @db.Uuid
+  trigger        String    @default("manual")
+  status         String    @default("queued")
+  phase          String?
+  ref            String?
+  commitSha      String?
+  filesScanned   Int       @default(0)
+  riskScore      Int?
+  decision       String?
+  summary        Json?
+  result         Json?
+  error          String?
+  requestedById  String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("repository_scans")
 }
 
 /// Webhook delivery ids already processed — idempotence when the API runs

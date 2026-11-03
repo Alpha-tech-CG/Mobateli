@@ -17,23 +17,26 @@ const POPULAR_NPM = [
   "jsonwebtoken", "cors", "body-parser", "mongoose", "pg", "redis", "ioredis",
 ];
 
+/**
+ * Edit distance where swapping two adjacent letters counts as one typo
+ * (optimal string alignment): "lodahs" is 1 away from "lodash".
+ */
 export function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
   if (m === 0) return n;
   if (n === 0) return m;
-  const prev = new Array<number>(n + 1);
-  const curr = new Array<number>(n + 1);
-  for (let j = 0; j <= n; j++) prev[j] = j;
+  const d: number[][] = Array.from({ length: m + 1 }, (_, i) => [i, ...new Array<number>(n).fill(0)]);
+  for (let j = 0; j <= n; j++) d[0]![j] = j;
   for (let i = 1; i <= m; i++) {
-    curr[0] = i;
     for (let j = 1; j <= n; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(prev[j]! + 1, curr[j - 1]! + 1, prev[j - 1]! + cost);
+      let v = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, d[i - 2]![j - 2]! + 1);
+      d[i]![j] = v;
     }
-    for (let j = 0; j <= n; j++) prev[j] = curr[j]!;
   }
-  return prev[n]!;
+  return d[m]![n]!;
 }
 
 /** Closest popular package within a small edit distance (a typosquat target). */
@@ -48,7 +51,10 @@ export function nearestPopular(
   for (const pkg of popular) {
     if (pkg === normalized) return null; // exact match ⇒ legitimate, not a squat
     const d = levenshtein(normalized, pkg);
-    if (d >= 1 && d <= 2 && (!best || d < best.distance)) {
+    const shortest = Math.min(normalized.length, pkg.length);
+    // ≤ 4 letters: any two names are a couple of edits apart — no signal.
+    const allowed = shortest <= 4 ? 0 : shortest <= 7 ? 1 : 2;
+    if (d >= 1 && d <= allowed && (!best || d < best.distance)) {
       best = { target: pkg, distance: d };
     }
   }
@@ -71,7 +77,19 @@ interface DepEntry {
 const NOT_DEPENDENCIES = new Set([
   "name", "version", "description", "license", "main", "module", "type", "python",
   "readme", "authors", "homepage", "repository", "documentation", "requires-python",
+  // package.json keys whose values look like versions but are not packages.
+  "node", "npm", "pnpm", "yarn", "bun", "packageManager", "url", "funding", "bugs", "types",
 ]);
+
+const NPM_SECTIONS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
+
+/** "^1.2.3", ">= 2 < 3", "*", "latest", "workspace:*", "npm:x@1", git/url/file specs. */
+export function looksLikeVersionSpec(v: string): boolean {
+  const t = v.trim();
+  if (/^(workspace:|npm:|git\+|git:|github:|https?:|file:|link:)/.test(t)) return true;
+  if (t === "*" || t === "latest" || t === "next" || t === "x") return true;
+  return /^[\^~<>=v]*\s*\d/.test(t) && /^[\w\s.^~<>=|*+-]+$/.test(t) && !/\s[a-z]{3,}/i.test(t);
+}
 
 /**
  * Dependencies added in the diff, per manifest: package.json (npm),
@@ -85,11 +103,35 @@ export function extractAddedDependencies(diff: ParsedDiff): DepEntry[] {
   const poetryEntry = /^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*=\s*"([^"]+)"\s*$/;
   const goEntry = /^\s*(?:require\s+)?([a-z0-9.-]+\.[a-z]{2,}\/[^\s]+)\s+(v[0-9][^\s]*)/;
 
+  // Whole package.json available (repository scans): read the real sections.
+  const parsedManifests = new Set<string>();
+  for (const [file, text] of diff.addedByFile) {
+    if ((file.split("/").pop() ?? file) !== "package.json") continue;
+    try {
+      const pkg = JSON.parse(text) as Record<string, unknown>;
+      for (const section of NPM_SECTIONS) {
+        const block = pkg[section];
+        if (!block || typeof block !== "object") continue;
+        for (const [name, version] of Object.entries(block as Record<string, unknown>)) {
+          if (typeof version === "string") deps.push({ name, version, ecosystem: "npm" });
+        }
+      }
+      parsedManifests.add(file);
+    } catch {
+      /* only added lines (a PR diff): fall back to the line heuristic */
+    }
+  }
+
   for (const { file, content } of diff.addedLines) {
     const base = file.split("/").pop() ?? file;
     if (base === "package.json") {
+      if (parsedManifests.has(file)) continue;
       const m = content.match(npmEntry);
-      if (m && !NOT_DEPENDENCIES.has(m[1]!)) deps.push({ name: m[1]!, version: m[2]!, ecosystem: "npm" });
+      // Scripts ("test": "mocha …"), engines and URLs are not dependencies:
+      // keep entries whose value looks like a version specifier.
+      if (m && !NOT_DEPENDENCIES.has(m[1]!) && looksLikeVersionSpec(m[2]!)) {
+        deps.push({ name: m[1]!, version: m[2]!, ecosystem: "npm" });
+      }
     } else if (/^requirements.*\.txt$/.test(base)) {
       if (/^\s*(-|#|$)/.test(content) || content.includes("://")) continue;
       const m = content.match(reqEntry);

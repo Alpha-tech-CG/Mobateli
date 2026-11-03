@@ -16,6 +16,7 @@ import {
   DatabaseBackup,
   ShieldCheck,
   ClipboardCheck,
+  ScanSearch,
   Users,
   LogOut,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import { clearToken, getSession, getToken } from "@/lib/api";
 const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
+  { href: "/scans", label: "Analyser un dépôt", icon: ScanSearch },
   { href: "/policies", label: "Politiques", icon: ScrollText },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
   { href: "/approvals", label: "Approbations", icon: ClipboardCheck },

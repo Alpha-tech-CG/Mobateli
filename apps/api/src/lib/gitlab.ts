@@ -10,6 +10,8 @@ import { decrypt } from "./crypto.js";
 
 export interface GitlabApi {
   request<T>(path: string, init?: RequestInit): Promise<T>;
+  /** Binary GET (repository archives). */
+  raw(path: string): Promise<Buffer>;
 }
 
 export function gitlabApi(baseUrl: string, token: string, fetchImpl: typeof fetch = fetch): GitlabApi {
@@ -27,6 +29,15 @@ export function gitlabApi(baseUrl: string, token: string, fetchImpl: typeof fetc
       });
       if (!res.ok) throw new Error(`gitlab_${res.status}`);
       return (await res.json()) as T;
+    },
+    async raw(path: string): Promise<Buffer> {
+      const res = await fetchImpl(root + path, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(45_000),
+        headers: { "private-token": token },
+      });
+      if (!res.ok) throw new Error(`gitlab_${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
     },
   };
 }

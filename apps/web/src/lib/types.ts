@@ -330,3 +330,56 @@ export interface RevocationGuide {
   url: string | null;
   steps: string[];
 }
+
+// ─── Analyses de dépôts ─────────────────────────────────
+
+export type ScanStatus = "queued" | "running" | "done" | "failed";
+export type ScanPhase = "download" | "extract" | "analysis" | "dependencies" | "done";
+
+export interface RepositoryRow {
+  id: string;
+  name: string;
+  provider: "github" | "gitlab";
+  defaultBranch: string;
+  autoScan: boolean;
+  scannable: boolean;
+  lastScan: { id: string; status: ScanStatus; riskScore: number | null; finishedAt: string | null; createdAt: string } | null;
+}
+
+export interface ScanSummary {
+  files: number;
+  skippedFiles: number;
+  truncated: boolean;
+  secrets: number;
+  findings: number;
+  informational: number;
+  riskyDependencies: number;
+  bySeverity: Record<string, number>;
+  engine: string;
+}
+
+export interface ScanRow {
+  id: string;
+  trigger: "manual" | "auto" | "connect";
+  status: ScanStatus;
+  phase: ScanPhase | null;
+  ref: string | null;
+  commitSha: string | null;
+  filesScanned: number;
+  riskScore: number | null;
+  decision: string | null;
+  summary: ScanSummary | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  repository: { id: string; name: string; provider: string };
+}
+
+export interface ScanDetail extends ScanRow {
+  result: {
+    secrets: { secretType: string; location: string; maskedPreview: string; severity: Severity }[];
+    findings: { type: string; severity: Severity; title: string; description: string; filePath?: string; line?: number; remediation?: string }[];
+    dependencies: { ecosystem: string; name: string; version: string; trustScore: number; riskLevel: string; reason?: string }[];
+    suppressed: number;
+  } | null;
+}

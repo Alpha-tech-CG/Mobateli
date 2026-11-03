@@ -4,6 +4,8 @@ import { linkGithubSchema } from "@codegate/shared";
 import type { AppConfig } from "../config.js";
 import { recordAudit } from "../lib/audit.js";
 import { getGithubApp, getGithubSettings, getInstallationOctokit } from "../lib/github.js";
+import { createScan } from "../lib/repo-scan.js";
+import { launchScan } from "./scans.js";
 
 const MANAGE = ["owner", "admin", "security_manager"] as const;
 const STATE_PURPOSE = "github_install";
@@ -124,6 +126,27 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
         req.log.warn({ err }, "github repositories import failed — webhooks will fill them");
       }
 
+      // First analysis of each newly connected repository starts on its own.
+      const fresh = await prisma.repository.findMany({
+        where: {
+          organizationId: req.principal.organizationId,
+          installationId: BigInt(body.installationId),
+          autoScan: true,
+          scans: { none: {} },
+        },
+        select: { id: true },
+        take: 10,
+      });
+      for (const r of fresh) {
+        const scan = await createScan({
+          repositoryId: r.id,
+          organizationId: req.principal.organizationId,
+          trigger: "connect",
+          requestedById: req.principal.userId,
+        });
+        if (!scan.reused) launchScan(config, scan.id, app.log);
+      }
+
       await recordAudit({
         organizationId: req.principal.organizationId,
         actorType: "user",
@@ -133,7 +156,7 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
         resourceId: req.principal.organizationId,
         metadata: { installationId: body.installationId, accountLogin, repositories: imported },
       });
-      return reply.code(201).send({ accountLogin, repositories: imported });
+      return reply.code(201).send({ accountLogin, repositories: imported, scansStarted: fresh.length });
     },
   );
 

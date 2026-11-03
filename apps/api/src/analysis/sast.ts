@@ -127,7 +127,9 @@ export function flagSensitiveFiles(files: string[]): FindingResult[] {
     ) {
       findings.push({
         type: "config",
-        severity: "low",
+        // A review reminder, not a risk by itself: what the change contains
+        // (secrets, weakened settings…) is caught by the other rules.
+        severity: "info",
         title: `Fichier sensible modifié : ${base}`,
         description:
           "Une modification touche un fichier de configuration sensible (secrets, CI/CD ou déploiement).",

@@ -47,6 +47,7 @@ test("real-PR false positives: docs, Rust sources, test fixtures, local DB URL",
   const blocking = r.findings.filter((f) => f.severity !== "low" && f.severity !== "info");
   assert.deepEqual(blocking.map((f) => `${f.ruleId}@${f.filePath}`), []);
   const fixture = r.findings.find((f) => f.ruleId === "PI_INSTRUCTION_OVERRIDE");
-  assert.equal(fixture?.severity, "low", "still visible, but not blocking");
-  assert.notEqual(r.status, "blocked");
+  assert.equal(fixture?.severity, "info", "still visible, but carries no risk");
+  assert.equal(r.riskScore, 0);
+  assert.equal(r.status, "passed");
 });
