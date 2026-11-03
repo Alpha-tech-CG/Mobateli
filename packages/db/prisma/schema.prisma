@@ -542,6 +542,18 @@ model ApprovalRequest {
   @@map("approval_requests")
 }
 
+/// Platform-wide settings of this CodeGate deployment (not per tenant), e.g.
+/// the GitHub App created through the manifest flow. Values are encrypted
+/// JSON (AES-256-GCM); environment variables, when set, take precedence.
+model PlatformSetting {
+  key            String   @id
+  valueEncrypted String
+  updatedById    String?  @db.Uuid
+  updatedAt      DateTime @updatedAt
+
+  @@map("platform_settings")
+}
+
 /// Webhook delivery ids already processed — idempotence when the API runs
 /// without Redis (serverless, ANALYSIS_MODE=inline). cahier §13.4.
 model WebhookDelivery {

@@ -8,6 +8,7 @@ import {
   verifyVercelSignature,
 } from "../lib/webhook-verify.js";
 import { decrypt } from "../lib/crypto.js";
+import { getGithubSettings } from "../lib/github.js";
 import type { Jobs } from "../lib/jobs.js";
 import { recordAudit } from "../lib/audit.js";
 import { evaluateDeployGate } from "../analysis/deploy-gate.js";
@@ -346,13 +347,14 @@ export async function webhookRoutes(
   );
 
   app.post("/webhooks/github", async (req, reply) => {
-    if (!config.GITHUB_WEBHOOK_SECRET) {
+    const webhookSecret = (await getGithubSettings(config))?.webhookSecret;
+    if (!webhookSecret) {
       return reply.code(503).send({ error: "github_not_configured" });
     }
 
     const raw = req.body as Buffer;
     const signature = req.headers["x-hub-signature-256"] as string | undefined;
-    if (!verifyGithubSignature(raw, signature, config.GITHUB_WEBHOOK_SECRET)) {
+    if (!verifyGithubSignature(raw, signature, webhookSecret)) {
       return reply.code(401).send({ error: "invalid_signature" });
     }
 

@@ -28,6 +28,8 @@ const envSchema = z.object({
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   // Public slug of the App (github.com/apps/<slug>) for the install link.
   GITHUB_APP_SLUG: z.string().optional(),
+  // Organization whose owner operates this deployment (defaults to the first one).
+  PLATFORM_ORG_ID: z.string().uuid().optional(),
 
   // ─── Vercel ───────────────────────────────────────────
   VERCEL_WEBHOOK_SECRET: z.string().optional(),

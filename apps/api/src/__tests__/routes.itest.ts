@@ -885,6 +885,61 @@ test("gitlab api: private instance refused", async () => {
   assert.equal(res.json().error, "private_address");
 });
 
+test("platform: GitHub App manifest flow is operator-only and stores credentials", async () => {
+  const status = await app.inject({ method: "GET", url: "/api/v1/platform/github-app", headers: auth() });
+  assert.equal(status.json().configured, false);
+  assert.equal(status.json().canConfigure, true, "owner of the first organization operates the platform");
+
+  const start = await app.inject({
+    method: "POST",
+    url: "/api/v1/platform/github-app/manifest",
+    headers: auth(),
+    payload: { name: "CodeGate Test App" },
+  });
+  assert.equal(start.statusCode, 200);
+  assert.match(start.json().action, /^https:\/\/github\.com\/settings\/apps\/new\?state=/);
+  const manifest = JSON.parse(start.json().manifest);
+  assert.match(manifest.hook_attributes.url, /\/webhooks\/github$/);
+  assert.deepEqual(manifest.default_permissions, {
+    contents: "read", metadata: "read", pull_requests: "write", checks: "write",
+  });
+
+  // Another organization's owner is not the operator.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: { email: "other-owner@beta.test", password: "supersecret-password", name: "O", organizationName: "Beta" },
+  });
+  const otherAuth = { authorization: `Bearer ${other.json().token}` };
+  const denied = await app.inject({
+    method: "POST", url: "/api/v1/platform/github-app/manifest", headers: otherAuth, payload: { name: "Hijack" },
+  });
+  assert.equal(denied.statusCode, 403);
+
+  const forged = await app.inject({
+    method: "POST", url: "/api/v1/platform/github-app/complete", headers: auth(),
+    payload: { code: "0123456789abcdef", state: "not-a-valid-state-token-at-all" },
+  });
+  assert.equal(forged.statusCode, 400);
+
+  // Credentials saved by the flow are read back, encrypted at rest.
+  const { writePlatformSetting } = await import("../lib/platform.js");
+  const { GITHUB_APP_SETTING, getGithubSettings, resetGithubAppCache } = await import("../lib/github.js");
+  await writePlatformSetting(
+    GITHUB_APP_SETTING,
+    { appId: "123", slug: "codegate-test", privateKey: "-----BEGIN RSA PRIVATE KEY-----", webhookSecret: "whsec", clientId: "c", clientSecret: "s", owner: null },
+    process.env.ENCRYPTION_KEY!,
+    (await prisma.user.findFirstOrThrow({ where: { email: "owner@acme.test" } })).id,
+  );
+  resetGithubAppCache();
+  const row = await prisma.platformSetting.findUniqueOrThrow({ where: { key: GITHUB_APP_SETTING } });
+  assert.equal(row.valueEncrypted.includes("whsec"), false, "stored encrypted");
+  const settings = await getGithubSettings(loadConfig());
+  assert.equal(settings?.slug, "codegate-test");
+  await prisma.platformSetting.deleteMany({});
+  resetGithubAppCache();
+});
+
 test("rgpd: export without secrets, then erase the organization", async () => {
   const exp = await app.inject({ method: "GET", url: "/api/v1/organization/export", headers: auth() });
   assert.equal(exp.statusCode, 200);
@@ -902,6 +957,6 @@ test("rgpd: export without secrets, then erase the organization", async () => {
     method: "DELETE", url: "/api/v1/organization", headers: auth(), payload: { confirmName: "Acme" },
   });
   assert.equal(erased.statusCode, 204);
-  assert.equal(await prisma.organization.count(), 0);
+  assert.equal(await prisma.organization.count({ where: { name: "Acme" } }), 0);
   assert.equal(await prisma.user.count({ where: { email: "owner@acme.test" } }), 0);
 });

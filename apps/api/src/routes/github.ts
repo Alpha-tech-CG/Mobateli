@@ -3,7 +3,7 @@ import { prisma } from "@codegate/db";
 import { linkGithubSchema } from "@codegate/shared";
 import type { AppConfig } from "../config.js";
 import { recordAudit } from "../lib/audit.js";
-import { getGithubApp, getInstallationOctokit } from "../lib/github.js";
+import { getGithubApp, getGithubSettings, getInstallationOctokit } from "../lib/github.js";
 
 const MANAGE = ["owner", "admin", "security_manager"] as const;
 const STATE_PURPOSE = "github_install";
@@ -26,7 +26,8 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
     "/api/v1/github/install-url",
     { preHandler: [app.authenticate, app.requireRole(...MANAGE)] },
     async (req, reply) => {
-      if (!config.GITHUB_APP_SLUG || !getGithubApp(config)) {
+      const settings = await getGithubSettings(config);
+      if (!settings?.slug || !(await getGithubApp(config))) {
         return reply.code(503).send({ error: "github_not_configured" });
       }
       const state = app.jwt.sign(
@@ -37,7 +38,7 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
         } as never,
         { expiresIn: "15m" },
       );
-      const url = new URL(`https://github.com/apps/${config.GITHUB_APP_SLUG}/installations/new`);
+      const url = new URL(`https://github.com/apps/${settings.slug}/installations/new`);
       url.searchParams.set("state", state);
       return { url: url.toString() };
     },
@@ -60,7 +61,7 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
       ) {
         return reply.code(400).send({ error: "invalid_state" });
       }
-      const gh = getGithubApp(config);
+      const gh = await getGithubApp(config);
       if (!gh) return reply.code(503).send({ error: "github_not_configured" });
 
       // The installation must really exist for this App.
@@ -147,7 +148,7 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
       _count: true,
     });
     return {
-      configured: Boolean(config.GITHUB_APP_SLUG && getGithubApp(config)),
+      configured: Boolean((await getGithubSettings(config))?.slug && (await getGithubApp(config))),
       installations: rows.map((r) => ({
         id: r.id,
         installationId: Number(r.installationId),
@@ -170,7 +171,7 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
       if (!row) return reply.code(404).send({ error: "not_found" });
 
       let uninstalled = false;
-      const gh = getGithubApp(config);
+      const gh = await getGithubApp(config);
       if (gh) {
         try {
           await gh.octokit.request("DELETE /app/installations/{installation_id}", {

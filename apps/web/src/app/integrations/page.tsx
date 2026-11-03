@@ -778,7 +778,10 @@ function GithubCard() {
         </button>
       ) : (
         <p className="text-xs text-muted-foreground">
-          L&apos;application GitHub n&apos;est pas encore configurée sur ce serveur CodeGate.
+          L&apos;application GitHub n&apos;est pas encore créée pour ce CodeGate.{" "}
+          <a href="/settings/github-app" className="text-primary hover:underline">
+            Créer l&apos;App GitHub
+          </a>
         </p>
       )}
       {msg ? <p className="mt-3 text-sm text-destructive">{msg}</p> : null}

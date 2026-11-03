@@ -166,6 +166,18 @@ export const deleteOrganizationSchema = z.object({
   confirmName: z.string().min(1).max(200),
 });
 
+export const githubManifestStartSchema = z.object({
+  /** Public App name on GitHub (globally unique there). */
+  name: z.string().min(3).max(34),
+  /** Create the App under this GitHub organization instead of the user account. */
+  githubOrganization: z.string().regex(/^[A-Za-z0-9-]{1,39}$/).optional(),
+});
+
+export const githubManifestCompleteSchema = z.object({
+  code: z.string().min(10).max(200),
+  state: z.string().min(20).max(2000),
+});
+
 export const linkGithubSchema = z.object({
   installationId: z.coerce.number().int().positive(),
   state: z.string().min(20).max(2000),

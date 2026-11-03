@@ -86,7 +86,7 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 ## Reste à faire (post-MVP)
 - [ ] Observabilité (OpenTelemetry, Sentry) — nécessite un compte
 - [ ] Facturation Stripe — nécessite un compte
-- [ ] Création de la GitHub App de production (App ID, clé, secret, slug)
+- [x] Création de l'App GitHub en un clic depuis CodeGate (flux manifeste, clés chiffrées) — reste : cliquer sur « Créer l'App sur GitHub »
 - [ ] Enrichissement IA des explications via Gemini — nécessite une clé API
 
 ---

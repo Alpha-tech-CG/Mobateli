@@ -93,6 +93,16 @@ Un compte désactivé ne peut plus se connecter (`login` → 403 `account_disabl
 | GET | `/api/v1/audit-events` | tous | Journal filtrable `{ from?, to?, action?, limit? }` |
 | POST | `/api/v1/audit/export` | tous | Dossier de preuves `{ format: json\|csv\|pdf, repositoryId?, from?, to?, severityThreshold? }` (fichier téléchargeable) |
 
+## Plateforme — App GitHub en un clic
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/platform/github-app` | tous | `{ configured, source: env\|database, slug, canConfigure }` |
+| POST | `/api/v1/platform/github-app/manifest` | opérateur (owner, MFA) | `{ name, githubOrganization? }` → formulaire *App manifest* à poster vers GitHub (permissions : contents/metadata lecture, pull_requests/checks écriture ; webhook `/webhooks/github`) |
+| POST | `/api/v1/platform/github-app/complete` | opérateur | `{ code, state }` (retour de GitHub) → échange le code contre les identifiants de l'App, stockés chiffrés (`platform_settings`) |
+
+L'opérateur est l'owner de `PLATFORM_ORG_ID`, ou à défaut de la première organisation créée. Les variables `GITHUB_APP_*` restent prioritaires si elles sont définies.
+
 ## Findings & GitHub (US01, US02)
 
 | Méthode | Route | Rôle | Description |
@@ -210,4 +220,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `approval.requested`/`approved`/`denied`, `member.role_changed`/`deactivated`/`reactivated`, `secret.revoked`, `integration.gitlab_api_configured`, `org.data_exported`, `user.erased`, `backup.missing`, `server.agent_silent`, `remediation.done`/`canceled`, `integration.linear_webhook_configured`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `platform.github_app_created`, `approval.requested`/`approved`/`denied`, `member.role_changed`/`deactivated`/`reactivated`, `secret.revoked`, `integration.gitlab_api_configured`, `org.data_exported`, `user.erased`, `backup.missing`, `server.agent_silent`, `remediation.done`/`canceled`, `integration.linear_webhook_configured`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.
