@@ -2,7 +2,7 @@ import type { Decision, PullRequestStatus, Severity } from "@codegate/shared";
 import type { AnalysisResult, DependencyResult, FindingResult, SecretResult } from "./types.js";
 
 /** Risk weight per severity — tuned so a single critical dominates. */
-const SEVERITY_WEIGHT: Record<Severity, number> = {
+export const SEVERITY_WEIGHT: Record<Severity, number> = {
   critical: 40,
   high: 20,
   medium: 8,
@@ -10,8 +10,8 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
   info: 0,
 };
 
-const SECRET_WEIGHT = 45;
-const DEP_RISK_WEIGHT: Record<DependencyResult["riskLevel"], number> = {
+export const SECRET_WEIGHT = 45;
+export const DEP_RISK_WEIGHT: Record<DependencyResult["riskLevel"], number> = {
   critical: 40,
   high: 20,
   medium: 8,

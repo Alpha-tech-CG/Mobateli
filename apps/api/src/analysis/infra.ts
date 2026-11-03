@@ -85,8 +85,8 @@ const DANGEROUS_PORTS: Record<number, { service: string; severity: Severity; ris
  * Score weights. The score is continuous — 100 × K / (K + penalty) — so every
  * fix moves it, even on a server with many findings (P0-5).
  */
-const SEVERITY_WEIGHT: Record<Severity, number> = { critical: 25, high: 10, medium: 4, low: 1.5, info: 0 };
-const SCORE_K = 60;
+export const SEVERITY_WEIGHT: Record<Severity, number> = { critical: 25, high: 10, medium: 4, low: 1.5, info: 0 };
+export const SCORE_K = 60;
 const SEV_RANK: Record<Severity, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 const maxSeverity = (a: Severity, b: Severity): Severity => (SEV_RANK[a] >= SEV_RANK[b] ? a : b);
 

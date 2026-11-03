@@ -2,6 +2,21 @@ import { prisma } from "@codegate/db";
 import { evaluateBackup } from "../analysis/backup.js";
 import type { DependencyResult, FindingResult, SecretResult } from "../analysis/types.js";
 import { fmtDate, type Block, type Kpi, type ReportDocument } from "./audit-report.js";
+import { REF, expertBlocks, type ExpertItem } from "./expert.js";
+import {
+  BACKUP_DOMAINS,
+  BRUTEFORCE_DOMAINS,
+  CODE_DOMAINS,
+  INFRA_DOMAINS,
+  backupItems,
+  backupRescore,
+  bruteForceItems,
+  codeItems,
+  codeRescore,
+  infraItems,
+  infraRescore,
+} from "./expert-mappings.js";
+import { SEVERITY_WEIGHT as INFRA_WEIGHT } from "../analysis/infra.js";
 import type { EvidencePack } from "./evidence.js";
 
 /**
@@ -142,6 +157,113 @@ function codeBlocks(
 
 // --------------------------------------------------------- organization --
 
+const ORG_DOMAINS = ["Code et pull requests", "Infrastructure", "Accès (brute force)", "Sauvegardes"];
+
+/** One expert item per thing to fix across the organization's modules. */
+function organizationItems(pack: EvidencePack): ExpertItem[] {
+  const items: ExpertItem[] = [];
+  const blocked = pack.pullRequests.filter((p) => p.status === "blocked");
+  for (const p of blocked) {
+    items.push({
+      key: "org.pr_blocked",
+      domain: "Code et pull requests",
+      severity: "high",
+      title: `PR bloquée ${p.repository} #${p.number}`,
+      action: "Corriger les pull requests bloquées avant leur fusion (secrets, failles critiques)",
+      effort: "moyen",
+      impact: "du code dangereux attend d'être fusionné dans vos dépôts",
+      refs: [REF.iso828, REF.owaspA03],
+      weight: INFRA_WEIGHT.high,
+      subject: `${p.repository} #${p.number}`,
+    });
+  }
+  const warned = pack.pullRequests.filter((p) => p.status === "warning");
+  if (warned.length) {
+    items.push({
+      key: "org.pr_warning",
+      domain: "Code et pull requests",
+      severity: "medium",
+      title: `${warned.length} PR avec des problèmes à corriger`,
+      action: "Traiter les problèmes signalés sur les pull requests en avertissement",
+      effort: "moyen",
+      impact: "des faiblesses de code s'accumulent dans les dépôts",
+      refs: [REF.iso828],
+      weight: Math.min(30, warned.length * INFRA_WEIGHT.medium),
+    });
+  }
+  for (const sv of pack.infrastructure) {
+    const c = sv.openFindings;
+    const crit = c.critical ?? 0;
+    const high = c.high ?? 0;
+    const med = c.medium ?? 0;
+    if (sv.lastAuditAt === null) {
+      items.push({
+        key: `org.server_unaudited.${sv.server}`,
+        domain: "Infrastructure",
+        severity: "medium",
+        title: `Serveur ${sv.server} jamais audité`,
+        action: `Installer l'agent Infra Shield sur ${sv.server}`,
+        effort: "faible",
+        impact: "l'état de sécurité de ce serveur est inconnu",
+        refs: [REF.iso89],
+        weight: INFRA_WEIGHT.medium,
+        subject: sv.server,
+      });
+      continue;
+    }
+    if (!crit && !high && !med) continue;
+    items.push({
+      key: `org.server.${sv.server}`,
+      domain: "Infrastructure",
+      severity: crit ? "critical" : high ? "high" : "medium",
+      title: `Serveur ${sv.server} : ${crit} critique(s), ${high} élevé(s)`,
+      action: `Durcir le serveur ${sv.server} (score ${sv.securityScore ?? "—"}/100) selon son rapport Infra Shield`,
+      effort: crit ? "moyen" : "faible",
+      impact: crit ? "prise de contrôle possible d'un serveur de l'organisation" : "surface d'attaque d'un serveur à réduire",
+      refs: [REF.iso89, REF.iso820, REF.cisDockerRuntime],
+      weight: crit * INFRA_WEIGHT.critical + high * INFRA_WEIGHT.high + med * INFRA_WEIGHT.medium,
+      subject: sv.server,
+    });
+  }
+  const latestByTarget = new Map<string, (typeof pack.bruteForce.tests)[number]>();
+  for (const t of pack.bruteForce.tests) {
+    const key = `${t.target}${t.endpoint}:${t.testType}`;
+    if (!latestByTarget.has(key)) latestByTarget.set(key, t);
+  }
+  for (const t of latestByTarget.values()) {
+    if (t.result === "pass") continue;
+    items.push({
+      key: `org.bruteforce.${t.target}${t.endpoint}`,
+      domain: "Accès (brute force)",
+      severity: t.result === "fail" ? "high" : "medium",
+      title: `${t.target}${t.endpoint} : ${t.testType}`,
+      action: `Protéger ${t.target}${t.endpoint} contre les essais répétés (verrouillage, délai progressif)`,
+      effort: "moyen",
+      impact: "les mots de passe des utilisateurs peuvent être devinés par essais répétés",
+      refs: [REF.owaspA07, REF.iso85],
+      weight: t.result === "fail" ? INFRA_WEIGHT.high : INFRA_WEIGHT.medium,
+      subject: `${t.target}${t.endpoint}`,
+    });
+  }
+  for (const b of pack.backups) {
+    if (b.status === "healthy" && b.ransomwareReady) continue;
+    const sev = b.status === "critical" ? "critical" : b.status === "attention" ? "medium" : "low";
+    items.push({
+      key: `org.backup.${b.name}`,
+      domain: "Sauvegardes",
+      severity: sev,
+      title: `Sauvegarde ${b.name} : ${b.failedChecks.join(", ") || "pas prête face à un rançongiciel"}`,
+      action: `Fiabiliser la sauvegarde ${b.name} (récupération ${b.recoveryScore}/100)`,
+      effort: "moyen",
+      impact: sev === "critical" ? "perte définitive des données en cas de sinistre" : "restauration incertaine le jour d'un incident",
+      refs: [REF.iso813, REF.iso530],
+      weight: INFRA_WEIGHT[sev],
+      subject: b.name,
+    });
+  }
+  return items;
+}
+
 export function organizationDocument(pack: EvidencePack): ReportDocument {
   const s = pack.summary;
   const serious = (s.findingsBySeverity.critical ?? 0) + (s.findingsBySeverity.high ?? 0);
@@ -155,7 +277,21 @@ export function organizationDocument(pack: EvidencePack): ReportDocument {
     .map((k) => `${SEVERITY_FR[k]} : ${s.findingsBySeverity[k]}`)
     .join(" · ");
 
+  const orgItems = organizationItems(pack);
   const blocks: Block[] = [
+    ...expertBlocks({
+      scale: "security",
+      score: null,
+      items: orgItems,
+      domains: ORG_DOMAINS,
+      rescore: infraRescore,
+      subject: pack.organization.name,
+      context: [
+        `${s.pullRequests} pull request(s) analysée(s) sur la période, qu'elles soient écrites par un développeur ou générées par IA ; ${s.secretsBlocked} secret(s) intercepté(s) avant d'atteindre la production.`,
+        `${pack.infrastructure.length} serveur(s), ${pack.bruteForce.tests.length} test(s) anti brute force et ${pack.backups.length} sauvegarde(s) suivis.`,
+      ],
+    }),
+    { kind: "chapter", title: "Constats détaillés", subtitle: "Les preuves par module : pull requests, serveurs, accès, sauvegardes et journal d'audit." },
     { kind: "text", text: `Décisions : ${statuses || "aucune pull request sur la période"}` },
     { kind: "text", text: `Problèmes de code par sévérité (hors faux positifs) : ${severities || "aucun"}` },
     { kind: "text", text: `Issues de remédiation : ${s.remediationIssues} · Événements d'audit : ${s.auditEvents}` },
@@ -344,12 +480,27 @@ export async function pullRequestDocument(organizationId: string, id: string): P
   const unrevoked = pr.secretFindings.filter((s) => !s.revokedAt && s.status !== "resolved" && s.status !== "false_positive");
   const label = `${pr.repository.name} #${pr.number}`;
 
-  const blocks = codeBlocks(
-    pr.secretFindings,
-    pr.findings,
-    pr.dependencies,
-    `${pr.dependencies.length} dépendance(s) ajoutée(s) ou mise(s) à jour analysée(s), ${risky.length} à risque.`,
-  );
+  const prItems = codeItems(pr.secretFindings, pr.findings, pr.dependencies);
+  const blocks = [
+    ...expertBlocks({
+      scale: "risk",
+      score: pr.riskScore,
+      items: prItems,
+      domains: CODE_DOMAINS,
+      rescore: codeRescore,
+      subject: "cette pull request",
+      context: [
+        `${pr.aiGenerated ? "Le changement a été généré par une IA" : "Le changement a été écrit par un développeur"} et analysé avant fusion : ${pr.dependencies.length} dépendance(s) vérifiée(s), dont ${risky.length} à risque.`,
+      ],
+    }),
+    { kind: "chapter", title: "Constats détaillés", subtitle: "Le détail technique de chaque point, avec sa preuve et son correctif." },
+    ...codeBlocks(
+      pr.secretFindings,
+      pr.findings,
+      pr.dependencies,
+      `${pr.dependencies.length} dépendance(s) ajoutée(s) ou mise(s) à jour analysée(s), ${risky.length} à risque.`,
+    ),
+  ] as Block[];
   if (pr.remediationIssues.length) {
     blocks.push(
       { kind: "section", title: "Suivi de la remédiation" },
@@ -421,12 +572,24 @@ export async function scanDocument(organizationId: string, id: string): Promise<
           : { label: "À corriger", tone: "warn" as const, text: `Risque ${scan.riskScore}/100 : des problèmes sont à corriger.` }
       : { label: "Incomplet", tone: "warn" as const, text: scan.error ?? "L'analyse n'était pas terminée au moment de l'export." };
   const findings = result.findings ?? [];
-  const blocks = codeBlocks(
-    result.secrets ?? [],
-    findings,
-    result.dependencies ?? [],
-    `${summary.riskyDependencies ?? 0} dépendance(s) à risque (les dépendances saines ne sont pas listées).`,
-  );
+  const blocks = [
+    ...expertBlocks({
+      scale: "risk",
+      score: scan.riskScore,
+      items: codeItems(result.secrets ?? [], findings, result.dependencies ?? []),
+      domains: CODE_DOMAINS,
+      rescore: codeRescore,
+      subject: `le dépôt ${scan.repository.name}`,
+      context: [`${scan.filesScanned} fichier(s) de la branche ${scan.ref ?? "principale"} analysé(s) ; le code n'est pas conservé.`],
+    }),
+    { kind: "chapter", title: "Constats détaillés", subtitle: "Le détail technique de chaque point, avec sa preuve et son correctif." },
+    ...codeBlocks(
+      result.secrets ?? [],
+      findings,
+      result.dependencies ?? [],
+      `${summary.riskyDependencies ?? 0} dépendance(s) à risque (les dépendances saines ne sont pas listées).`,
+    ),
+  ] as Block[];
   if (result.suppressed)
     blocks.push({ kind: "note", text: `${result.suppressed} problème(s) qualifié(s) faux positif par l'équipe, exclus du score (tracé dans le journal d'audit).` });
   const label = `${scan.repository.name}@${scan.ref ?? "branche principale"}`;
@@ -478,7 +641,7 @@ export async function serverDocument(organizationId: string, id: string): Promis
   const f = server.findings.filter((x) => !acceptance.has(x.checkId) && x.severity !== "info");
   const acceptedFindings = server.findings.filter((x) => acceptance.has(x.checkId));
   const analysis = (server.analysis ?? {}) as {
-    chains?: { severity: string; title: string; steps: string[] }[];
+    chains?: { severity: string; title: string; steps: string[]; checkIds: string[] }[];
     mitigations?: string[];
     resolved?: string[];
   };
@@ -518,6 +681,22 @@ export async function serverDocument(organizationId: string, id: string): Promis
       { label: "Chaînes d'attaque", value: analysis.chains?.length ?? 0, alert: (analysis.chains?.length ?? 0) > 0 },
     ],
     blocks: [
+      ...expertBlocks({
+        scale: "security",
+        score,
+        items: infraItems(f, analysis.chains ?? []),
+        domains: INFRA_DOMAINS,
+        rescore: infraRescore,
+        subject: `le serveur ${server.name}`,
+        context: [
+          ...(delta ? [`Le score a ${delta > 0 ? "progressé" : "reculé"} de ${Math.abs(delta)} point(s) depuis l'audit précédent.`] : []),
+          ...(acceptedFindings.length
+            ? [`${acceptedFindings.length} risque(s) accepté(s) ou atténué(s) par une décision justifiée et tracée, exclu(s) du score.`]
+            : []),
+          ...(analysis.mitigations?.length ? [`${analysis.mitigations.length} contrôle(s) de sécurité en place reconnu(s) (voir « Contrôles en place »).`] : []),
+        ],
+      }),
+      { kind: "chapter", title: "Constats détaillés", subtitle: "Le détail technique de chaque point, avec sa preuve et son correctif." },
       ...(analysis.chains?.length
         ? ([
             { kind: "section", title: "Chaînes d'attaque", subtitle: "Points qui, combinés, ouvrent un chemin jusqu'au serveur." },
@@ -660,6 +839,21 @@ export async function bruteForceDocument(organizationId: string, id: string): Pr
       { label: "Politiques définies", value: policies.length },
     ],
     blocks: [
+      ...(() => {
+        const items = bruteForceItems(target.tests, policies.length);
+        return expertBlocks({
+          scale: "security",
+          score: last ? infraRescore(items) : null,
+          items,
+          domains: BRUTEFORCE_DOMAINS,
+          rescore: infraRescore,
+          subject: `la page de connexion de ${target.origin}`,
+          context: last
+            ? []
+            : ["Aucun test n'a encore été lancé : la résistance au brute force n'est pas démontrée."],
+        });
+      })(),
+      { kind: "chapter", title: "Constats détaillés", subtitle: "Le détail technique de chaque point, avec sa preuve et son correctif." },
       {
         kind: "text",
         text: "Tests réalisés uniquement sur un domaine dont la propriété a été prouvée, avec un compte de test dédié et en faible volume (20 requêtes maximum).",
@@ -746,6 +940,20 @@ export async function backupDocument(organizationId: string, id: string): Promis
       { label: "Restaurations testées", value: job.restoreTests.length, alert: job.restoreTests.length === 0 },
     ],
     blocks: [
+      ...expertBlocks({
+        scale: "security",
+        score: e.score,
+        items: backupItems(e.checks),
+        domains: BACKUP_DOMAINS,
+        rescore: backupRescore,
+        subject: `la sauvegarde ${job.name}`,
+        context: [
+          e.ransomwareReady
+            ? "La sauvegarde résiste à un rançongiciel : chiffrée, clé isolée, copie hors site immuable dans un compte séparé."
+            : "La sauvegarde ne résiste pas encore à un rançongiciel qui compromettrait le serveur : voir le domaine « Isolement ».",
+        ],
+      }),
+      { kind: "chapter", title: "Constats détaillés", subtitle: "Le détail technique de chaque point, avec sa preuve et son correctif." },
       { kind: "section", title: "Contrôles", subtitle: "Existence, chiffrement, intégrité, isolement et restauration réellement testée." },
       {
         kind: "table",

@@ -49,7 +49,7 @@ export interface BackupEvaluation {
   checks: BackupCheck[];
 }
 
-const WEIGHT: Record<Severity, number> = { critical: 30, high: 12, medium: 6, low: 2, info: 0 };
+export const WEIGHT: Record<Severity, number> = { critical: 30, high: 12, medium: 6, low: 2, info: 0 };
 const STRONG_CIPHERS = /aes-?256|chacha20|age|restic|borg|gpg|pgp|xchacha/i;
 const DAY = 86_400_000;
 

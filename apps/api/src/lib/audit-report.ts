@@ -29,9 +29,14 @@ export interface Column {
 
 export type Block =
   | { kind: "section"; title: string; subtitle?: string }
+  /** Starts a new part of the report on a fresh page. */
+  | { kind: "chapter"; title: string; subtitle?: string }
   | { kind: "table"; columns: Column[]; rows: string[][]; fontSize?: number; empty?: string }
   | { kind: "text"; text: string }
-  | { kind: "note"; text: string };
+  | { kind: "note"; text: string }
+  | { kind: "bullets"; items: string[] }
+  /** Horizontal 0–100 bars, e.g. maturity per domain. */
+  | { kind: "bars"; items: { label: string; value: number; note?: string }[] };
 
 export interface Kpi {
   label: string;
@@ -110,9 +115,13 @@ function printable(report: ReportDocument): ReportDocument {
     blocks: report.blocks.map((b) =>
       b.kind === "table"
         ? { ...b, columns: b.columns.map((c) => ({ ...c, label: t(c.label) })), rows: b.rows.map((r) => r.map(t)), ...(b.empty ? { empty: t(b.empty) } : {}) }
-        : b.kind === "section"
+        : b.kind === "section" || b.kind === "chapter"
           ? { ...b, title: t(b.title), ...(b.subtitle ? { subtitle: t(b.subtitle) } : {}) }
-          : { ...b, text: t(b.text) },
+          : b.kind === "bullets"
+            ? { ...b, items: b.items.map(t) }
+            : b.kind === "bars"
+              ? { ...b, items: b.items.map((i) => ({ ...i, label: t(i.label), ...(i.note ? { note: t(i.note) } : {}) })) }
+              : { ...b, text: t(b.text) },
     ),
   };
 }
@@ -171,10 +180,13 @@ function render(report: ReportDocument, meta: ReportMeta, qr: Buffer, signingTim
     cover(doc, report, meta);
     for (const block of report.blocks) {
       if (block.kind === "section") sectionTitle(doc, block.title, block.subtitle);
+      else if (block.kind === "chapter") chapter(doc, block.title, block.subtitle);
       else if (block.kind === "table") {
         if (block.rows.length) table(doc, block.columns, block.rows, block.fontSize);
         else note(doc, block.empty ?? "Rien à signaler.");
       } else if (block.kind === "text") text(doc, block.text);
+      else if (block.kind === "bullets") bullets(doc, block.items);
+      else if (block.kind === "bars") bars(doc, block.items);
       else note(doc, block.text);
     }
     signatureSection(doc, meta, qr, signingTime);
@@ -274,6 +286,17 @@ function sectionTitle(doc: PDFKit.PDFDocument, title: string, subtitle?: string)
   doc.moveDown(0.5);
 }
 
+function chapter(doc: PDFKit.PDFDocument, title: string, subtitle?: string) {
+  if (doc.y > doc.page.margins.top + 10) doc.addPage();
+  doc.fillColor(BRAND.brick).font("Helvetica-Bold").fontSize(9).text("PARTIE 2", PAGE.margin, doc.y);
+  doc.fillColor(BRAND.ink).font("Helvetica-Bold").fontSize(18).text(title, PAGE.margin, doc.y + 2, { width: CONTENT_WIDTH });
+  if (subtitle) doc.fillColor(BRAND.muted).font("Helvetica").fontSize(9.5).text(subtitle, { width: CONTENT_WIDTH });
+  const y = doc.y + 6;
+  doc.moveTo(PAGE.margin, y).lineTo(PAGE.margin + CONTENT_WIDTH, y).lineWidth(1).stroke(BRAND.brick);
+  doc.y = y + 8;
+  doc.x = PAGE.margin;
+}
+
 function note(doc: PDFKit.PDFDocument, value: string) {
   doc.fillColor(BRAND.muted).font("Helvetica-Oblique").fontSize(8.5).text(value, PAGE.margin, doc.y, { width: CONTENT_WIDTH });
   doc.font("Helvetica");
@@ -281,6 +304,45 @@ function note(doc: PDFKit.PDFDocument, value: string) {
 
 function text(doc: PDFKit.PDFDocument, value: string) {
   doc.fillColor(BRAND.ink).font("Helvetica").fontSize(9).text(value, PAGE.margin, doc.y, { width: CONTENT_WIDTH });
+  doc.moveDown(0.3);
+}
+
+function bullets(doc: PDFKit.PDFDocument, items: string[]) {
+  doc.font("Helvetica").fontSize(9.5);
+  for (const item of items) {
+    const h = doc.heightOfString(item, { width: CONTENT_WIDTH - 14 });
+    ensureSpace(doc, h + 6);
+    const y = doc.y;
+    doc.rect(PAGE.margin + 1, y + 4, 4, 4).fill(BRAND.brick);
+    doc.fillColor(BRAND.ink).font("Helvetica").fontSize(9.5).text(item, PAGE.margin + 14, y, { width: CONTENT_WIDTH - 14 });
+    doc.y += 4;
+  }
+  doc.x = PAGE.margin;
+}
+
+function bars(doc: PDFKit.PDFDocument, items: { label: string; value: number; note?: string }[]) {
+  const labelW = 150;
+  const noteW = 110;
+  const barW = CONTENT_WIDTH - labelW - noteW - 40;
+  for (const item of items) {
+    ensureSpace(doc, 22);
+    const y = doc.y;
+    const v = Math.max(0, Math.min(100, item.value));
+    const tone = v >= 80 ? BRAND.ok : v >= 50 ? BRAND.warn : BRAND.brick;
+    doc.fillColor(BRAND.ink).font("Helvetica-Bold").fontSize(9).text(item.label, PAGE.margin, y + 2, { width: labelW, lineBreak: false, ellipsis: true });
+    doc.rect(PAGE.margin + labelW, y + 2, barW, 10).fill(BRAND.soft);
+    if (v > 0) doc.rect(PAGE.margin + labelW, y + 2, (barW * v) / 100, 10).fill(tone);
+    doc.fillColor(tone).font("Helvetica-Bold").fontSize(9).text(`${v}`, PAGE.margin + labelW + barW + 6, y + 2, { width: 30, lineBreak: false });
+    if (item.note)
+      doc.fillColor(BRAND.muted).font("Helvetica").fontSize(8).text(item.note, PAGE.margin + CONTENT_WIDTH - noteW, y + 3, {
+        width: noteW,
+        align: "right",
+        lineBreak: false,
+        ellipsis: true,
+      });
+    doc.y = y + 20;
+  }
+  doc.x = PAGE.margin;
   doc.moveDown(0.3);
 }
 
