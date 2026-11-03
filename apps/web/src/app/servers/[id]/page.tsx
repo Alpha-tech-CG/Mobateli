@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
+import { ReportButton } from "@/components/report-button";
 import { Card, SeverityBadge } from "@/components/ui";
 import { ScoreBadge } from "@/components/score";
 import { AgentInstall } from "@/components/agent-install";
@@ -87,7 +88,8 @@ function ServerView() {
               : ""}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-start gap-2">
+          <ReportButton type="server" id={server.id} name={server.name} />
           <button
             onClick={rotate}
             className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted"

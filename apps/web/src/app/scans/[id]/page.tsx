@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
+import { ReportButton } from "@/components/report-button";
 import { Card, SeverityBadge } from "@/components/ui";
 import { RiskBadge } from "@/components/risk-badge";
 import { ScanProgress } from "@/components/scan-progress";
@@ -62,7 +63,10 @@ function ScanView() {
             {scan.summary?.engine ? ` · moteur ${scan.summary.engine}` : ""}
           </p>
         </div>
-        {scan.status === "done" ? <RiskBadge risk={scan.riskScore ?? 0} /> : null}
+        <div className="flex items-start gap-3">
+          {scan.status === "done" ? <RiskBadge risk={scan.riskScore ?? 0} /> : null}
+          {scan.status === "done" ? <ReportButton type="scan" id={scan.id} name={`${scan.repository.name}-audit`} /> : null}
+        </div>
       </header>
 
       {scan.status !== "done" ? (

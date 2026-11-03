@@ -343,6 +343,12 @@ export default function GuidePage() {
               ]}
             />
             <P>
+              <B>Chaque fonctionnalité a aussi son propre rapport signé</B>, avec le même en-tête, la même signature et
+              le même QR code : bouton <B>Rapport PDF signé</B> sur la fiche d&apos;une pull request, d&apos;un audit de
+              dépôt, d&apos;un serveur, d&apos;une cible brute force (une fois vérifiée) et d&apos;une sauvegarde. Les
+              rapports déjà émis restent listés sous le bouton et dans <Path>Audit</Path>.
+            </P>
+            <P>
               Pour vos propres outils, le journal complet s&apos;exporte aussi en <B>CSV</B> et le dossier de preuves en{" "}
               <B>JSON</B>.
             </P>

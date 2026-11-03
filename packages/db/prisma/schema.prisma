@@ -781,6 +781,10 @@ model AuditEvent {
 model AuditReport {
   id                String   @id @db.Uuid
   organizationId    String   @db.Uuid
+  /// organization | pull_request | repository_scan | server | bruteforce | backup
+  kind              String   @default("organization")
+  subjectId         String?  @db.Uuid
+  subjectLabel      String?
   generatedById     String?  @db.Uuid
   sha256            String
   signerFingerprint String
@@ -791,5 +795,6 @@ model AuditReport {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, createdAt])
+  @@index([subjectId])
   @@map("audit_reports")
 }

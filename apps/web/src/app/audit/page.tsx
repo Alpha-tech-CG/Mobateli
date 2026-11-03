@@ -10,8 +10,19 @@ import type { AuditEvent } from "@/lib/types";
 
 interface IssuedReport {
   id: string;
+  kind: string;
+  subjectLabel: string | null;
   createdAt: string;
 }
+
+const KIND_LABELS: Record<string, string> = {
+  organization: "Audit de l'organisation",
+  pull_request: "Pull request",
+  repository_scan: "Audit de dépôt",
+  server: "Serveur",
+  bruteforce: "Brute force",
+  backup: "Sauvegarde",
+};
 
 export default function AuditPage() {
   return (
@@ -85,10 +96,12 @@ function Audit() {
           <h2 className="mb-2 text-sm font-semibold">Rapports signés émis</h2>
           <Card>
             <ul className="divide-y divide-border text-sm">
-              {reports.slice(0, 10).map((r) => (
+              {reports.slice(0, 15).map((r) => (
                 <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
                   <span>
-                    <span className="font-mono text-xs">N° {r.id.slice(0, 8).toUpperCase()}</span>
+                    <span className="font-medium">{KIND_LABELS[r.kind] ?? r.kind}</span>
+                    {r.subjectLabel ? <span className="text-muted-foreground"> · {r.subjectLabel}</span> : null}
+                    <span className="ml-2 font-mono text-xs text-muted-foreground">N° {r.id.slice(0, 8).toUpperCase()}</span>
                     <span className="text-muted-foreground"> · {new Date(r.createdAt).toLocaleString("fr-FR")}</span>
                   </span>
                   <Link href={`/verify/${r.id}`} className="text-xs text-primary hover:underline">

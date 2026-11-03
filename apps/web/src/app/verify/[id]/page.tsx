@@ -7,13 +7,29 @@ import { CheckCircle2, FileUp, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { AuthShell } from "@/components/auth-shell";
 
+const KIND_LABELS: Record<string, string> = {
+  organization: "Audit de l'organisation",
+  pull_request: "Analyse de pull request",
+  repository_scan: "Audit de dépôt",
+  server: "Audit de serveur",
+  bruteforce: "Test anti brute force",
+  backup: "Audit de sauvegarde",
+};
+
 interface IssuedReport {
   id: string;
+  kind: string;
+  subject: string | null;
   organization: string;
   issuedAt: string;
   sha256: string;
   signerFingerprint: string;
-  summary: { pullRequests?: number; secretsBlocked?: number; dependenciesRefused?: number };
+  summary: {
+    verdict?: string | null;
+    kpis?: { label: string; value: string | number }[];
+    pullRequests?: number;
+    secretsBlocked?: number;
+  };
 }
 
 async function sha256Hex(file: File): Promise<string> {
@@ -75,11 +91,19 @@ export default function VerifyReportPage() {
             <Row label="Rapport">
               <span className="break-all font-mono text-[12px]">{report.id}</span>
             </Row>
+            <Row label="Type">{KIND_LABELS[report.kind] ?? report.kind}</Row>
+            {report.subject ? (
+              <Row label="Objet">
+                <span className="break-all">{report.subject}</span>
+              </Row>
+            ) : null}
             <Row label="Organisation">{report.organization}</Row>
             <Row label="Émis le">{new Date(report.issuedAt).toLocaleString("fr-FR")}</Row>
+            {report.summary.verdict ? <Row label="Verdict">{report.summary.verdict}</Row> : null}
             <Row label="Contenu">
-              {report.summary.pullRequests ?? 0} PR analysées · {report.summary.secretsBlocked ?? 0} secret(s)
-              intercepté(s)
+              {report.summary.kpis
+                ? report.summary.kpis.map((k) => `${k.label} : ${k.value}`).join(" · ")
+                : `${report.summary.pullRequests ?? 0} PR analysées · ${report.summary.secretsBlocked ?? 0} secret(s) intercepté(s)`}
             </Row>
           </dl>
 

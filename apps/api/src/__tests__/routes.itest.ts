@@ -488,6 +488,26 @@ test("signed PDF report is registered and verifiable publicly", async () => {
   assert.ok(list.json().reports.some((r: { id: string }) => r.id === reportId));
 });
 
+test("every feature has its own signed report, scoped to the org", async () => {
+  const pr = await prisma.pullRequest.findFirst({ where: { repository: { organization: { name: "Acme" } } } });
+  assert.ok(pr, "a pull request exists from earlier tests");
+  const res = await app.inject({ method: "POST", url: `/api/v1/reports/pull-request/${pr.id}`, headers: auth() });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"] as string, /application\/pdf/);
+  const reportId = res.headers["x-report-id"] as string;
+  const v = await app.inject({ method: "GET", url: `/api/v1/reports/${reportId}/verify` });
+  assert.equal(v.json().report.kind, "pull_request");
+  assert.match(v.json().report.subject, new RegExp(`#${pr.number}$`));
+  const forPr = await app.inject({ method: "GET", url: `/api/v1/reports?subjectId=${pr.id}`, headers: auth() });
+  assert.deepEqual(forPr.json().reports.map((r: { id: string }) => r.id), [reportId]);
+
+  // Unknown type or a subject from nowhere: 404, nothing issued.
+  const bad = await app.inject({ method: "POST", url: `/api/v1/reports/nope/${pr.id}`, headers: auth() });
+  assert.equal(bad.statusCode, 404);
+  const missing = await app.inject({ method: "POST", url: `/api/v1/reports/server/${randomUUID()}`, headers: auth() });
+  assert.equal(missing.statusCode, 404);
+});
+
 test("infra shield: connect server, agent report scored, token required", async () => {
   const con = await app.inject({
     method: "POST",

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
+import { ReportButton } from "@/components/report-button";
 import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
 import type { PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
 
@@ -97,6 +98,7 @@ function Detail() {
             <p className="text-xs text-muted-foreground">risque / 100</p>
           </div>
           <StatusBadge status={pr.status} />
+          <ReportButton type="pull-request" id={pr.id} name={`${pr.repository.name}-pr-${pr.number}`} />
           <button
             onClick={rescan}
             disabled={rescanning}

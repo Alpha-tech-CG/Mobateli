@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
+import { ReportButton } from "@/components/report-button";
 import { Card } from "@/components/ui";
 import type {
   BruteForcePolicy,
@@ -467,6 +468,7 @@ function Targets({ targets, onChange }: { targets: BruteForceTarget[]; onChange:
               >
                 Retirer
               </button>
+              {t.verifiedAt ? <ReportButton type="bruteforce" id={t.id} name={t.name} compact /> : null}
             </div>
           </div>
         ))}

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import forge from "node-forge";
 import { renderSignedReport } from "./audit-report.js";
+import { organizationDocument } from "./report-documents.js";
 import { generateIdentity } from "./report-signing.js";
 import type { EvidencePack } from "./evidence.js";
 
@@ -74,7 +75,7 @@ function verifySignature(pdf: Buffer): { digestOk: boolean; signatureOk: boolean
 
 test("audit report is a branded, signed PDF whose signature covers the file", async () => {
   const stored = generateIdentity();
-  const { pdf, sha256 } = await renderSignedReport(pack, {
+  const { pdf, sha256 } = await renderSignedReport(organizationDocument(pack), {
     reportId: "3f2a9c1e-7b4d-4e8a-9f10-2c6d8e4b1a77",
     verifyUrl: "https://app.codegate.test/verify/3f2a9c1e-7b4d-4e8a-9f10-2c6d8e4b1a77",
     generatedBy: "Alice <alice@acme.test>",
