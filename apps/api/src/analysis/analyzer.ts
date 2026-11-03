@@ -4,7 +4,15 @@ import { scanDependencies } from "./dependency-scanner.js";
 import { runSastRules, flagSensitiveFiles } from "./sast.js";
 import { decide } from "./risk.js";
 import { enrichDependenciesWithOsv, type OsvOptions } from "./osv.js";
+import { runSca, mergeScaIntoDependencies, type ScaOptions } from "./sca.js";
 import type { AnalysisResult } from "./types.js";
+
+/**
+ * Options for the network-backed analysis. OSV fields stay at the top level for
+ * backward compatibility; the full-tree SCA (Trivy/Grype) scan is opt-in under
+ * `sca` and only runs when a workspace dir or container image is provided.
+ */
+export type IntelOptions = OsvOptions & { sca?: ScaOptions };
 
 /**
  * Analysis pipeline entry point. Deterministic and pure: given a unified
@@ -27,17 +35,22 @@ export function analyzeDiff(diff: string): AnalysisResult {
 }
 
 /**
- * Full analysis: the deterministic core plus network-backed intelligence
- * (OSV known-vulnerability lookup for dependencies). The decision is
- * recomputed after enrichment so a freshly discovered CVE can change the
- * verdict. Fails open — if OSV is unreachable the result equals `analyzeDiff`.
+ * Full analysis: the deterministic core plus network-backed intelligence —
+ * OSV known-vulnerability lookup on the dependencies added in the diff, then an
+ * optional full-tree SCA scan (Trivy/Grype over lockfiles and container images)
+ * whose findings are merged in without duplicating a CVE (dedup by id). The
+ * decision is recomputed after enrichment so a freshly discovered CVE or
+ * restrictive license can change the verdict. Fails open — if both OSV and the
+ * SCA tool are unreachable the result equals `analyzeDiff`.
  */
 export async function analyzeDiffWithIntel(
   diff: string,
-  opts: OsvOptions = {},
+  opts: IntelOptions = {},
 ): Promise<AnalysisResult> {
   const base = analyzeDiff(diff);
-  const dependencies = await enrichDependenciesWithOsv(base.dependencies, opts);
+  const osvEnriched = await enrichDependenciesWithOsv(base.dependencies, opts);
+  const scaDeps = await runSca(opts.sca ?? {});
+  const dependencies = mergeScaIntoDependencies(osvEnriched, scaDeps);
   const { riskScore, decision, status } = decide({
     findings: base.findings,
     secrets: base.secrets,
