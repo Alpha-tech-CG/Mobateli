@@ -35,6 +35,8 @@ export type Block =
   | { kind: "text"; text: string }
   | { kind: "note"; text: string }
   | { kind: "bullets"; items: string[] }
+  /** Paragraphs with a bold lead-in label. */
+  | { kind: "prose"; items: { label: string; text: string }[] }
   /** Horizontal 0–100 bars, e.g. maturity per domain. */
   | { kind: "bars"; items: { label: string; value: number; note?: string }[] };
 
@@ -119,6 +121,8 @@ function printable(report: ReportDocument): ReportDocument {
           ? { ...b, title: t(b.title), ...(b.subtitle ? { subtitle: t(b.subtitle) } : {}) }
           : b.kind === "bullets"
             ? { ...b, items: b.items.map(t) }
+            : b.kind === "prose"
+              ? { ...b, items: b.items.map((i) => ({ label: t(i.label), text: t(i.text) })) }
             : b.kind === "bars"
               ? { ...b, items: b.items.map((i) => ({ ...i, label: t(i.label), ...(i.note ? { note: t(i.note) } : {}) })) }
               : { ...b, text: t(b.text) },
@@ -186,6 +190,7 @@ function render(report: ReportDocument, meta: ReportMeta, qr: Buffer, signingTim
         else note(doc, block.empty ?? "Rien à signaler.");
       } else if (block.kind === "text") text(doc, block.text);
       else if (block.kind === "bullets") bullets(doc, block.items);
+      else if (block.kind === "prose") prose(doc, block.items);
       else if (block.kind === "bars") bars(doc, block.items);
       else note(doc, block.text);
     }
@@ -316,6 +321,23 @@ function bullets(doc: PDFKit.PDFDocument, items: string[]) {
     doc.rect(PAGE.margin + 1, y + 4, 4, 4).fill(BRAND.brick);
     doc.fillColor(BRAND.ink).font("Helvetica").fontSize(9.5).text(item, PAGE.margin + 14, y, { width: CONTENT_WIDTH - 14 });
     doc.y += 4;
+  }
+  doc.x = PAGE.margin;
+}
+
+function prose(doc: PDFKit.PDFDocument, items: { label: string; text: string }[]) {
+  for (const item of items) {
+    doc.font("Helvetica").fontSize(9.5);
+    ensureSpace(doc, doc.heightOfString(item.text, { width: CONTENT_WIDTH - 12 }) + 22);
+    const top = doc.y;
+    doc.fillColor(BRAND.brick).font("Helvetica-Bold").fontSize(9).text(item.label.toUpperCase(), PAGE.margin + 12, top, { width: CONTENT_WIDTH - 12 });
+    doc.fillColor(BRAND.ink).font("Helvetica").fontSize(9.5).text(item.text, PAGE.margin + 12, doc.y + 2, {
+      width: CONTENT_WIDTH - 12,
+      align: "justify",
+      lineGap: 1.5,
+    });
+    doc.rect(PAGE.margin, top, 3, doc.y - top).fill(BRAND.line);
+    doc.y += 8;
   }
   doc.x = PAGE.margin;
 }

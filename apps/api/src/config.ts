@@ -55,6 +55,12 @@ const envSchema = z.object({
   // Owners/admins must enable MFA before administrative actions (§10.2).
   MFA_REQUIRED_FOR_ADMINS: z.enum(["true", "false"]).default("true"),
 
+  // AI-written auditor's analysis in signed reports (Google Gemini). Only the
+  // findings already in the report are sent — never code or secret values.
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default("gemini-3.5-flash"),
+  AI_NARRATIVE: z.enum(["on", "off"]).default("on"),
+
   // Optional trusted certificate (PKCS#12) for signing audit reports; without
   // it CodeGate generates and keeps its own signing identity.
   REPORT_SIGNING_P12_BASE64: z.string().optional(),

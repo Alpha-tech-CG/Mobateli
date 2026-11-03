@@ -14,6 +14,7 @@ import {
   type ReportType,
 } from "../lib/report-documents.js";
 import { getSigningIdentity } from "../lib/report-signing.js";
+import { aiNarrative, withNarrative } from "../lib/ai-narrative.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -110,10 +111,12 @@ export async function auditRoutes(app: FastifyInstance, config: AppConfig) {
     filters: object,
   ) {
     const reportId = randomUUID();
-    const [identity, user] = await Promise.all([
+    const [identity, user, narrative] = await Promise.all([
       getSigningIdentity(config),
       prisma.user.findUnique({ where: { id: req.principal.userId }, select: { name: true, email: true } }),
+      aiNarrative(config, document, req.log),
     ]);
+    document = withNarrative(document, narrative);
     const { pdf, sha256 } = await renderSignedReport(document, {
       reportId,
       verifyUrl: `${config.WEB_ORIGIN.replace(/\/$/, "")}/verify/${reportId}`,
@@ -141,7 +144,14 @@ export async function auditRoutes(app: FastifyInstance, config: AppConfig) {
       action: "audit.exported",
       resourceType: "audit_report",
       resourceId: reportId,
-      metadata: { format: "pdf", kind: document.type, subjectId: document.subjectId ?? null, sha256, signer: identity.fingerprint },
+      metadata: {
+        format: "pdf",
+        kind: document.type,
+        subjectId: document.subjectId ?? null,
+        sha256,
+        signer: identity.fingerprint,
+        aiModel: narrative?.model ?? null,
+      },
     });
     const stamp = new Date().toISOString().slice(0, 10);
     const slug = document.type.replace(/_/g, "-");
