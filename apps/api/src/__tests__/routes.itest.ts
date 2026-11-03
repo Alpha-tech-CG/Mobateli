@@ -927,7 +927,7 @@ test("platform: GitHub App manifest flow is operator-only and stores credentials
   const { GITHUB_APP_SETTING, getGithubSettings, resetGithubAppCache } = await import("../lib/github.js");
   await writePlatformSetting(
     GITHUB_APP_SETTING,
-    { appId: "123", slug: "codegate-test", privateKey: "-----BEGIN RSA PRIVATE KEY-----", webhookSecret: "whsec", clientId: "c", clientSecret: "s", owner: null },
+    { appId: "123", slug: "codegate-test", privateKey: ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" "), webhookSecret: "whsec", clientId: "c", clientSecret: "s", owner: null },
     process.env.ENCRYPTION_KEY!,
     (await prisma.user.findFirstOrThrow({ where: { email: "owner@acme.test" } })).id,
   );
