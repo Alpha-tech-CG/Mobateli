@@ -549,13 +549,13 @@ test("infra shield: connect server, agent report scored, token required", async 
     payload: report,
   });
   assert.equal(ok.statusCode, 202);
-  // Redis public (critical 25) + root login (12) + password auth (12)
-  assert.equal(ok.json().score, 51);
+  // Redis public (critical 25) + root login (10) + password auth (10): 100 × 60 / (60 + 45)
+  assert.equal(ok.json().score, 57);
 
   const detail = await app.inject({ method: "GET", url: `/api/v1/servers/${server.id}`, headers: auth() });
   assert.equal(detail.statusCode, 200);
   const s = detail.json().server;
-  assert.equal(s.securityScore, 51);
+  assert.equal(s.securityScore, 57);
   assert.equal(s.findings[0].checkId, "port.public.6379");
   assert.equal(JSON.stringify(detail.json()).includes("agentTokenHash"), false);
 
@@ -572,6 +572,84 @@ test("infra shield: connect server, agent report scored, token required", async 
   });
   assert.equal(stale.statusCode, 401, "old token is revoked after rotation");
   assert.ok(rotated.json().agentToken.startsWith("cg_srv_"));
+});
+
+test("infra shield v2: delta, accepted risk, re-audit on demand", async () => {
+  const con = await app.inject({
+    method: "POST",
+    url: "/api/v1/servers/connect",
+    headers: auth(),
+    payload: { name: "vps-v2", environment: "production" },
+  });
+  const { server, agentToken } = con.json();
+  const agent = { authorization: `Bearer ${agentToken}` };
+  const report = {
+    agentVersion: "2.0.0",
+    hostname: "vps-v2",
+    os: "Ubuntu 24.04",
+    listening: [{ proto: "tcp", address: "0.0.0.0", port: 22, process: "sshd" }],
+    ssh: { permitRootLogin: "no", passwordAuthentication: true, pubkeyAuthentication: true, maxAuthTries: 3 },
+    firewall: { ufw: "inactive", ufwAllowed: [], nftablesRules: 0, iptablesRules: 0 },
+    bruteforce: { fail2ban: true, crowdsec: false },
+    docker: null,
+    updates: { manager: "apt", pendingSecurity: 0, autoUpdates: true },
+  };
+
+  // Never audited: the agent's frequent cron is told to run.
+  const due = await app.inject({ method: "GET", url: "/api/v1/agent/pending", headers: agent });
+  assert.equal(due.json().run, true);
+
+  const first = await app.inject({ method: "POST", url: "/api/v1/agent/report", headers: agent, payload: report });
+  assert.equal(first.statusCode, 202);
+  const before = first.json().score as number;
+
+  // Fresh report: nothing pending until a re-audit is requested from the dashboard.
+  assert.equal((await app.inject({ method: "GET", url: "/api/v1/agent/pending", headers: agent })).json().run, false);
+  assert.equal((await app.inject({ method: "POST", url: `/api/v1/servers/${server.id}/rescan`, headers: auth() })).statusCode, 202);
+  const asked = await app.inject({ method: "GET", url: "/api/v1/agent/pending", headers: agent });
+  assert.deepEqual(asked.json(), { run: true, reason: "requested" });
+
+  // The firewall is accepted as a known risk: it leaves the score at once, stays listed.
+  const short = await app.inject({
+    method: "PUT",
+    url: `/api/v1/servers/${server.id}/acceptances/firewall.inactive`,
+    headers: auth(),
+    payload: { kind: "accepted", justification: "court" },
+  });
+  assert.equal(short.statusCode, 400, "a justification is required");
+  const acc = await app.inject({
+    method: "PUT",
+    url: `/api/v1/servers/${server.id}/acceptances/firewall.inactive`,
+    headers: auth(),
+    payload: { kind: "mitigated", justification: "Filtrage assuré par le pare-feu de l'hébergeur (security group)." },
+  });
+  assert.equal(acc.statusCode, 200);
+  assert.ok(acc.json().score > before);
+
+  // Fixing SSH password auth is confirmed by the next report, with the delta.
+  const fixed = await app.inject({
+    method: "POST",
+    url: "/api/v1/agent/report",
+    headers: agent,
+    payload: { ...report, ssh: { ...report.ssh, passwordAuthentication: false } },
+  });
+  assert.equal(fixed.json().resolved, 1);
+  assert.equal(fixed.json().previousScore, acc.json().score);
+  assert.ok(fixed.json().score > fixed.json().previousScore);
+
+  const detail = (await app.inject({ method: "GET", url: `/api/v1/servers/${server.id}`, headers: auth() })).json().server;
+  const fw = detail.findings.find((f: { checkId: string }) => f.checkId === "firewall.inactive");
+  assert.equal(fw.acceptance.kind, "mitigated");
+  assert.ok(fw.verifyCommand, "findings carry a verification command");
+  assert.equal(detail.scans.length, 2);
+  assert.deepEqual(detail.scans[0].resolved, ["ssh.password_auth"]);
+
+  const events = await prisma.auditEvent.findMany({ where: { resourceId: server.id, action: "server.risk_mitigated" } });
+  assert.equal(events.length, 1);
+
+  // Reopening counts it again.
+  const reopened = await app.inject({ method: "DELETE", url: `/api/v1/servers/${server.id}/acceptances/firewall.inactive`, headers: auth() });
+  assert.ok(reopened.json().score < fixed.json().score);
 });
 
 test("bruteforce shield: CodeGate login locks an account after 5 failures", async () => {

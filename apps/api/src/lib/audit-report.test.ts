@@ -101,3 +101,8 @@ test("audit report is a branded, signed PDF whose signature covers the file", as
   tampered[at + 1] = "X".charCodeAt(0);
   assert.equal(verifySignature(tampered).digestOk, false);
 });
+
+test("PDF text is limited to what the standard fonts can print", async () => {
+  const { pdfSafe } = await import("./audit-report.js");
+  assert.equal(pdfSafe("Internet → app → serveur, score ≥ 70 — « ok » é"), "Internet -> app -> serveur, score >= 70 — « ok » é");
+});

@@ -86,6 +86,37 @@ export const fmtDate = (value: string | Date | null | undefined) =>
     : "—";
 const shortId = (id: string) => id.slice(0, 8).toUpperCase();
 
+/**
+ * The standard PDF fonts only cover Windows-1252: arrows, comparison signs
+ * and box-drawing characters would print as garbage, so they are spelled out.
+ */
+const REPLACEMENTS: Record<string, string> = { "→": "->", "←": "<-", "≥": ">=", "≤": "<=", "≠": "!=", "✓": "OK", "✗": "x", "─": "-", "…": "..." };
+export function pdfSafe(text: string): string {
+  return text.replace(/[^\u0000-ÿ€‚ƒ„†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]/g, (c) => REPLACEMENTS[c] ?? "?");
+}
+
+function printable(report: ReportDocument): ReportDocument {
+  const t = pdfSafe;
+  return {
+    ...report,
+    heading: t(report.heading),
+    eyebrow: t(report.eyebrow),
+    title: t(report.title),
+    subtitle: t(report.subtitle),
+    organization: t(report.organization),
+    facts: report.facts.map(([k, v]) => [t(k), t(v)]),
+    kpis: report.kpis.map((k) => ({ ...k, label: t(k.label), value: typeof k.value === "string" ? t(k.value) : k.value })),
+    ...(report.verdict ? { verdict: { ...report.verdict, label: t(report.verdict.label), text: t(report.verdict.text) } } : {}),
+    blocks: report.blocks.map((b) =>
+      b.kind === "table"
+        ? { ...b, columns: b.columns.map((c) => ({ ...c, label: t(c.label) })), rows: b.rows.map((r) => r.map(t)), ...(b.empty ? { empty: t(b.empty) } : {}) }
+        : b.kind === "section"
+          ? { ...b, title: t(b.title), ...(b.subtitle ? { subtitle: t(b.subtitle) } : {}) }
+          : { ...b, text: t(b.text) },
+    ),
+  };
+}
+
 /** Renders and signs the report. Returns the final file and its SHA-256. */
 export async function renderSignedReport(
   report: ReportDocument,
@@ -99,7 +130,7 @@ export async function renderSignedReport(
     errorCorrectionLevel: "M",
     color: { dark: BRAND.dark, light: "#FFFFFF" },
   });
-  const unsigned = await render(report, meta, qr, signingTime);
+  const unsigned = await render(printable(report), meta, qr, signingTime);
   const signer = new P12Signer(meta.identity.p12, { passphrase: meta.identity.passphrase });
   const pdf = await new SignPdf().sign(unsigned, signer, signingTime);
   return { pdf, sha256: createHash("sha256").update(pdf).digest("hex") };

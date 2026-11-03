@@ -223,6 +223,8 @@ export const agentReportSchema = z.object({
   }).nullable(),
   firewall: z.object({
     ufw: z.enum(["active", "inactive"]).nullable(),
+    /** Ports UFW allows from anywhere, e.g. [22, 80, 443] (agent ≥ 2.0). */
+    ufwAllowed: z.array(z.number().int()).max(500).nullable().optional(),
     nftablesRules: z.number().int().nullable(),
     iptablesRules: z.number().int().nullable(),
   }),
@@ -246,16 +248,61 @@ export const agentReportSchema = z.object({
               .max(200),
             readOnlyRootfs: z.boolean(),
             memoryLimit: z.number().int().nonnegative(),
+            // Agent ≥ 2.0 — all optional so older agents keep reporting.
+            /** Host paths mounted in the container (paths only, never contents). */
+            mounts: z
+              .array(z.object({ source: z.string().max(500), destination: z.string().max(500), rw: z.boolean() }))
+              .max(200)
+              .optional(),
+            /** UID of the container's main process as seen by the host kernel. */
+            effectiveUid: z.number().int().nullable().optional(),
+            networkMode: z.string().max(100).optional(),
+            networks: z.array(z.string().max(100)).max(50).optional(),
+            noNewPrivileges: z.boolean().optional(),
+            capDrop: z.array(z.string().max(60)).max(60).optional(),
+            /** Hostnames routed to this container (Traefik Host() rules). */
+            routedHosts: z.array(z.string().max(255)).max(50).optional(),
+            /** Auth middleware on its routes: none, ok, or broken (users file missing). */
+            routeAuth: z.enum(["none", "ok", "broken"]).optional(),
+            /** Names (never values) of environment variables holding a literal secret. */
+            secretEnvNames: z.array(z.string().max(100)).max(100).optional(),
+            /** For socket proxies: is the write API (POST) enabled? */
+            socketProxyPost: z.boolean().nullable().optional(),
           }),
         )
         .max(500),
+      /** /etc/docker/daemon.json hardening flags (null when unreadable). */
+      daemon: z
+        .object({
+          usernsRemap: z.boolean(),
+          liveRestore: z.boolean(),
+          noNewPrivileges: z.boolean(),
+          logMaxSize: z.boolean(),
+        })
+        .nullable()
+        .optional(),
+      /** .env files of compose projects: path and permission bits only. */
+      envFiles: z
+        .array(z.object({ path: z.string().max(500), mode: z.string().max(6), worldReadable: z.boolean() }))
+        .max(100)
+        .optional(),
     })
     .nullable(),
   updates: z.object({
     manager: z.string().max(20).nullable(),
     pendingSecurity: z.number().int().nonnegative().nullable(),
     autoUpdates: z.boolean().nullable(),
+    /** Days since unattended-upgrades last ran (agent ≥ 2.0). */
+    autoUpdatesLastRunDays: z.number().int().nullable().optional(),
   }),
+  /** Host accounts (agent ≥ 2.0): names only. */
+  host: z
+    .object({
+      uid0Accounts: z.array(z.string().max(64)).max(50),
+      /** Principals allowed "NOPASSWD: ALL" in sudoers; null when unreadable. */
+      passwordlessSudo: z.array(z.string().max(64)).max(50).nullable(),
+    })
+    .optional(),
   /** TLS Audit (§3.2): local HTTPS listeners, probed on 127.0.0.1. */
   tls: z
     .array(
@@ -265,9 +312,24 @@ export const agentReportSchema = z.object({
         legacyAccepted: z.boolean().nullable(),
         certExpiresInDays: z.number().int().nullable(),
         selfSigned: z.boolean().nullable(),
+        /** Hostname sent as SNI (agent ≥ 2.0); absent = default certificate. */
+        sni: z.string().max(255).nullable().optional(),
+        /** Chain and hostname validated against the system trust store. */
+        trusted: z.boolean().nullable().optional(),
+        issuer: z.string().max(200).nullable().optional(),
+        /** Security headers returned on GET / for this hostname. */
+        headers: z
+          .object({
+            hsts: z.boolean(),
+            csp: z.boolean(),
+            frameOptions: z.boolean(),
+            contentTypeOptions: z.boolean(),
+          })
+          .nullable()
+          .optional(),
       }),
     )
-    .max(50)
+    .max(100)
     .optional(),
   /** Backup Discovery (§5.3): tool names found in cron / systemd timers only. */
   backups: z
@@ -280,6 +342,15 @@ export const agentReportSchema = z.object({
     .optional(),
 });
 export type AgentReport = z.infer<typeof agentReportSchema>;
+
+/** Accept a server finding as a known risk, or record the control mitigating it (P1-9). */
+export const serverRiskAcceptanceSchema = z.object({
+  kind: z.enum(["accepted", "mitigated"]),
+  justification: z.string().trim().min(10).max(1000),
+  /** Optional review date; the finding counts again after it. */
+  expiresAt: z.string().datetime().optional(),
+});
+export type ServerRiskAcceptanceInput = z.infer<typeof serverRiskAcceptanceSchema>;
 
 // ─── BruteForce Shield (extension §4) ─────────────────────
 

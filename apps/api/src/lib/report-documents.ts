@@ -47,6 +47,11 @@ const INFRA_FR: Record<string, string> = {
   updates: "Mises à jour",
   backups: "Sauvegardes",
   tls: "TLS",
+  secrets: "Secrets",
+  network: "Réseau",
+  admin: "Console d'admin",
+  http: "En-têtes HTTP",
+  daemon: "Démon Docker",
 };
 const BF_TYPE_FR: Record<string, string> = { login_lockout: "Verrouillage après échecs", account_enumeration: "Énumération de comptes" };
 const BF_RESULT_FR: Record<string, string> = { pass: "Conforme", warn: "À améliorer", fail: "Non conforme" };
@@ -457,20 +462,38 @@ export async function scanDocument(organizationId: string, id: string): Promise<
 export async function serverDocument(organizationId: string, id: string): Promise<ReportDocument | null> {
   const server = await prisma.server.findFirst({
     where: { id, organizationId },
-    include: { findings: true, organization: { select: { name: true } }, backupJobs: { select: { name: true } } },
+    include: {
+      findings: true,
+      acceptances: true,
+      scans: { orderBy: { createdAt: "desc" }, take: 10 },
+      organization: { select: { name: true } },
+      backupJobs: { select: { name: true } },
+    },
   });
   if (!server) return null;
-  const f = server.findings;
+  const now = Date.now();
+  const acceptance = new Map(
+    server.acceptances.filter((a) => !a.expiresAt || a.expiresAt.getTime() > now).map((a) => [a.checkId, a]),
+  );
+  const f = server.findings.filter((x) => !acceptance.has(x.checkId) && x.severity !== "info");
+  const acceptedFindings = server.findings.filter((x) => acceptance.has(x.checkId));
+  const analysis = (server.analysis ?? {}) as {
+    chains?: { severity: string; title: string; steps: string[] }[];
+    mitigations?: string[];
+    resolved?: string[];
+  };
   const crit = sevCount(f, "critical") + sevCount(f, "high");
   const score = server.securityScore;
+  const delta = score !== null && server.previousScore !== null ? score - server.previousScore : null;
+  const deltaText = delta ? ` (${delta > 0 ? "+" : ""}${delta} depuis l'audit précédent)` : "";
   const verdict: NonNullable<ReportDocument["verdict"]> =
     score === null
       ? { label: "Jamais audité", tone: "warn", text: "L'agent n'a encore envoyé aucun rapport pour ce serveur." }
       : crit
-        ? { label: "À durcir", tone: "bad", text: `Score ${score}/100 : ${crit} point(s) critique(s) ou élevé(s) exposent le serveur.` }
+        ? { label: "À durcir", tone: "bad", text: `Score ${score}/100${deltaText} : ${crit} point(s) critique(s) ou élevé(s) exposent le serveur.` }
         : f.length
-          ? { label: "À améliorer", tone: "warn", text: `Score ${score}/100 : ${f.length} point(s) mineur(s) restent à corriger.` }
-          : { label: "Durci", tone: "ok", text: `Score ${score}/100 : aucun point à corriger.` };
+          ? { label: "À améliorer", tone: "warn", text: `Score ${score}/100${deltaText} : ${f.length} point(s) mineur(s) restent à corriger.` }
+          : { label: "Durci", tone: "ok", text: `Score ${score}/100${deltaText} : aucun point ouvert.` };
 
   return {
     type: "server",
@@ -492,27 +515,102 @@ export async function serverDocument(organizationId: string, id: string): Promis
       { label: "Score de sécurité / 100", value: score ?? "—", alert: score !== null && score < 70 },
       { label: "Critiques / élevés", value: crit, alert: crit > 0 },
       { label: "Points à corriger", value: f.length, alert: f.length > 0 },
-      { label: "Sauvegardes liées", value: server.backupJobs.length },
+      { label: "Chaînes d'attaque", value: analysis.chains?.length ?? 0, alert: (analysis.chains?.length ?? 0) > 0 },
     ],
     blocks: [
+      ...(analysis.chains?.length
+        ? ([
+            { kind: "section", title: "Chaînes d'attaque", subtitle: "Points qui, combinés, ouvrent un chemin jusqu'au serveur." },
+            {
+              kind: "table",
+              columns: [
+                { label: "Sévérité", width: 0.12 },
+                { label: "Chemin", width: 0.3 },
+                { label: "Étapes", width: 0.58 },
+              ],
+              rows: analysis.chains.map((c) => [
+                SEVERITY_FR[c.severity] ?? c.severity,
+                c.title,
+                c.steps.map((s, i) => `${i + 1}. ${s}`).join("\n"),
+              ]),
+              fontSize: 7.5,
+            },
+          ] satisfies Block[])
+        : []),
       { kind: "section", title: "Points à corriger", subtitle: "Constatés par l'agent CodeGate, qui ne modifie rien sur le serveur." },
       {
         kind: "table",
         columns: [
-          { label: "Sévérité", width: 0.11 },
-          { label: "Domaine", width: 0.14 },
-          { label: "Constat", width: 0.4 },
-          { label: "Correction recommandée", width: 0.35 },
+          { label: "Sévérité", width: 0.1 },
+          { label: "Domaine", width: 0.12 },
+          { label: "Constat et preuve", width: 0.42 },
+          { label: "Correction et vérification", width: 0.36 },
         ],
         rows: bySeverity(f).map((x) => [
-          SEVERITY_FR[x.severity] ?? x.severity,
+          `${SEVERITY_FR[x.severity] ?? x.severity}${x.exposure === "public" ? "\nexposé" : ""}`,
           INFRA_FR[x.category] ?? x.category,
-          `${x.title}\n${x.detail}`,
-          x.recommendation,
+          `${x.title}\n${x.detail}${x.evidence ? `\nPreuve : ${x.evidence}` : ""}`,
+          `${x.recommendation}${x.verifyCommand ? `\nVérifier : ${x.verifyCommand}` : ""}`,
         ]),
-        fontSize: 7.5,
+        fontSize: 7,
         empty: "Aucun point à corriger.",
       },
+      ...(acceptedFindings.length
+        ? ([
+            {
+              kind: "section",
+              title: "Risques acceptés ou atténués",
+              subtitle: "Exclus du score par une décision tracée dans le journal d'audit.",
+            },
+            {
+              kind: "table",
+              columns: [
+                { label: "Sévérité", width: 0.1 },
+                { label: "Point", width: 0.32 },
+                { label: "Décision", width: 0.16 },
+                { label: "Justification", width: 0.42 },
+              ],
+              rows: acceptedFindings.map((x) => {
+                const a = acceptance.get(x.checkId)!;
+                return [
+                  SEVERITY_FR[x.severity] ?? x.severity,
+                  x.title,
+                  `${a.kind === "accepted" ? "Accepté" : "Atténué"} le ${fmtDate(a.createdAt)}${a.expiresAt ? `\nà revoir le ${fmtDate(a.expiresAt)}` : ""}`,
+                  a.justification,
+                ];
+              }),
+              fontSize: 7.5,
+            },
+          ] satisfies Block[])
+        : []),
+      ...(analysis.mitigations?.length
+        ? ([
+            { kind: "section", title: "Contrôles en place" },
+            { kind: "text", text: analysis.mitigations.map((m) => `• ${m}`).join("\n") },
+          ] satisfies Block[])
+        : []),
+      ...(server.scans.length
+        ? ([
+            { kind: "section", title: "Historique des audits", subtitle: "Score et points corrigés à chaque rapport de l'agent." },
+            {
+              kind: "table",
+              columns: [
+                { label: "Date", width: 0.25 },
+                { label: "Score", width: 0.15, align: "right" },
+                { label: "Critiques / élevés", width: 0.2, align: "right" },
+                { label: "Corrigés", width: 0.2, align: "right" },
+                { label: "Nouveaux", width: 0.2, align: "right" },
+              ],
+              rows: server.scans.map((s) => [
+                fmtDate(s.createdAt),
+                `${s.score}/100`,
+                `${s.critical} / ${s.high}`,
+                String(s.resolved.length),
+                String(s.introduced.length),
+              ]),
+            },
+          ] satisfies Block[])
+        : []),
     ],
   };
 }

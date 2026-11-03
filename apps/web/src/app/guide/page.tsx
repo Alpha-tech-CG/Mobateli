@@ -254,12 +254,27 @@ export default function GuidePage() {
                   environnement (production, staging…). CodeGate génère un token, affiché une seule fois.
                 </>,
                 <>
-                  Copiez les commandes d&apos;installation sur votre VPS (Linux). L&apos;agent fonctionne en{" "}
-                  <B>lecture seule</B> : il ne modifie rien et envoie un rapport chaque jour.
+                  Copiez les commandes d&apos;installation sur votre VPS (Linux). Le mode <B>moindre privilège</B>{" "}
+                  (recommandé) crée un utilisateur dédié : seules les commandes qui exigent root passent par sudo.
+                  L&apos;empreinte SHA-256 de l&apos;agent est vérifiée avant installation. L&apos;agent est en{" "}
+                  <B>lecture seule</B> : il ne modifie rien et n&apos;envoie ni contenu de fichier ni valeur de variable.
                 </>,
                 <>
-                  Chaque serveur reçoit un score sur 100 : ports exposés, configuration SSH, firewall, Docker, mises à
-                  jour de sécurité. Chaque point à corriger est accompagné de la commande à exécuter.
+                  Chaque serveur reçoit un score sur 100 : ports exposés et règles UFW, SSH, conteneurs Docker
+                  (mode privilégié, socket, montages de l&apos;hôte, utilisateur réel), consoles d&apos;administration
+                  exposées, secrets en clair, certificats TLS vérifiés pour chacun de vos domaines, en-têtes HTTP de
+                  sécurité, durcissement du démon Docker et mises à jour.
+                </>,
+                <>
+                  Chaque point indique sa <B>preuve</B>, la <B>commande pour le vérifier</B> vous-même et un correctif
+                  adapté à l&apos;image (une mauvaise recommandation peut casser la production). Les{" "}
+                  <B>chaînes d&apos;attaque</B> montrent les points qui, combinés, mènent jusqu&apos;au serveur.
+                </>,
+                <>
+                  Corrigez, puis cliquez sur <B>Relancer l&apos;audit</B> : l&apos;agent le prend en compte dans les 15
+                  minutes et confirme les corrections, avec l&apos;évolution du score. Un point qui relève d&apos;un
+                  choix d&apos;architecture peut être marqué <B>Atténué par un contrôle</B> ou <B>Accepter le risque</B>,
+                  avec une justification et une date de revue : il sort du score mais reste suivi et tracé.
                 </>,
               ]}
             />

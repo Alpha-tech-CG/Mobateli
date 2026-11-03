@@ -167,7 +167,12 @@ export type InfraCategory =
   | "docker"
   | "updates"
   | "backups"
-  | "tls";
+  | "tls"
+  | "secrets"
+  | "network"
+  | "admin"
+  | "http"
+  | "daemon";
 
 export interface ServerRow {
   id: string;
@@ -190,6 +195,38 @@ export interface ServerFinding {
   title: string;
   detail: string;
   recommendation: string;
+  evidence: string | null;
+  verifyCommand: string | null;
+  exploitScenario: string | null;
+  exposure: "public" | "internal" | null;
+  acceptance: ServerAcceptance | null;
+}
+
+export interface ServerAcceptance {
+  checkId: string;
+  kind: "accepted" | "mitigated";
+  justification: string;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface AttackChain {
+  id: string;
+  severity: Severity;
+  title: string;
+  steps: string[];
+  checkIds: string[];
+}
+
+export interface ServerScanRow {
+  id: string;
+  score: number;
+  critical: number;
+  high: number;
+  total: number;
+  resolved: string[];
+  introduced: string[];
+  createdAt: string;
 }
 
 export interface ServerDetail extends Omit<ServerRow, "counts"> {
@@ -197,7 +234,17 @@ export interface ServerDetail extends Omit<ServerRow, "counts"> {
   lastReport: {
     listening: { proto: string; address: string; port: number; process: string | null }[];
   } | null;
+  previousScore: number | null;
+  rescanRequestedAt: string | null;
+  analysis: {
+    chains: AttackChain[];
+    mitigations: string[];
+    acceptedCount: number;
+    resolved: string[];
+    introduced: string[];
+  } | null;
   findings: ServerFinding[];
+  scans: ServerScanRow[];
 }
 
 // ─── BruteForce Shield ──────────────────────────────────

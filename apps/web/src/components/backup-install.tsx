@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { API_URL } from "@/lib/api";
+import { BACKUP_RELEASE } from "@/lib/agent-release";
 
 /** One-time display of a backup report token with the setup commands. */
 export function BackupInstall({ token }: { token: string }) {
@@ -15,7 +16,8 @@ export function BackupInstall({ token }: { token: string }) {
       text: [
         `sudo mkdir -p /etc/codegate`,
         `echo '${token}' | sudo tee /etc/codegate/backup.token >/dev/null && sudo chmod 600 /etc/codegate/backup.token`,
-        `sudo curl -fsSL ${helperUrl} -o /usr/local/bin/codegate-backup && sudo chmod +x /usr/local/bin/codegate-backup`,
+        `curl -fsSL ${helperUrl} -o /tmp/codegate-backup.py`,
+        `echo '${BACKUP_RELEASE.sha256}  /tmp/codegate-backup.py' | sha256sum -c - && sudo install -m 755 /tmp/codegate-backup.py /usr/local/bin/codegate-backup`,
       ].join("\n"),
     },
     {

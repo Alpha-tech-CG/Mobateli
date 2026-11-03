@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma, type Prisma } from "@codegate/db";
-import { agentReportSchema, connectServerSchema } from "@codegate/shared";
+import { agentReportSchema, connectServerSchema, serverRiskAcceptanceSchema, type AgentReport } from "@codegate/shared";
 import type { AppConfig } from "../config.js";
 import { recordAudit } from "../lib/audit.js";
 import { notifySlack } from "../lib/notify.js";
-import { evaluateInfra } from "../analysis/infra.js";
+import { evaluateInfra, type InfraResult } from "../analysis/infra.js";
 
 const TOKEN_PREFIX = "cg_srv_";
 
@@ -19,6 +19,53 @@ function hashToken(token: string): string {
 }
 
 const MANAGE = ["owner", "admin", "security_manager"] as const;
+
+/** checkIds currently accepted or mitigated (expired acceptances count again). */
+async function acceptedChecks(serverId: string): Promise<Set<string>> {
+  const rows = await prisma.serverRiskAcceptance.findMany({
+    where: { serverId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+    select: { checkId: true },
+  });
+  return new Set(rows.map((r) => r.checkId));
+}
+
+function analysisOf(result: InfraResult, accepted: Set<string>, resolved: string[], introduced: string[]) {
+  return {
+    chains: result.chains,
+    mitigations: result.mitigations,
+    acceptedCount: result.findings.filter((f) => accepted.has(f.checkId)).length,
+    resolved,
+    introduced,
+  } as unknown as Prisma.InputJsonValue;
+}
+
+const findingRow = (serverId: string, f: InfraResult["findings"][number]) => ({
+  serverId,
+  category: f.category,
+  checkId: f.checkId,
+  severity: f.severity,
+  title: f.title,
+  detail: f.detail,
+  recommendation: f.recommendation,
+  evidence: f.evidence ?? null,
+  verifyCommand: f.verifyCommand ?? null,
+  exploitScenario: f.exploitScenario ?? null,
+  exposure: f.exposure ?? null,
+});
+
+/** Re-scores the last report after an acceptance change (no new agent run needed). */
+async function rescore(serverId: string): Promise<number | null> {
+  const server = await prisma.server.findUnique({ where: { id: serverId }, select: { lastReport: true, analysis: true } });
+  if (!server?.lastReport) return null;
+  const accepted = await acceptedChecks(serverId);
+  const result = evaluateInfra(server.lastReport as unknown as AgentReport, { accepted });
+  const prev = (server.analysis ?? {}) as { resolved?: string[]; introduced?: string[] };
+  await prisma.server.update({
+    where: { id: serverId },
+    data: { securityScore: result.score, analysis: analysisOf(result, accepted, prev.resolved ?? [], prev.introduced ?? []) },
+  });
+  return result.score;
+}
 
 /**
  * Infra Shield (extension §3, §8). A server is registered from the dashboard,
@@ -102,13 +149,27 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
         lastReport: true,
         lastReportAt: true,
         createdAt: true,
+        previousScore: true,
+        analysis: true,
+        rescanRequestedAt: true,
         findings: true,
+        acceptances: { orderBy: { createdAt: "desc" } },
+        scans: { orderBy: { createdAt: "desc" }, take: 12 },
       },
     });
     if (!server) return reply.code(404).send({ error: "not_found" });
     const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 } as const;
     server.findings.sort((a, b) => order[a.severity] - order[b.severity]);
-    return { server };
+    const now = Date.now();
+    const active = new Map(
+      server.acceptances.filter((x) => !x.expiresAt || x.expiresAt.getTime() > now).map((x) => [x.checkId, x]),
+    );
+    return {
+      server: {
+        ...server,
+        findings: server.findings.map((f) => ({ ...f, acceptance: active.get(f.checkId) ?? null })),
+      },
+    };
   });
 
   app.get(
@@ -169,6 +230,98 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
     },
   );
 
+  // Accept a finding as a known risk, or record its compensating control (P1-9).
+  app.put(
+    "/api/v1/servers/:id/acceptances/:checkId",
+    { preHandler: [app.authenticate, app.requireRole(...MANAGE)] },
+    async (req, reply) => {
+      const { id, checkId } = req.params as { id: string; checkId: string };
+      const body = serverRiskAcceptanceSchema.parse(req.body);
+      const server = await prisma.server.findFirst({
+        where: { id, organizationId: req.principal.organizationId },
+        select: { id: true, findings: { where: { checkId }, select: { title: true, severity: true } } },
+      });
+      if (!server) return reply.code(404).send({ error: "not_found" });
+      const finding = server.findings[0];
+      if (!finding) return reply.code(404).send({ error: "finding_not_found" });
+      const data = {
+        kind: body.kind,
+        justification: body.justification,
+        acceptedById: req.principal.userId,
+        expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+      };
+      await prisma.serverRiskAcceptance.upsert({
+        where: { serverId_checkId: { serverId: id, checkId } },
+        create: { serverId: id, checkId, ...data },
+        update: data,
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: body.kind === "accepted" ? "server.risk_accepted" : "server.risk_mitigated",
+        resourceType: "server",
+        resourceId: id,
+        metadata: {
+          checkId,
+          title: finding.title,
+          severity: finding.severity,
+          justification: body.justification,
+          expiresAt: body.expiresAt ?? null,
+        },
+      });
+      return { score: await rescore(id) };
+    },
+  );
+
+  app.delete(
+    "/api/v1/servers/:id/acceptances/:checkId",
+    { preHandler: [app.authenticate, app.requireRole(...MANAGE)] },
+    async (req, reply) => {
+      const { id, checkId } = req.params as { id: string; checkId: string };
+      const server = await prisma.server.findFirst({
+        where: { id, organizationId: req.principal.organizationId },
+        select: { id: true },
+      });
+      if (!server) return reply.code(404).send({ error: "not_found" });
+      const res = await prisma.serverRiskAcceptance.deleteMany({ where: { serverId: id, checkId } });
+      if (!res.count) return reply.code(404).send({ error: "acceptance_not_found" });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "server.risk_reopened",
+        resourceType: "server",
+        resourceId: id,
+        metadata: { checkId },
+      });
+      return { score: await rescore(id) };
+    },
+  );
+
+  // Ask the agent for a new audit; it picks the request up within minutes (P2-7).
+  app.post(
+    "/api/v1/servers/:id/rescan",
+    { preHandler: [app.authenticate, app.requireRole(...MANAGE)] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const res = await prisma.server.updateMany({
+        where: { id, organizationId: req.principal.organizationId },
+        data: { rescanRequestedAt: new Date() },
+      });
+      if (!res.count) return reply.code(404).send({ error: "not_found" });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "server.rescan_requested",
+        resourceType: "server",
+        resourceId: id,
+      });
+      return reply.code(202).send({ status: "requested" });
+    },
+  );
+
   // Organization-wide infrastructure report (§8 /reports/infrastructure).
   app.get(
     "/api/v1/reports/infrastructure",
@@ -198,26 +351,63 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
     },
   );
 
-  // ── Agent ingestion: authenticated by the per-server token, not a JWT ──
-  app.post("/api/v1/agent/report", async (req, reply) => {
-    const auth = req.headers.authorization ?? "";
+  // ── Agent endpoints: authenticated by the per-server token, not a JWT ──
+  async function agentServer(authorization: string | undefined) {
+    const auth = authorization ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    if (!token.startsWith(TOKEN_PREFIX)) {
-      return reply.code(401).send({ error: "invalid_agent_token" });
-    }
-    const server = await prisma.server.findUnique({
+    if (!token.startsWith(TOKEN_PREFIX)) return null;
+    return prisma.server.findUnique({
       where: { agentTokenHash: hashToken(token) },
-      select: { id: true, name: true, organizationId: true, securityScore: true },
+      select: {
+        id: true,
+        name: true,
+        organizationId: true,
+        securityScore: true,
+        lastReportAt: true,
+        rescanRequestedAt: true,
+        findings: { select: { checkId: true } },
+      },
     });
+  }
+
+  // Polled by the agent's frequent cron: run now if asked, or if the last audit is old.
+  app.get("/api/v1/agent/pending", async (req, reply) => {
+    const server = await agentServer(req.headers.authorization);
+    if (!server) return reply.code(401).send({ error: "invalid_agent_token" });
+    const last = server.lastReportAt?.getTime() ?? 0;
+    const requested = !!server.rescanRequestedAt && server.rescanRequestedAt.getTime() > last;
+    const due = Date.now() - last > 6 * 3600 * 1000;
+    return { run: requested || due, reason: requested ? "requested" : due ? "schedule" : null };
+  });
+
+  app.post("/api/v1/agent/report", async (req, reply) => {
+    const server = await agentServer(req.headers.authorization);
     if (!server) return reply.code(401).send({ error: "invalid_agent_token" });
 
     const report = agentReportSchema.parse(req.body);
-    const result = evaluateInfra(report);
+    const accepted = await acceptedChecks(server.id);
+    const result = evaluateInfra(report, { accepted });
+
+    // What changed since the previous audit (P0-5 delta, P2-7 confirmation).
+    const before = new Set(server.findings.map((f) => f.checkId));
+    const after = new Set(result.findings.map((f) => f.checkId));
+    const resolved = [...before].filter((id) => !after.has(id));
+    const introduced = server.lastReportAt ? [...after].filter((id) => !before.has(id)) : [];
+    const open = result.findings.filter((f) => !accepted.has(f.checkId));
 
     await prisma.$transaction([
       prisma.serverFinding.deleteMany({ where: { serverId: server.id } }),
-      prisma.serverFinding.createMany({
-        data: result.findings.map((f) => ({ serverId: server.id, ...f })),
+      prisma.serverFinding.createMany({ data: result.findings.map((f) => findingRow(server.id, f)) }),
+      prisma.serverScan.create({
+        data: {
+          serverId: server.id,
+          score: result.score,
+          critical: open.filter((f) => f.severity === "critical").length,
+          high: open.filter((f) => f.severity === "high").length,
+          total: open.filter((f) => f.severity !== "info").length,
+          resolved,
+          introduced,
+        },
       }),
       prisma.server.update({
         where: { id: server.id },
@@ -225,7 +415,9 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
           hostname: report.hostname,
           os: report.os,
           agentVersion: report.agentVersion,
+          previousScore: server.securityScore,
           securityScore: result.score,
+          analysis: analysisOf(result, accepted, resolved, introduced),
           lastReport: report as unknown as Prisma.InputJsonValue,
           lastReportAt: new Date(),
           silentAlertedAt: null,
@@ -233,7 +425,7 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
       }),
     ]);
 
-    const critical = result.findings.filter((f) => f.severity === "critical");
+    const critical = open.filter((f) => f.severity === "critical");
     await recordAudit({
       organizationId: server.organizationId,
       actorType: "system",
@@ -242,8 +434,12 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
       resourceId: server.id,
       metadata: {
         score: result.score,
-        findings: result.findings.length,
+        previousScore: server.securityScore,
+        findings: open.length,
+        accepted: result.findings.length - open.length,
         critical: critical.length,
+        resolved: resolved.length,
+        introduced: introduced.length,
         agentVersion: report.agentVersion,
       },
     });
@@ -260,6 +456,13 @@ export async function serverRoutes(app: FastifyInstance, config: AppConfig) {
       });
     }
 
-    return reply.code(202).send({ score: result.score, findings: result.findings.length });
+    return reply.code(202).send({
+      score: result.score,
+      previousScore: server.securityScore,
+      findings: open.length,
+      resolved: resolved.length,
+      introduced: introduced.length,
+      chains: result.chains.length,
+    });
   });
 }

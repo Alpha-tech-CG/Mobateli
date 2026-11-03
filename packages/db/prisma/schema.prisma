@@ -301,33 +301,46 @@ enum InfraCategory {
   updates
   backups
   tls
+  secrets
+  network
+  admin
+  http
+  daemon
 }
 
 /// A VPS / server monitored by Infra Shield (extension §3). Ownership is
 /// proven by the agent running on it with a per-server token — CodeGate never
 /// scans a host from the outside.
 model Server {
-  id              String    @id @default(uuid()) @db.Uuid
-  organizationId  String    @db.Uuid
-  name            String
-  provider        String?
-  environment     String    @default("production")
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @db.Uuid
+  name              String
+  provider          String?
+  environment       String    @default("production")
   // sha256 of the agent token; the token itself is shown once at creation.
-  agentTokenHash  String    @unique
-  hostname        String?
-  os              String?
-  agentVersion    String?
-  securityScore   Int?
+  agentTokenHash    String    @unique
+  hostname          String?
+  os                String?
+  agentVersion      String?
+  securityScore     Int?
   // Last normalized facts reported by the agent (no secrets — see agent).
-  lastReport      Json?
-  lastReportAt    DateTime?
+  lastReport        Json?
+  lastReportAt      DateTime?
   // Set when a "silent agent" alert was sent; cleared by the next report.
-  silentAlertedAt DateTime?
-  createdAt       DateTime  @default(now())
+  silentAlertedAt   DateTime?
+  /// Score of the previous report, for the delta (P0-5).
+  previousScore     Int?
+  /// Attack chains and other derived analysis of the last report.
+  analysis          Json?
+  /// Re-audit asked from the dashboard; the agent picks it up (P2-7).
+  rescanRequestedAt DateTime?
+  createdAt         DateTime  @default(now())
 
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   findings     ServerFinding[]
   backupJobs   BackupJob[]
+  acceptances  ServerRiskAcceptance[]
+  scans        ServerScan[]
 
   @@index([organizationId])
   @@map("servers")
@@ -335,15 +348,23 @@ model Server {
 
 /// One failed Infra Shield control on a server; replaced at every report.
 model ServerFinding {
-  id             String        @id @default(uuid()) @db.Uuid
-  serverId       String        @db.Uuid
-  category       InfraCategory
-  checkId        String
-  severity       Severity
-  title          String
-  detail         String
-  recommendation String
-  createdAt      DateTime      @default(now())
+  id              String        @id @default(uuid()) @db.Uuid
+  serverId        String        @db.Uuid
+  category        InfraCategory
+  checkId         String
+  severity        Severity
+  title           String
+  detail          String
+  recommendation  String
+  /// What the agent observed (paths, ports, hostnames) — the proof.
+  evidence        String?
+  /// Command to check the finding yourself on the server.
+  verifyCommand   String?
+  /// How an attacker would use it.
+  exploitScenario String?
+  /// public | internal — drives the contextual severity.
+  exposure        String?
+  createdAt       DateTime      @default(now())
 
   server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
 
@@ -797,4 +818,40 @@ model AuditReport {
   @@index([organizationId, createdAt])
   @@index([subjectId])
   @@map("audit_reports")
+}
+
+/// A server finding accepted as a known risk, or covered by a compensating
+/// control (P1-9). It leaves the score but stays listed and audited.
+model ServerRiskAcceptance {
+  id            String    @id @default(uuid()) @db.Uuid
+  serverId      String    @db.Uuid
+  checkId       String
+  kind          String
+  justification String
+  acceptedById  String?   @db.Uuid
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@unique([serverId, checkId])
+  @@map("server_risk_acceptances")
+}
+
+/// One Infra Shield audit, kept to show the score trend and what changed.
+model ServerScan {
+  id         String   @id @default(uuid()) @db.Uuid
+  serverId   String   @db.Uuid
+  score      Int
+  critical   Int
+  high       Int
+  total      Int
+  resolved   String[] @default([])
+  introduced String[] @default([])
+  createdAt  DateTime @default(now())
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, createdAt])
+  @@map("server_scans")
 }
