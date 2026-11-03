@@ -64,3 +64,13 @@ test("line-rule fallback ignores comment lines", () => {
   const r = analyzeDiff(diff("src/c.ts", ["  });", "}, [", ' * matching "eval(" in docs is noise', "// eval(x) here", "eval(payload)"]));
   assert.deepEqual(r.findings.filter((f) => f.type === "sast").map((f) => f.line), [5]);
 });
+
+test("line-rule fallback: a dangerous call quoted inside a string is data", () => {
+  const r = analyzeDiff(
+    diff("src/__tests__/x.test.ts", ["  ]);", "}, [", `      "+const r = eval('1+1');",`, "  el.innerHTML = 'safe ' + userInput;"]),
+  );
+  assert.deepEqual(
+    r.findings.filter((f) => f.type === "sast").map((f) => `${f.ruleId}:${f.line}`),
+    ["XSS_INNERHTML:4"],
+  );
+});

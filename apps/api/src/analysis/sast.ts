@@ -14,7 +14,8 @@ interface Rule {
   title: string;
   description: string;
   remediation: string;
-  test: (line: string) => boolean;
+  /** `line` is the raw text; `code` the same line with string contents blanked. */
+  test: (line: string, code: string) => boolean;
 }
 
 const RULES: Rule[] = [
@@ -36,7 +37,7 @@ const RULES: Rule[] = [
     description:
       "eval() ou new Function() exécute du code arbitraire ; combiné à une entrée externe, c'est une exécution de code à distance.",
     remediation: "Supprimez eval. Utilisez JSON.parse pour des données, ou une logique explicite.",
-    test: (l) => /\beval\s*\(/.test(l) || /\bnew\s+Function\s*\(/.test(l),
+    test: (_l, code) => /\beval\s*\(/.test(code) || /\bnew\s+Function\s*\(/.test(code),
   },
   {
     id: "CHILD_PROCESS_INJECTION",
@@ -45,7 +46,7 @@ const RULES: Rule[] = [
     description:
       "exec() avec une chaîne interpolée permet l'injection de commandes. L'agent ne doit jamais exécuter de shell non maîtrisé (cahier §5.4).",
     remediation: "Utilisez execFile/spawn avec un tableau d'arguments, jamais une chaîne shell concaténée.",
-    test: (l) => /\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l),
+    test: (l, code) => /\b(exec|execSync)\s*\(/.test(code) && /\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l),
   },
   {
     id: "XSS_INNERHTML",
@@ -54,7 +55,7 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (l) => /\.innerHTML\s*=/.test(l) || /dangerouslySetInnerHTML/.test(l),
+    test: (_l, code) => /\.innerHTML\s*=/.test(code) || /dangerouslySetInnerHTML/.test(code),
   },
   {
     id: "WEAK_HASH",
@@ -62,7 +63,7 @@ const RULES: Rule[] = [
     title: "Algorithme de hachage faible",
     description: "MD5 et SHA-1 sont cassés pour un usage de sécurité.",
     remediation: "Utilisez SHA-256+ pour l'intégrité, et argon2/bcrypt/scrypt pour les mots de passe.",
-    test: (l) => /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l),
+    test: (l, code) => /createHash\(/.test(code) && /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l),
   },
   {
     id: "TLS_VERIFICATION_DISABLED",
@@ -92,13 +93,23 @@ function isCommentLine(file: string, content: string): boolean {
     (HASH_COMMENT_FILE.test(file) && t.startsWith("#"));
 }
 
+/**
+ * Blank the contents of string literals: "eval(" quoted in a string (a test
+ * fixture, a message) is data, not a call. Rules that need the text of a
+ * string (SQL, hash names) still read the raw line.
+ */
+export function blankStrings(line: string): string {
+  return line.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""');
+}
+
 export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   const findings: FindingResult[] = [];
 
   for (const { file, line, content } of addedLines) {
     if (!CODE_FILE.test(file) || isCommentLine(file, content)) continue;
+    const code = blankStrings(content);
     for (const rule of RULES) {
-      if (rule.test(content)) {
+      if (rule.test(content, code)) {
         findings.push({
           type: "sast",
           severity: rule.severity,
