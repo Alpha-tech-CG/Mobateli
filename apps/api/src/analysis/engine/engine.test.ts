@@ -74,3 +74,16 @@ test("line-rule fallback: a dangerous call quoted inside a string is data", () =
     ["XSS_INNERHTML:4"],
   );
 });
+
+test("line-rule fallback: rule sources and regex literals are data, real usage is not", () => {
+  const r = analyzeDiff(
+    diff("src/rules.ts", [
+      "  });",
+      "}, [",
+      "    test: (_l, code) => /\.innerHTML\s*=/.test(code) || /dangerouslySetInnerHTML/.test(code),",
+      "  const v = <div dangerouslySetInnerHTML={{ __html: html }} />;",
+      "  if (el.innerHTML == '') reset();",
+    ]),
+  );
+  assert.deepEqual(r.findings.filter((f) => f.type === "sast").map((f) => `${f.ruleId}:${f.line}`), ["XSS_INNERHTML:4"]);
+});

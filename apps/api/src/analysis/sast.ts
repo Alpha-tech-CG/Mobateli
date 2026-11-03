@@ -55,7 +55,8 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (_l, code) => /\.innerHTML\s*=/.test(code) || /dangerouslySetInnerHTML/.test(code),
+    // The JSX prop / object key form, not the bare word (docs, rule sources).
+    test: (_l, code) => /\.innerHTML\s*=(?!=)/.test(code) || /\bdangerouslySetInnerHTML\s*[=:]/.test(code),
   },
   {
     id: "WEAK_HASH",
@@ -99,7 +100,15 @@ function isCommentLine(file: string, content: string): boolean {
  * string (SQL, hash names) still read the raw line.
  */
 export function blankStrings(line: string): string {
-  return line.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""');
+  return (
+    line
+      .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""')
+      // Regex literals (after an operator, bracket or keyword) are data too.
+      .replace(
+        /(^|[=(,:!&|?{};[]|\breturn)(\s*)\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+\/[dgimsuy]*/g,
+        "$1$2/r/",
+      )
+  );
 }
 
 export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
