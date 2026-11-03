@@ -5,11 +5,18 @@ import { runSastRules, flagSensitiveFiles } from "./sast.js";
 import { decide } from "./risk.js";
 import { enrichDependenciesWithOsv, type OsvOptions } from "./osv.js";
 import { scanSemgrep, type SemgrepOptions } from "./semgrep.js";
+import { runSca, mergeScaIntoDependencies, type ScaOptions } from "./sca.js";
 import type { AnalysisResult, FindingResult } from "./types.js";
 
-/** Options for the network/subprocess-backed intelligence passes. */
+/**
+ * Options for the network/subprocess-backed intelligence passes. OSV fields
+ * stay at the top level for backward compatibility; Semgrep (semantic SAST) and
+ * the full-tree SCA scan (Trivy/Grype over lockfiles and container images) are
+ * opt-in and only run when their inputs/tools are available.
+ */
 export interface IntelOptions extends OsvOptions {
   semgrep?: SemgrepOptions;
+  sca?: ScaOptions;
 }
 
 /**
@@ -49,11 +56,16 @@ export function analyzeDiff(diff: string): AnalysisResult {
 }
 
 /**
- * Full analysis: the deterministic core plus network-backed intelligence
- * (OSV known-vulnerability lookup for dependencies, Semgrep semantic SAST).
- * The decision is recomputed after enrichment so a freshly discovered CVE or
- * Semgrep finding can change the verdict. Fails open — if OSV and Semgrep are
- * both unreachable the result equals `analyzeDiff`.
+ * Full analysis: the deterministic core plus network/subprocess-backed
+ * intelligence, all fail-open and run concurrently:
+ *  - OSV known-vulnerability lookup on the dependencies added in the diff;
+ *  - an optional full-tree SCA scan (Trivy/Grype over lockfiles and container
+ *    images), merged into the dependencies without duplicating a CVE;
+ *  - Semgrep semantic SAST, merged into the findings without duplicating a
+ *    regex-rule hit on (rule|CWE, file, line).
+ * The decision is recomputed after enrichment so a freshly discovered CVE,
+ * restrictive license or Semgrep finding can change the verdict. If every
+ * external pass is unreachable the result equals `analyzeDiff`.
  */
 export async function analyzeDiffWithIntel(
   diff: string,
@@ -62,10 +74,13 @@ export async function analyzeDiffWithIntel(
   const base = analyzeDiff(diff);
   const parsed = parseUnifiedDiff(diff);
 
-  const [dependencies, semgrepFindings] = await Promise.all([
+  const [osvEnriched, scaDeps, semgrepFindings] = await Promise.all([
     enrichDependenciesWithOsv(base.dependencies, opts),
+    runSca(opts.sca ?? {}),
     scanSemgrep(parsed.files, opts.semgrep),
   ]);
+
+  const dependencies = mergeScaIntoDependencies(osvEnriched, scaDeps);
 
   // Merge Semgrep findings with the regex-rule findings, dropping any that
   // duplicate an existing one on (rule|CWE, file, line).

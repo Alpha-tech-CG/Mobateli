@@ -59,8 +59,13 @@ export interface DependencyResult {
   trustScore: number; // 0..100 (higher = more trustworthy)
   riskLevel: DependencyRisk;
   reason?: string;
-  /** Known vulnerabilities, populated by the OSV enrichment pass. */
+  /** Known vulnerabilities, populated by the OSV / SCA enrichment passes. */
   vulnerabilities?: DependencyVulnerability[];
+  /**
+   * SPDX license identifier (e.g. "MIT", "GPL-3.0"), populated by the SCA
+   * (Trivy/Grype) full-tree scan. Restrictive licenses raise the risk level.
+   */
+  license?: string;
 }
 
 /** Aggregate output of the analysis pipeline. */
