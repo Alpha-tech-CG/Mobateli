@@ -19,7 +19,20 @@ interface Rule {
   test: (line: string) => boolean;
 }
 
+// Built from escapes so this file itself stays free of invisible characters.
+const INVISIBLE = new RegExp(
+  "[\u200B-\u200F\u202A-\u202E\u2066-\u2069\u2060\uFEFF]|\uDB40[\uDC00-\uDC7F]",
+);
+
 const AGENT = String.raw`(?:ai|a\.i\.|assistant|llm|claude|copilot|cursor|codex|gemini|chatgpt|gpt|agent|windsurf|devin)`;
+// Whole word only: "install" but not "installé" / "install-script".
+const VERB = String.raw`(?:run|execute|exec|install|curl|wget|download|delete|rm -rf|push|commit|deploy|send|post|upload|disable|grant)(?![\wÀ-ÿ-])`;
+const MODAL = String.raw`(?:must|should|need to|have to|please)`;
+const AGENT_VOCATIVE = new RegExp(
+  String.raw`\b${AGENT}s?\s*[,:]\s*(?:(?:you\s+)?${MODAL}\s+|now\s+)?${VERB}`,
+  "i",
+);
+const AGENT_MODAL = new RegExp(String.raw`\b${AGENT}s?\s+(?:you\s+)?${MODAL}\s+${VERB}`, "i");
 
 const RULES: Rule[] = [
   {
@@ -40,11 +53,9 @@ const RULES: Rule[] = [
     description:
       "Le texte s'adresse directement à un agent IA pour lui faire exécuter une action (commande, installation, envoi…).",
     remediation: "Retirez cette consigne. Les actions sensibles d'un agent passent par Agent Guard et une approbation humaine.",
-    test: (l) =>
-      new RegExp(
-        String.raw`\b(dear |hey |note to |attention |to the )?${AGENT}s?\b[\s,:-]{1,4}(you (must|should|need to)|please|must|now)?\s*\b(run|execute|exec|install|curl|wget|download|delete|rm -rf|push|commit|deploy|send|post|upload|disable|grant)\b`,
-        "i",
-      ).test(l),
+    // A real address — "Claude, run…", "AI agents: please install…",
+    // "Copilot must push…" — not an identifier such as `agent-install`.
+    test: (l) => AGENT_VOCATIVE.test(l) || AGENT_MODAL.test(l),
   },
   {
     id: "PI_ROLE_SPOOFING",
@@ -74,8 +85,7 @@ const RULES: Rule[] = [
     description:
       "Caractères Unicode invisibles (zéro largeur, contrôle bidirectionnel, tags) : le texte affiché à l'humain diffère de ce que lisent le compilateur ou l'IA (Trojan Source).",
     remediation: "Supprimez ces caractères (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+E0000–U+E007F).",
-    // eslint-disable-next-line no-misleading-character-class
-    test: (l) => /[​-‏‪-‮⁦-⁩⁠﻿]|\uDB40[\uDC00-\uDC7F]/.test(l),
+    test: (l) => INVISIBLE.test(l),
   },
 ];
 

@@ -37,6 +37,19 @@ static GENERIC_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// A connection string to the machine itself or a CI service container
+/// carries throwaway test credentials, not a reachable secret.
+pub fn is_local_database_url(url: &str) -> bool {
+    let after_creds = url.split_once('@').map_or(url, |(_, rest)| rest);
+    let host = after_creds
+        .split(|c| c == ':' || c == '/' || c == '?')
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+}
+
 /// Shannon entropy in bits per character.
 pub fn shannon_entropy(s: &str) -> f64 {
     let chars: Vec<char> = s.chars().collect();
@@ -71,6 +84,9 @@ pub fn scan(lines: &[AddedLine]) -> Vec<Secret> {
         let location = format!("{}:{}", l.file, l.line);
         for p in PATTERNS.iter() {
             if let Some(m) = p.regex.find(&l.content) {
+                if p.kind == "postgres_url" && is_local_database_url(m.as_str()) {
+                    continue;
+                }
                 if seen.insert(format!("{}:{location}", p.kind)) {
                     out.push(Secret {
                         secret_type: p.kind.into(),

@@ -85,10 +85,18 @@ const SENSITIVE_FILES = [
   "Dockerfile",
 ];
 
+/**
+ * Languages these line rules are written for. Docs (.md), config and other
+ * languages (Rust, Go…) are skipped: matching "eval(" or "innerHTML" in them
+ * only produces noise.
+ */
+const CODE_FILE = /\.(m?[jt]sx?|cjs|cts|mts|py|php|rb|html?|vue|svelte)$/i;
+
 export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   const findings: FindingResult[] = [];
 
   for (const { file, line, content } of addedLines) {
+    if (!CODE_FILE.test(file)) continue;
     for (const rule of RULES) {
       if (rule.test(content)) {
         findings.push({

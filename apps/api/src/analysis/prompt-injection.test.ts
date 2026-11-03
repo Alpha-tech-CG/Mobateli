@@ -49,6 +49,9 @@ test("ordinary code and prose are not flagged", () => {
       "Run `pnpm install` to install dependencies.",
       "The AI model returns a summary.",
       "We send tokens to the user by email after signup",
+      'import { AgentInstall } from "@/components/agent-install";',
+      "- Agent installé OU validation DNS / fichier.",
+      "const cursor = db.cursor(); cursor.execute(sql)",
     ]),
     [],
   );

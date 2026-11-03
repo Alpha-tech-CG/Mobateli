@@ -32,6 +32,16 @@ const PATTERNS: Pattern[] = [
 const GENERIC_ASSIGN =
   /\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*['"]([^'"]{8,})['"]/i;
 
+/**
+ * A connection string to the machine itself or a CI service container
+ * (127.0.0.1, localhost, ::1) carries throwaway test credentials, not a
+ * secret anyone can reach.
+ */
+export function isLocalDatabaseUrl(url: string): boolean {
+  const host = url.replace(/^[a-z]+:\/\/[^@]*@/i, "").split(/[:/?]/)[0]!.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
+}
+
 /** Shannon entropy (bits/char) — distinguishes random secrets from words. */
 export function shannonEntropy(s: string): number {
   if (!s.length) return 0;
@@ -57,7 +67,7 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
   for (const { file, line, content } of addedLines) {
     for (const p of PATTERNS) {
       const m = content.match(p.regex);
-      if (m) {
+      if (m && !(p.type === "postgres_url" && isLocalDatabaseUrl(m[0]))) {
         const key = `${p.type}:${file}:${line}`;
         if (seen.has(key)) continue;
         seen.add(key);

@@ -121,3 +121,16 @@ fn json_contract() {
     assert!(out.contains(r#""astFiles":["a.ts"]"#));
     assert!(scan_json("not json").contains("\"error\""));
 }
+
+#[test]
+fn local_database_urls_are_not_secrets() {
+    let out = scan_lines(&lines(
+        "ci.yml",
+        &[
+            "DATABASE_URL: postgresql://codegate:codegate@127.0.0.1:5434/codegate_test",
+            "url: postgres://app:s3cr3t@db.internal.example.com:5432/prod",
+        ],
+    ));
+    let locations: Vec<_> = out.secrets.iter().map(|s| s.location.as_str()).collect();
+    assert_eq!(locations, vec!["ci.yml:11"]);
+}

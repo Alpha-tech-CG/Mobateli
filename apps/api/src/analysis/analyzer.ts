@@ -7,6 +7,15 @@ import { scanWithEngine } from "./engine/index.js";
 import { decide } from "./risk.js";
 import type { AnalysisResult, FindingResult } from "./types.js";
 
+/** Test, spec and fixture files (any language). */
+export function isTestPath(file: string): boolean {
+  return (
+    /(^|\/)(__tests__|__fixtures__|tests?|spec|specs|fixtures?|testdata)\//i.test(file) ||
+    /\.(test|spec|itest|e2e)\.[a-z0-9]+$/i.test(file) ||
+    /(^|\/)test_[^/]+\.py$|_test\.(go|py)$/i.test(file)
+  );
+}
+
 /**
  * Stable identity of a finding across commits: rule + file, not the line
  * (lines move). Used to carry a human "false positive" verdict forward.
@@ -30,14 +39,25 @@ export function analyzeDiff(
   // Files it could not parse, other languages, or no engine ⇒ line rules.
   const engine = scanWithEngine(parsed.addedLines);
   const astFiles = new Set(engine?.astFiles ?? []);
-  const secrets = engine?.secrets ?? scanSecrets(parsed.addedLines);
+  // Generic (entropy-based) matches in test files are fixtures, not leaks;
+  // provider-format keys stay reported wherever they appear.
+  const secrets = (engine?.secrets ?? scanSecrets(parsed.addedLines)).filter(
+    (s) => !(s.secretType.startsWith("generic_") && isTestPath(s.location.replace(/:\d+$/, ""))),
+  );
   const dependencies = scanDependencies(parsed);
-  const all = [
+  const raw = [
     ...(engine?.findings ?? []),
     ...runSastRules(parsed.addedLines.filter((l) => !astFiles.has(l.file))),
     ...flagSensitiveFiles(parsed.files),
     ...detectPromptInjection(parsed.addedLines, parsed.files),
   ];
+  // Test code deliberately contains attacks and dangerous calls: still shown,
+  // but as low severity so it never blocks a merge on its own.
+  const all = raw.map((f) =>
+    f.filePath && isTestPath(f.filePath) && (f.type === "sast" || f.type === "prompt_injection") && f.severity !== "low"
+      ? { ...f, severity: "low" as const, description: `${f.description} (fichier de test)` }
+      : f,
+  );
   // False positives marked by a human are kept for the record but no longer
   // weigh on the score or the decision (US02).
   const findings = all.filter((f) => !suppressed.has(findingFingerprint(f)));
