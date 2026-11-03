@@ -129,8 +129,9 @@ fn local_database_urls_are_not_secrets() {
         &[
             "DATABASE_URL: postgresql://codegate:codegate@127.0.0.1:5434/codegate_test",
             "url: postgres://app:s3cr3t@db.internal.example.com:5432/prod",
+            "url: postgres://app:s3cr3t@db.acme-prod.io:5432/prod",
         ],
     ));
     let locations: Vec<_> = out.secrets.iter().map(|s| s.location.as_str()).collect();
-    assert_eq!(locations, vec!["ci.yml:11"]);
+    assert_eq!(locations, vec!["ci.yml:12"]);
 }

@@ -53,8 +53,9 @@ const RULES: Rule[] = [
     description:
       "Le texte s'adresse directement à un agent IA pour lui faire exécuter une action (commande, installation, envoi…).",
     remediation: "Retirez cette consigne. Les actions sensibles d'un agent passent par Agent Guard et une approbation humaine.",
-    // A real address — "Claude, run…", "AI agents: please install…",
-    // "Copilot must push…" — not an identifier such as `agent-install`.
+    // A real address: the agent's name followed by a comma / colon or a
+    // modal verb, then an action verb — not an identifier like agent_install.
+    // (Examples live in the test file, never in this source.)
     test: (l) => AGENT_VOCATIVE.test(l) || AGENT_MODAL.test(l),
   },
   {

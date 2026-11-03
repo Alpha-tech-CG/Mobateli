@@ -33,13 +33,15 @@ const GENERIC_ASSIGN =
   /\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*['"]([^'"]{8,})['"]/i;
 
 /**
- * A connection string to the machine itself or a CI service container
- * (127.0.0.1, localhost, ::1) carries throwaway test credentials, not a
- * secret anyone can reach.
+ * A connection string to the machine itself, a CI service container
+ * (127.0.0.1, localhost, ::1) or a reserved example domain carries throwaway
+ * test credentials, not a secret anyone can reach.
  */
 export function isLocalDatabaseUrl(url: string): boolean {
   const host = url.replace(/^[a-z]+:\/\/[^@]*@/i, "").split(/[:/?]/)[0]!.replace(/^\[|\]$/g, "").toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") return true;
+  // Reserved names (RFC 2606 / 6761) can never be a real server.
+  return /(^|\.)(example\.(com|org|net)|example|test|invalid|localhost)$/.test(host);
 }
 
 /** Shannon entropy (bits/char) — distinguishes random secrets from words. */

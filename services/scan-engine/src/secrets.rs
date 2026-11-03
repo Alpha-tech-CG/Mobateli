@@ -37,8 +37,8 @@ static GENERIC_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// A connection string to the machine itself or a CI service container
-/// carries throwaway test credentials, not a reachable secret.
+/// A connection string to the machine itself, a CI service container or a
+/// reserved example domain carries throwaway test credentials.
 pub fn is_local_database_url(url: &str) -> bool {
     let after_creds = url.split_once('@').map_or(url, |(_, rest)| rest);
     let host = after_creds
@@ -47,7 +47,13 @@ pub fn is_local_database_url(url: &str) -> bool {
         .unwrap_or("")
         .trim_matches(|c| c == '[' || c == ']')
         .to_ascii_lowercase();
-    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0") {
+        return true;
+    }
+    // Reserved names (RFC 2606 / 6761) can never be a real server.
+    ["example.com", "example.org", "example.net", "example", "test", "invalid", "localhost"]
+        .iter()
+        .any(|tld| host == *tld || host.ends_with(&format!(".{tld}")))
 }
 
 /// Shannon entropy in bits per character.
