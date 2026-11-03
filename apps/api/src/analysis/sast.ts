@@ -87,16 +87,24 @@ const SENSITIVE_FILES = [
 
 /**
  * Languages these line rules are written for. Docs (.md), config and other
- * languages (Rust, Go…) are skipped: matching "eval(" or "innerHTML" in them
+ * languages (Rust, Go…) are skipped: matching JavaScript API names in them
  * only produces noise.
  */
 const CODE_FILE = /\.(m?[jt]sx?|cjs|cts|mts|py|php|rb|html?|vue|svelte)$/i;
+const HASH_COMMENT_FILE = /\.(py|rb|php)$/i;
+
+/** A line that is only a comment cannot execute anything. */
+function isCommentLine(file: string, content: string): boolean {
+  const t = content.trimStart();
+  return t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") ||
+    (HASH_COMMENT_FILE.test(file) && t.startsWith("#"));
+}
 
 export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   const findings: FindingResult[] = [];
 
   for (const { file, line, content } of addedLines) {
-    if (!CODE_FILE.test(file)) continue;
+    if (!CODE_FILE.test(file) || isCommentLine(file, content)) continue;
     for (const rule of RULES) {
       if (rule.test(content)) {
         findings.push({

@@ -51,3 +51,9 @@ test("real-PR false positives: docs, Rust sources, test fixtures, local DB URL",
   assert.equal(r.riskScore, 0);
   assert.equal(r.status, "passed");
 });
+
+test("line-rule fallback ignores comment lines", () => {
+  // A hunk cut mid-construct (no syntax tree) still skips commented code.
+  const r = analyzeDiff(diff("src/c.ts", ["  });", "}, [", ' * matching "eval(" in docs is noise', "// eval(x) here", "eval(payload)"]));
+  assert.deepEqual(r.findings.filter((f) => f.type === "sast").map((f) => f.line), [5]);
+});
