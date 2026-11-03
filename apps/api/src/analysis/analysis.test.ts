@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseUnifiedDiff } from "./diff.js";
+import { parseUnifiedDiff, isCommentLine, isTestOrExampleFile } from "./diff.js";
 import { scanSecrets, shannonEntropy } from "./secret-scanner.js";
 import { scanDependencies, levenshtein, nearestPopular } from "./dependency-scanner.js";
 import { runSastRules } from "./sast.js";
@@ -104,6 +104,44 @@ test("sast rules catch common issues", () => {
   assert.ok(ids.includes("XSS_INNERHTML"));
   assert.ok(ids.includes("WEAK_HASH"));
   assert.ok(ids.includes("TLS_VERIFICATION_DISABLED"));
+});
+
+test("sast rules carry CWE / OWASP / confidence references", () => {
+  const findings = runSastRules(
+    parseUnifiedDiff(diffFor("db.ts", ['const q = "SELECT * FROM t WHERE id = " + id;'])).addedLines,
+  );
+  const sql = findings.find((f) => f.ruleId === "SQL_STRING_CONCAT");
+  assert.ok(sql);
+  assert.equal(sql!.cwe, "CWE-89");
+  assert.match(sql!.owasp!, /Injection/);
+  assert.ok(sql!.confidence);
+});
+
+test("sast ignores vulnerable-looking code inside comments", () => {
+  assert.equal(isCommentLine("  // eval(userInput) is dangerous"), true);
+  const findings = runSastRules(
+    parseUnifiedDiff(diffFor("h.ts", ["// never do eval(userInput);", "const ok = 1;"])).addedLines,
+  );
+  assert.equal(findings.length, 0);
+});
+
+test("secret scanner: placeholders and sample files do not block", () => {
+  // Obvious placeholder value → not flagged.
+  const placeholder = scanSecrets(
+    parseUnifiedDiff(diffFor("a.ts", ['const apiKey = "your-api-key-here";'])).addedLines,
+  );
+  assert.equal(placeholder.length, 0);
+
+  // A provider-shaped key in a sample file → flagged but only low confidence.
+  assert.equal(isTestOrExampleFile(".env.example"), true);
+  const sample = scanSecrets(
+    parseUnifiedDiff(diffFor(".env.example", ["AWS=AKIAIOSFODNN7EXAMPLE"])).addedLines,
+  );
+  assert.equal(sample.length, 1);
+  assert.equal(sample[0]!.confidence, "low");
+  // Low-confidence secret warns but never blocks on its own.
+  const d = decide({ findings: [], secrets: sample, dependencies: [] });
+  assert.notEqual(d.decision, "block");
 });
 
 test("decision: secret ⇒ blocked, high ⇒ warning, clean ⇒ passed", () => {

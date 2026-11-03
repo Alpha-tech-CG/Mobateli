@@ -32,7 +32,8 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
   for (const raw of diff.split("\n")) {
     const fileMatch = raw.match(FILE_HEADER);
     if (fileMatch) {
-      currentFile = fileMatch[1] === "dev/null" ? null : fileMatch[1]!;
+      const name = fileMatch[1]!.replace(/\r$/, "");
+      currentFile = name === "dev/null" ? null : name;
       if (currentFile && !files.includes(currentFile)) files.push(currentFile);
       continue;
     }
@@ -47,7 +48,8 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
     if (currentFile === null) continue;
 
     if (raw.startsWith("+")) {
-      const content = raw.slice(1);
+      // Strip a trailing CR so content matches identically on Windows diffs.
+      const content = raw.slice(1).replace(/\r$/, "");
       addedLines.push({ file: currentFile, line: newLineNo, content });
       addedByFile.set(currentFile, (addedByFile.get(currentFile) ?? "") + content + "\n");
       newLineNo++;
@@ -60,4 +62,39 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
   }
 
   return { files, addedLines, addedByFile };
+}
+
+/**
+ * Whole-line comment in a common language (JS/TS, Python, shell, SQL, YAML…).
+ * Scanners skip these to cut false positives: a rule example written in a
+ * comment ("// never do: eval(x)") is not a vulnerability.
+ */
+export function isCommentLine(content: string): boolean {
+  const t = content.trim();
+  return (
+    t.startsWith("//") ||
+    t.startsWith("#") ||
+    t.startsWith("*") ||
+    t.startsWith("/*") ||
+    t.startsWith("--") ||
+    t.startsWith("<!--")
+  );
+}
+
+/**
+ * File paths where a "secret" or risky-looking snippet is expected and is not
+ * a real exposure: tests, fixtures, mocks, examples and sample env files.
+ */
+export function isTestOrExampleFile(file: string): boolean {
+  const f = file.toLowerCase();
+  const base = f.split("/").pop() ?? f;
+  return (
+    /(^|\/)(tests?|__tests__|__mocks__|fixtures?|examples?|spec|e2e)(\/|$)/.test(f) ||
+    /\.(test|spec|e2e|stories|fixture|mock|example|sample)\./.test(base) ||
+    base.endsWith(".example") ||
+    base.endsWith(".sample") ||
+    base === ".env.example" ||
+    base === ".env.sample" ||
+    base === ".env.template"
+  );
 }

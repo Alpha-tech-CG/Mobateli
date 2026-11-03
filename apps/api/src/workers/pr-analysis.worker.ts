@@ -3,7 +3,7 @@ import type { Redis } from "ioredis";
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
-import { analyzeDiff } from "../analysis/analyzer.js";
+import { analyzeDiffWithIntel } from "../analysis/analyzer.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
 import { createCheckRun, upsertPrComment } from "../lib/github-feedback.js";
@@ -57,7 +57,8 @@ export function createPrAnalysisWorker(
         if (fetched) diff = fetched;
       }
 
-      const result = analyzeDiff(diff);
+      // Deterministic core + OSV known-vulnerability enrichment (fails open).
+      const result = await analyzeDiffWithIntel(diff);
 
       // Replace previous findings for this PR (idempotent re-analysis), then
       // persist the new set and the decision — atomically, with retry on a
@@ -68,17 +69,24 @@ export function createPrAnalysisWorker(
         prisma.dependency.deleteMany({ where: { pullRequestId: pr.id } }),
         prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
         prisma.finding.createMany({
-          data: result.findings.map((f) => ({
-            pullRequestId: pr.id,
-            type: f.type,
-            severity: f.severity,
-            title: f.title,
-            description: f.description,
-            filePath: f.filePath ?? null,
-            line: f.line ?? null,
-            ruleId: f.ruleId ?? null,
-            remediation: f.remediation ?? null,
-          })),
+          data: result.findings.map((f) => {
+            // Fold the CWE/OWASP/confidence references into the stored
+            // description so the audit trail keeps them without a schema change.
+            const refs = [f.cwe, f.owasp, f.confidence ? `confiance: ${f.confidence}` : null]
+              .filter(Boolean)
+              .join(" · ");
+            return {
+              pullRequestId: pr.id,
+              type: f.type,
+              severity: f.severity,
+              title: f.title,
+              description: refs ? `${f.description} [${refs}]` : f.description,
+              filePath: f.filePath ?? null,
+              line: f.line ?? null,
+              ruleId: f.ruleId ?? null,
+              remediation: f.remediation ?? null,
+            };
+          }),
         }),
         prisma.dependency.createMany({
           data: result.dependencies.map((d) => ({

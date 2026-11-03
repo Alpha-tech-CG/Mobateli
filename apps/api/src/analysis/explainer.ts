@@ -21,13 +21,30 @@ export function explainSecret(s: SecretResult): string {
 
 export function explainDependency(d: DependencyResult): string {
   const base = `La dépendance « ${d.name}@${d.version} » a un score de confiance de ${d.trustScore}/100 (risque : ${d.riskLevel}).`;
-  return d.reason ? `${base} ${d.reason}` : base;
+  let out = d.reason ? `${base} ${d.reason}` : base;
+  if (d.vulnerabilities?.length) {
+    const cves = d.vulnerabilities
+      .slice(0, 5)
+      .map((v) => `${v.id} (${v.severity}${v.fixedVersion ? `, corrigé en ${v.fixedVersion}` : ""})`)
+      .join(", ");
+    out += ` Vulnérabilités : ${cves}.`;
+  }
+  return out;
+}
+
+/** Compact reference tag, e.g. "[CWE-89 · A03:2021-Injection · confiance: medium]". */
+function findingTags(f: FindingResult): string {
+  const tags: string[] = [];
+  if (f.cwe) tags.push(f.cwe);
+  if (f.owasp) tags.push(f.owasp);
+  if (f.confidence) tags.push(`confiance: ${f.confidence}`);
+  return tags.length ? ` _[${tags.join(" · ")}]_` : "";
 }
 
 export function explainFinding(f: FindingResult): string {
   const where = f.filePath ? ` (${f.filePath}${f.line ? `:${f.line}` : ""})` : "";
   const fix = f.remediation ? ` Correctif : ${f.remediation}` : "";
-  return `${f.title}${where}. ${f.description}${fix}`;
+  return `${f.title}${where}. ${f.description}${fix}${findingTags(f)}`;
 }
 
 /** Build the structured GitHub PR comment body (cahier §6.2, §5.6). */

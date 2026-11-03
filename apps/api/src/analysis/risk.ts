@@ -18,6 +18,17 @@ const DEP_RISK_WEIGHT: Record<DependencyResult["riskLevel"], number> = {
   low: 0,
 };
 
+/**
+ * Confidence scales a finding's contribution to the score — a low-confidence
+ * heuristic should not inflate the risk like a confirmed issue (cahier §13.1,
+ * taux de faux positifs < 15 %). Absent confidence is treated as full weight
+ * for backward compatibility.
+ */
+const CONFIDENCE_FACTOR = { high: 1, medium: 0.8, low: 0.5 } as const;
+function confidenceFactor(c: FindingResult["confidence"] | SecretResult["confidence"]): number {
+  return c ? CONFIDENCE_FACTOR[c] : 1;
+}
+
 export interface DecisionInput {
   findings: FindingResult[];
   secrets: SecretResult[];
@@ -33,12 +44,14 @@ export function decide(input: DecisionInput): Pick<
   "riskScore" | "decision" | "status"
 > {
   let score = 0;
-  for (const f of input.findings) score += SEVERITY_WEIGHT[f.severity];
-  for (const s of input.secrets) score += SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity];
+  for (const f of input.findings) score += SEVERITY_WEIGHT[f.severity] * confidenceFactor(f.confidence);
+  for (const s of input.secrets) score += (SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity]) * confidenceFactor(s.confidence);
   for (const d of input.dependencies) score += DEP_RISK_WEIGHT[d.riskLevel];
-  score = Math.min(100, score);
+  score = Math.round(Math.min(100, score));
 
-  const hasSecret = input.secrets.length > 0;
+  // A low-confidence secret (e.g. a provider-shaped value in a sample file) is
+  // reported and scored, but only a confirmed secret forces a block.
+  const hasSecret = input.secrets.some((s) => s.confidence !== "low");
   const hasCritical =
     input.findings.some((f) => f.severity === "critical") ||
     input.dependencies.some((d) => d.riskLevel === "critical");
