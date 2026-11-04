@@ -1,3 +1,4 @@
+import { ENGINE_CATALOG } from "@codegate/shared";
 import type {
   AnalysisResult,
   DependencyResult,
@@ -55,12 +56,10 @@ export function explainFinding(f: FindingResult): string {
 }
 
 /** Build the structured GitHub PR comment body (cahier §6.2, §5.6). */
-export const ENGINE_LABELS: Record<EngineName, string> = {
-  osv: "Vulnérabilités connues (OSV)",
-  sca: "Dépendances complètes (Trivy/Grype)",
-  semgrep: "Analyse sémantique (Semgrep)",
-  rust: "Analyse de flux (moteur Rust)",
-};
+/** Engine labels, from the shared catalog (single source of truth). */
+export const ENGINE_LABELS: Record<EngineName, string> = Object.fromEntries(
+  Object.entries(ENGINE_CATALOG).map(([id, e]) => [id, e.label]),
+) as Record<EngineName, string>;
 
 /** Passes that were expected to run but failed (skipped-by-design is not shown). */
 export function failedEngines(

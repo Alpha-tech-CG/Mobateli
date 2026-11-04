@@ -1,5 +1,6 @@
 import type {
   Decision,
+  EngineId,
   DependencyRisk,
   FindingType,
   PullRequestStatus,
@@ -82,7 +83,8 @@ export interface EngineReport {
 /** Status setter handed to a pass; last call wins. */
 export type EngineStatusFn = (status: EngineReport["status"], detail?: string) => void;
 
-export type EngineName = "osv" | "sca" | "semgrep" | "rust";
+/** Engine ids — see ENGINE_IDS in @codegate/shared and engines/registry.ts. */
+export type EngineName = EngineId;
 
 /** Aggregate output of the analysis pipeline. */
 export interface AnalysisResult {

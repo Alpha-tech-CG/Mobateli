@@ -186,6 +186,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 const ENGINE_LABELS: Record<string, string> = {
+  secrets: "Secrets exposés",
+  dependencies: "Confiance des dépendances",
+  sast: "Règles de code (SAST)",
+  sensitive_files: "Fichiers sensibles",
   osv: "Vulnérabilités connues (OSV)",
   sca: "Dépendances complètes (Trivy/Grype)",
   semgrep: "Analyse sémantique (Semgrep)",

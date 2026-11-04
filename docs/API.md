@@ -29,6 +29,17 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 | POST | `/api/v1/organization/members/:id/reset-password` | owner/admin | Réinitialise le mot de passe d'un membre (temporaire renvoyé une fois ; seul un owner réinitialise un owner) |
 | GET | `/api/v1/repositories` | tous | Dépôts connectés |
 
+## Paramètres d'analyse
+
+Voir [ARCHITECTURE-ANALYSE.md](ARCHITECTURE-ANALYSE.md). Chaque réponse contient `effective` (ce que la prochaine analyse utilisera : défauts ← organisation ← dépôt).
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/settings/analysis` | tous | Paramètres de l'organisation, effectifs, défauts et catalogue des moteurs |
+| PUT | `/api/v1/settings/analysis` | owner/admin/security_manager | `{ engines?: { <id>: bool }, ignorePaths?: string[], minSeverity? }` |
+| GET | `/api/v1/repositories/:id/settings` | tous | Niveau de protection + surcharges du dépôt + effectif |
+| PUT | `/api/v1/repositories/:id/settings` | owner/admin/security_manager | `{ protectionLevel?: observe\|warn\|block, analysisSettings?: {…} \| null }` (`null` = revenir aux réglages de l'organisation) |
+
 ## Pull requests
 
 | Méthode | Route | Rôle | Description |
@@ -111,4 +122,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `auth.password_changed`, `member.invited`, `member.password_reset`, `policy.created`, `pr.opened`, `pr.analyzed` (métadonnées `engines`), `pr.analysis_unavailable`, `pr.analysis_failed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{github,linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `integration.github_link_refused`, `audit.exported`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `auth.password_changed`, `member.invited`, `member.password_reset`, `policy.created`, `pr.opened`, `pr.analyzed` (métadonnées `engines`), `pr.analysis_unavailable`, `pr.analysis_failed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{github,linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `integration.github_link_refused`, `settings.analysis_updated`, `repository.settings_updated`, `audit.exported`.

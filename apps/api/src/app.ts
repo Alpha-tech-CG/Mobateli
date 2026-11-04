@@ -12,6 +12,7 @@ import { policyRoutes } from "./routes/policies.js";
 import { pullRequestRoutes } from "./routes/pull-requests.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { githubConnectRoutes } from "./routes/github-connect.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { auditRoutes } from "./routes/audit.js";
 import { agentGuardRoutes } from "./routes/agent-guard.js";
 import { scimRoutes } from "./routes/scim.js";
@@ -93,6 +94,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(async (instance) => {
     await githubConnectRoutes(instance, config);
   });
+  await app.register(settingsRoutes);
   await app.register(auditRoutes);
   await app.register(agentGuardRoutes);
   await app.register(scimRoutes);

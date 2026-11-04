@@ -545,6 +545,91 @@ test("github connect: only a verified GitHub user can link an installation", asy
   }
 });
 
+test("analysis settings: org defaults, repo overrides, protection level", async () => {
+  // Defaults + engine catalog.
+  const get0 = await app.inject({ method: "GET", url: "/api/v1/settings/analysis", headers: auth() });
+  assert.equal(get0.statusCode, 200);
+  assert.equal(get0.json().effective.engines.semgrep, true);
+  assert.ok(get0.json().engines.some((e: { id: string }) => e.id === "rust"));
+
+  // Invalid parameters are rejected with the failing field.
+  const bad = await app.inject({
+    method: "PUT",
+    url: "/api/v1/settings/analysis",
+    headers: auth(),
+    payload: { engines: { notAnEngine: true } },
+  });
+  assert.equal(bad.statusCode, 400);
+
+  const put = await app.inject({
+    method: "PUT",
+    url: "/api/v1/settings/analysis",
+    headers: auth(),
+    payload: { engines: { semgrep: false }, ignorePaths: ["vendor/**"], minSeverity: "low" },
+  });
+  assert.equal(put.statusCode, 200);
+
+  // Repository: block mode + an override re-enabling Semgrep for this repo.
+  const repoPut = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: auth(),
+    payload: { protectionLevel: "block", analysisSettings: { engines: { semgrep: true }, ignorePaths: ["**/*.snap"] } },
+  });
+  assert.equal(repoPut.statusCode, 200);
+  assert.equal(repoPut.json().protectionLevel, "block");
+  const eff = repoPut.json().effective;
+  assert.equal(eff.engines.semgrep, true); // repo override wins
+  assert.deepEqual(eff.ignorePaths, ["vendor/**", "**/*.snap"]); // exclusions accumulate
+  assert.equal(eff.minSeverity, "low"); // inherited from the org
+
+  // Clearing the overrides returns to the organization settings.
+  const cleared = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: auth(),
+    payload: { analysisSettings: null },
+  });
+  assert.equal(cleared.json().effective.engines.semgrep, false);
+  assert.equal(cleared.json().protectionLevel, "block"); // untouched
+
+  // A developer can read but not change the settings.
+  const dev = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "settings-dev@acme.test", role: "developer" },
+  });
+  const devToken = (
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "settings-dev@acme.test", password: dev.json().tempPassword },
+    })
+  ).json().token;
+  const devPut = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: { authorization: `Bearer ${devToken}` },
+    payload: { protectionLevel: "observe" },
+  });
+  assert.equal(devPut.statusCode, 403);
+
+  // Another organization cannot see or change this repository.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: { email: "settings-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other S" },
+  });
+  const foreign = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: { authorization: `Bearer ${other.json().token}` },
+    payload: { protectionLevel: "observe" },
+  });
+  assert.equal(foreign.statusCode, 404);
+});
+
 test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {
   const res = await app.inject({
     method: "POST",

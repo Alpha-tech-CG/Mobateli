@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
+import { resolveAnalysisSettings } from "@codegate/shared";
 import { analyzeDiffWithIntel } from "../analysis/analyzer.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
@@ -35,7 +36,7 @@ export function createPrAnalysisWorker(
 
       const pr = await prisma.pullRequest.findUnique({
         where: { id: pullRequestId },
-        include: { repository: true },
+        include: { repository: { include: { organization: { select: { analysisSettings: true } } } } },
       });
       if (!pr) return; // PR deleted between enqueue and processing.
 
@@ -97,7 +98,12 @@ export function createPrAnalysisWorker(
       }
 
       // Deterministic core + OSV known-vulnerability enrichment (fails open).
-      const result = await analyzeDiffWithIntel(diff);
+      // Effective parameters: built-in defaults ← organization ← repository.
+      const settings = resolveAnalysisSettings(
+        pr.repository.organization.analysisSettings,
+        pr.repository.analysisSettings,
+      );
+      const result = await analyzeDiffWithIntel(diff, {}, settings);
 
       // Replace previous findings for this PR (idempotent re-analysis), then
       // persist the new set and the decision — atomically, with retry on a

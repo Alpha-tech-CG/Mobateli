@@ -137,7 +137,8 @@ export interface EngineReport {
 export interface LastAnalysis {
   outcome: "analyzed" | "analysis_unavailable" | "analysis_failed";
   at: string;
-  engines: Partial<Record<"osv" | "sca" | "semgrep" | "rust", EngineReport>>;
+  /** One entry per engine id (see ENGINE_IDS in @codegate/shared). */
+  engines: Record<string, EngineReport>;
   reason?: string;
 }
 

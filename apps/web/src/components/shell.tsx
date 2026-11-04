@@ -13,13 +13,17 @@ import {
   Rocket,
   LogOut,
   UserRound,
+  FolderGit2,
+  SlidersHorizontal,
 } from "lucide-react";
 import { clearToken, getToken } from "@/lib/api";
 
 const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
+  { href: "/repositories", label: "Dépôts", icon: FolderGit2 },
   { href: "/policies", label: "Politiques", icon: ScrollText },
+  { href: "/settings", label: "Paramètres d'analyse", icon: SlidersHorizontal },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
   { href: "/deployments", label: "Déploiements", icon: Rocket },
   { href: "/integrations", label: "Intégrations", icon: Plug },
