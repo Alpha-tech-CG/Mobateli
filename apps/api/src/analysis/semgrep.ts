@@ -76,7 +76,9 @@ const defaultRunner: SemgrepRunner = (files, { config, cwd, timeoutMs }) =>
   new Promise((resolve, reject) => {
     const args = ["--json", "--quiet", "--config", config, "--timeout", "0", "--", ...files];
     execFile(
-      "semgrep",
+      // CODEGATE_SEMGREP_BIN : chemin explicite quand semgrep n'est pas dans le PATH
+      // du processus (ex. installé par pip dans un dossier utilisateur).
+      process.env.CODEGATE_SEMGREP_BIN || "semgrep",
       args,
       { cwd, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES },
       (err, stdout) => {
