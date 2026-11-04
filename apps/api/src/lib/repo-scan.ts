@@ -2,6 +2,7 @@ import { prisma, type Prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
 import { analyzeFiles } from "../analysis/analyzer.js";
 import { enrichDependencies } from "../analysis/dependency-intel.js";
+import { dedupeDependencies, lockedNpmVersions, resolveInstalledVersions } from "../analysis/lockfiles.js";
 import { decide } from "../analysis/risk.js";
 import { analyzeArchitecture, type ArchitectureReport } from "../analysis/architecture.js";
 import { recordAudit } from "./audit.js";
@@ -98,7 +99,7 @@ export async function runScan(config: AppConfig, scanId: string): Promise<void> 
     }
 
     await setPhase(scanId, "extract", { ref: snapshot.ref, commitSha: snapshot.sha });
-    const { files, skipped, truncated } = extractTarGz(snapshot.archive);
+    const { files, lockfiles, skipped, truncated } = extractTarGz(snapshot.archive);
 
     await setPhase(scanId, "analysis", { filesScanned: files.length });
     const suppressions = await prisma.findingSuppression.findMany({
@@ -108,7 +109,9 @@ export async function runScan(config: AppConfig, scanId: string): Promise<void> 
     const base = analyzeFiles(files, new Set(suppressions.map((s) => s.fingerprint)));
 
     await setPhase(scanId, "dependencies");
-    const dependencies = await enrichDependencies(base.dependencies);
+    // Evaluate what is installed (lockfile), once per package and version.
+    const declared = dedupeDependencies(resolveInstalledVersions(base.dependencies, lockedNpmVersions(lockfiles)));
+    const dependencies = await enrichDependencies(declared);
     const verdict = decide({ findings: base.findings, secrets: base.secrets, dependencies });
 
     // Architecture graph, fragility and blast radius — never blocks the scan.

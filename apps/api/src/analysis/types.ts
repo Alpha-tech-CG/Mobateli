@@ -57,6 +57,8 @@ export interface DependencyResult {
   ecosystem: string;
   name: string;
   version: string;
+  /** Version actually installed, from a lockfile (`version` is the declared range). */
+  resolvedVersion?: string;
   trustScore: number; // 0..100 (higher = more trustworthy)
   riskLevel: DependencyRisk;
   reason?: string;

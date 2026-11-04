@@ -1,4 +1,5 @@
 import { gunzipSync } from "node:zlib";
+import { isLockfile } from "../analysis/lockfiles.js";
 
 /**
  * Read a repository snapshot (tar.gz from GitHub or GitLab) in memory and keep
@@ -72,11 +73,15 @@ function paxPath(data: Buffer): string | null {
  */
 export function extractTarGz(archive: Buffer, limits: ExtractLimits = DEFAULT_LIMITS): {
   files: RepoFile[];
+  /** Lockfiles, kept apart: read for installed versions, never analysed as code. */
+  lockfiles: RepoFile[];
   skipped: number;
   truncated: boolean;
 } {
   const tar = gunzipSync(archive, { maxOutputLength: limits.maxTotalBytes * 4 });
   const files: RepoFile[] = [];
+  const lockfiles: RepoFile[] = [];
+  let lockBytes = 0;
   let skipped = 0;
   let total = 0;
   let truncated = false;
@@ -107,6 +112,14 @@ export function extractTarGz(archive: Buffer, limits: ExtractLimits = DEFAULT_LI
     if (type !== "0" && type !== "\0" && type !== "7") continue; // dirs, links…
 
     const path = fullPath.split("/").slice(1).join("/"); // drop top folder
+    if (path && isLockfile(path) && !path.split("/").some((p) => SKIP_DIRS.has(p))) {
+      // Own budget (lockfiles are large); 20 MB in total is plenty.
+      if (lockBytes + size <= 20 * 1024 * 1024) {
+        lockBytes += size;
+        lockfiles.push({ path, content: data.toString("utf8") });
+      }
+      continue;
+    }
     if (!path || !shouldKeep(path)) {
       skipped++;
       continue;
@@ -122,5 +135,5 @@ export function extractTarGz(archive: Buffer, limits: ExtractLimits = DEFAULT_LI
     total += size;
     files.push({ path, content: data.toString("utf8") });
   }
-  return { files, skipped, truncated };
+  return { files, lockfiles, skipped, truncated };
 }

@@ -1,5 +1,5 @@
 import type { EngineId } from "@codegate/shared";
-import { scanSecrets } from "../secret-scanner.js";
+import { refineSecrets, scanSecrets } from "../secret-scanner.js";
 import { scanDependencies } from "../dependency-scanner.js";
 import { runSastRules } from "../sast.js";
 import { analyzeConfig } from "../config-rules.js";
@@ -38,8 +38,20 @@ const secrets: AnalysisEngine = {
   id: "secrets",
   phase: "core",
   run: (ctx) => {
-    const found = ctx.ast()?.secrets ?? scanSecrets(ctx.parsed.addedLines);
-    return (t) => ({ ...t, secrets: [...t.secrets, ...found] });
+    const raw = ctx.ast()?.secrets ?? scanSecrets(ctx.parsed.addedLines);
+    // Same false-positive rules whichever engine found them.
+    const byLine = new Map(ctx.parsed.addedLines.map((l) => [`${l.file}:${l.line}`, l.content]));
+    const { secrets: found, samples } = refineSecrets(raw, (file, line) => byLine.get(`${file}:${line}`));
+    const notes: FindingResult[] = samples.map((s) => ({
+      type: "secret",
+      severity: "info",
+      title: "Valeurs d'exemple dans un fichier de test",
+      description: `${s.count} valeur(s) au format de secret (${s.types.join(", ")}) dans un fichier de test ou d'exemple : ce sont des données de test, sans impact sur le score. Vérifiez qu'aucune n'est une vraie clé.`,
+      filePath: s.file,
+      ruleId: "secrets/test-sample",
+      confidence: "low",
+    }));
+    return (t) => ({ ...t, secrets: [...t.secrets, ...found], findings: [...t.findings, ...notes] });
   },
 };
 

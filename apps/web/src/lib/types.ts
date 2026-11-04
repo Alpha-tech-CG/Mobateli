@@ -537,7 +537,16 @@ export interface ScanDetail extends ScanRow {
   result: {
     secrets: { secretType: string; location: string; maskedPreview: string; severity: Severity }[];
     findings: { type: string; severity: Severity; title: string; description: string; filePath?: string; line?: number; remediation?: string }[];
-    dependencies: { ecosystem: string; name: string; version: string; trustScore: number; riskLevel: string; reason?: string }[];
+    dependencies: {
+      ecosystem: string;
+      name: string;
+      version: string;
+      /** Installed version from a lockfile; `version` is the declared range. */
+      resolvedVersion?: string;
+      trustScore: number;
+      riskLevel: string;
+      reason?: string;
+    }[];
     suppressed: number;
     /** Absent on scans made before the architecture analysis existed. */
     architecture?: ArchitectureReport | null;

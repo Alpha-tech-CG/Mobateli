@@ -148,7 +148,11 @@ function ScanView() {
                   <li key={i} className="px-4 py-3 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-mono">
-                        {d.name}@{d.version} <span className="text-xs text-muted-foreground">({d.ecosystem})</span>
+                        {d.name}@{d.resolvedVersion ?? d.version}{" "}
+                        <span className="text-xs text-muted-foreground">
+                          ({d.ecosystem}
+                          {d.resolvedVersion ? `, déclaré ${d.version}` : ""})
+                        </span>
                       </span>
                       <span className="text-xs font-medium">{d.riskLevel} · confiance {d.trustScore}/100</span>
                     </div>

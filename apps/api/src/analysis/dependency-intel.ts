@@ -145,7 +145,8 @@ export async function enrichDependencies(
   if (!npm.length) return deps;
 
   // One OSV batch call for all packages.
-  const versions = npm.map((d) => baseVersion(d.version));
+  // The installed version when a lockfile told us, else the range's floor.
+  const versions = npm.map((d) => d.resolvedVersion ?? baseVersion(d.version));
   const osv = await getJson<{ results: { vulns?: { id: string }[] }[] }>(
     fetchImpl,
     "https://api.osv.dev/v1/querybatch",

@@ -47,9 +47,11 @@ test("archive: strips the top folder, keeps code, skips vendored/binary/lock fil
     tarEntry("owner-repo-abc123/data.bin.txt", Buffer.from([1, 0, 2])),
     tarEntry("ignored-name", "const deep = true;\n", "0", longPath),
   ]);
-  const { files, skipped, truncated } = extractTarGz(archive);
+  const { files, lockfiles, skipped, truncated } = extractTarGz(archive);
   assert.deepEqual(files.map((f) => f.path).sort(), [`${"deep/".repeat(25)}file.ts`, "src/app.ts"]);
-  assert.equal(skipped, 4);
+  // Lockfiles are kept apart (installed versions), never analysed as code.
+  assert.deepEqual(lockfiles.map((f) => f.path), ["package-lock.json"]);
+  assert.equal(skipped, 3);
   assert.equal(truncated, false);
 });
 
@@ -68,7 +70,7 @@ test("shouldKeep filters by directory and type", () => {
 });
 
 test("analyzeFiles: whole files are analysed like added lines", () => {
-  const key = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+  const key = ["AKIA", "Z7Q3LMNPRT5VWX2Y"].join("");
   const r = analyzeFiles([
     { path: "src/config.ts", content: `export const id = "${key}";\n` },
     { path: "src/run.ts", content: "import { exec } from 'node:child_process';\nexec(`git clone ${url}`);\n" },

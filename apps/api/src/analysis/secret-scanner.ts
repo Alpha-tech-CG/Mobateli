@@ -163,3 +163,59 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
 
   return results;
 }
+
+/**
+ * Second opinion on secrets found by any engine (the Rust engine has its own
+ * patterns and does not know our false-positive rules). Each hit is re-checked
+ * against the source line:
+ * - placeholders, vendor documentation keys (AKIA…EXAMPLE), templates and
+ *   local/test database URLs are dropped;
+ * - a secret in a test, fixture or example file is a sample by construction:
+ *   it leaves the secrets (and the score) and is reported once per file as
+ *   an informational note — unless it has the shape of a live production key.
+ */
+export function refineSecrets(
+  found: SecretResult[],
+  lineAt: (file: string, line: number) => string | undefined,
+): { secrets: SecretResult[]; samples: { file: string; count: number; types: string[] }[] } {
+  const secrets: SecretResult[] = [];
+  const samples = new Map<string, { count: number; types: Set<string> }>();
+  for (const s of found) {
+    const m = /^(.*):(\d+)$/.exec(s.location);
+    const file = m ? m[1]! : s.location;
+    const content = m ? lineAt(file, Number(m[2])) : undefined;
+    if (content !== undefined && isNotASecret(s.secretType, content)) continue;
+    if (isTestOrExampleFile(file) && !LIVE_KEY.test(content ?? "")) {
+      const entry = samples.get(file) ?? { count: 0, types: new Set<string>() };
+      entry.count++;
+      entry.types.add(s.secretType);
+      samples.set(file, entry);
+      continue;
+    }
+    secrets.push(s);
+  }
+  return {
+    secrets,
+    samples: [...samples].map(([file, e]) => ({ file, count: e.count, types: [...e.types] })),
+  };
+}
+
+/** Shapes that are production credentials whatever the file (Stripe live keys). */
+const LIVE_KEY = /\b(sk|rk)_live_[0-9a-zA-Z]{16,}\b/;
+
+function isNotASecret(type: string, content: string): boolean {
+  if (/AKIA[0-9A-Z]{0,12}EXAMPLE/.test(content)) return true; // AWS documentation key
+  const p = PATTERNS.find((x) => x.type === type);
+  if (p) {
+    const m = content.match(p.regex);
+    if (!m) return false;
+    if (p.type === "postgres_url" && isLocalDatabaseUrl(m[0])) return true;
+    return qualifyProviderMatch(p.type, m[0]) === null;
+  }
+  if (type.startsWith("generic_")) {
+    const g = content.match(GENERIC_ASSIGN);
+    if (!g) return false;
+    return looksLikePlaceholder(g[2]!) || shannonEntropy(g[2]!) < 3.5;
+  }
+  return false;
+}

@@ -141,7 +141,7 @@ export interface CodeFinding {
 export function codeItems(
   secrets: { secretType: string; location: string; severity: Severity; status?: string; revokedAt?: Date | null }[],
   findings: CodeFinding[],
-  dependencies: { name: string; version: string; riskLevel: string }[],
+  dependencies: { name: string; version: string; resolvedVersion?: string; riskLevel: string }[],
 ): ExpertItem[] {
   const items: ExpertItem[] = [];
   for (const s of secrets) {
@@ -183,13 +183,13 @@ export function codeItems(
       key: `dependency.${d.name}`,
       domain: "Dépendances",
       severity: sev,
-      title: `Dépendance à risque ${d.name}@${d.version}`,
+      title: `Dépendance à risque ${d.name}@${d.resolvedVersion ?? d.version}`,
       action: `Remplacer ou mettre à jour ${d.name}`,
       effort: "faible",
       impact: FINDING_RULES.dependency!.impact,
       refs: FINDING_RULES.dependency!.refs,
       weight: DEP_RISK_WEIGHT[d.riskLevel as keyof typeof DEP_RISK_WEIGHT] ?? 8,
-      subject: `${d.name}@${d.version}`,
+      subject: `${d.name}@${d.resolvedVersion ?? d.version}`,
     });
   }
   return items;
