@@ -2,6 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { queryOsv, enrichDependenciesWithOsv } from "./osv.js";
 import { analyzeDiffWithIntel } from "./analyzer.js";
+
+/** Keep these unit tests hermetic: no real Semgrep or Rust subprocess. */
+const OFFLINE = {
+  semgrep: { runner: async () => JSON.stringify({ results: [] }) },
+  rust: { enabled: false },
+};
 import type { DependencyResult } from "./types.js";
 
 /** A fake OSV endpoint returning a canned response, so tests never hit network. */
@@ -85,7 +91,7 @@ test("analyzeDiffWithIntel escalates the decision when a CVE is found", async ()
     "@@ -0,0 +1,1 @@",
     '+    "lodash": "4.17.11",',
   ].join("\n");
-  const r = await analyzeDiffWithIntel(diff, { fetchImpl });
+  const r = await analyzeDiffWithIntel(diff, { fetchImpl, ...OFFLINE });
   assert.ok(r.dependencies[0]!.vulnerabilities?.length);
   assert.equal(r.dependencies[0]!.riskLevel, "high");
   assert.ok(r.riskScore > 0);

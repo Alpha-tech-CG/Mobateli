@@ -53,6 +53,8 @@ after(async () => {
   stopKeepAlive?.();
   await app.close();
   getRedis(process.env.REDIS_URL!).disconnect();
+  // An open Prisma pool can keep the runner alive after the last test.
+  await prisma.$disconnect();
 });
 
 test("signup bootstraps org + owner and returns a token", async () => {
@@ -334,6 +336,32 @@ test("members: an admin cannot mint an owner", async () => {
     payload: { email: "owner2@acme.test", role: "owner" },
   });
   assert.equal(escalate.statusCode, 403);
+});
+
+test("session tokens expire after 12h, and an expired token is refused", async () => {
+  const claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString());
+  assert.equal(claims.exp - claims.iat, 12 * 3600);
+
+  const expired = app.jwt.sign(
+    { userId: claims.userId, organizationId: claims.organizationId, role: claims.role },
+    { expiresIn: -10 },
+  );
+  const res = await app.inject({
+    method: "GET",
+    url: "/api/v1/organization",
+    headers: { authorization: `Bearer ${expired}` },
+  });
+  assert.equal(res.statusCode, 401);
+});
+
+test("client errors from Fastify stay 4xx (not 500)", async () => {
+  // A JSON content-type with an empty body is a client mistake.
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/policies",
+    headers: { ...auth(), "content-type": "application/json" },
+  });
+  assert.equal(res.statusCode, 400);
 });
 
 test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {

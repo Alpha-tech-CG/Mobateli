@@ -76,7 +76,7 @@ export function Shell({ children }: { children: ReactNode }) {
           Se déconnecter
         </button>
       </aside>
-      <main className="flex-1 overflow-x-hidden px-6 py-6">{children}</main>
+      <main className="min-w-0 flex-1 overflow-x-hidden px-6 py-6">{children}</main>
     </div>
   );
 }

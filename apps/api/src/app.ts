@@ -62,8 +62,14 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
         })),
       });
     }
-    if ((err as { statusCode?: number }).statusCode === 429) {
+    const statusCode = (err as { statusCode?: number }).statusCode;
+    if (statusCode === 429) {
       return reply.code(429).send({ error: "rate_limited" });
+    }
+    // Fastify's own client errors (empty/invalid JSON body, unsupported media
+    // type, body too large…) stay 4xx — they are not server faults.
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      return reply.code(statusCode).send({ error: "bad_request" });
     }
     reply.log.error(err);
     return reply.code(500).send({ error: "internal_error" });

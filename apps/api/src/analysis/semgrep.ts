@@ -161,7 +161,9 @@ function toFinding(result: SemgrepResult): FindingResult {
     remediation,
   };
 
-  if (result.path) finding.filePath = result.path;
+  // Semgrep rend des chemins natifs (`app\views.py` sous Windows) : on les
+  // normalise comme ceux du diff pour que la déduplication fonctionne.
+  if (result.path) finding.filePath = result.path.replace(/\\/g, "/");
   if (typeof result.start?.line === "number") finding.line = result.start.line;
 
   const cwe = normalizeCwe(firstString(metadata.cwe));

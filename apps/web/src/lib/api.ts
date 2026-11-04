@@ -77,11 +77,21 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
-      "content-type": "application/json",
+      // Only when there is a body: Fastify rejects a JSON content-type with an
+      // empty body, which broke every body-less POST/DELETE (connect, rescan…).
+      ...(init?.body != null ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
+
+  // An authenticated call refused with 401 means the session is over (token
+  // expired, account deactivated): drop it and go back to the login page
+  // instead of leaving every page stuck on a load error.
+  if (res.status === 401 && token && typeof window !== "undefined") {
+    clearToken();
+    window.location.assign("/login");
+  }
 
   if (!res.ok) {
     let code = `http_${res.status}`;

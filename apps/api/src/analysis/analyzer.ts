@@ -13,6 +13,31 @@ import {
   type RustEngineOptions,
 } from "./rust-engine.js";
 import type { AnalysisResult, FindingResult } from "./types.js";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
+/** A diff path that stays inside the scratch dir (no absolute path, no ".."). */
+function isSafeRelativePath(p: string): boolean {
+  return (
+    p.length > 0 &&
+    !p.includes("\0") &&
+    !/^([a-zA-Z]:)?[\\/]/.test(p) &&
+    !p.split(/[\\/]/).includes("..")
+  );
+}
+
+/** Write the PR's added code to a fresh temp dir; returns its path. */
+async function materializeFiles(files: { path: string; content: string }[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "codegate-semgrep-"));
+  for (const f of files) {
+    if (!isSafeRelativePath(f.path)) continue;
+    const target = join(dir, f.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, f.content, "utf8");
+  }
+  return dir;
+}
 
 /**
  * Options for the network/subprocess-backed intelligence passes. OSV fields
@@ -84,13 +109,33 @@ export async function analyzeDiffWithIntel(
 ): Promise<AnalysisResult> {
   const base = analyzeDiff(diff);
   const parsed = parseUnifiedDiff(diff);
+  const engineFiles = filesFromDiff(parsed);
 
-  const [osvEnriched, scaDeps, semgrepFindings, rustFindings] = await Promise.all([
-    enrichDependenciesWithOsv(base.dependencies, opts),
-    runSca(opts.sca ?? {}),
-    scanSemgrep(parsed.files, opts.semgrep),
-    runRustEngine(filesFromDiff(parsed), opts.rust ?? {}),
-  ]);
+  // Semgrep reads files from disk, but the worker only has the diff. Unless
+  // the caller points at a checkout (cwd), write the added code to a scratch
+  // directory so Semgrep scans what the PR actually adds — not nothing, nor
+  // same-named files in the API's own working directory.
+  let scratch: string | undefined;
+  let semgrepOpts = opts.semgrep;
+  if (!opts.semgrep?.cwd && engineFiles.length) {
+    scratch = await materializeFiles(engineFiles);
+    semgrepOpts = { ...opts.semgrep, cwd: scratch };
+  }
+
+  let osvEnriched, scaDeps, semgrepFindings, rustFindings;
+  try {
+    [osvEnriched, scaDeps, semgrepFindings, rustFindings] = await Promise.all([
+      enrichDependenciesWithOsv(base.dependencies, opts),
+      runSca(opts.sca ?? {}),
+      scanSemgrep(
+        engineFiles.map((f) => f.path).filter((p) => isSafeRelativePath(p)),
+        semgrepOpts,
+      ),
+      runRustEngine(engineFiles, opts.rust ?? {}),
+    ]);
+  } finally {
+    if (scratch) await rm(scratch, { recursive: true, force: true });
+  }
 
   const dependencies = mergeScaIntoDependencies(osvEnriched, scaDeps);
 

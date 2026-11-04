@@ -175,3 +175,40 @@ test("analyzeDiffWithIntel deduplicates a finding already flagged by the regex r
   // Dedup: the Semgrep duplicate on the same (CWE, file, line) is dropped.
   assert.equal(merged.findings.length, baseline.findings.length);
 });
+
+test("analyzeDiffWithIntel hands Semgrep the PR's added code on disk, never outside it", async () => {
+  const { readFile, access } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const diff = [
+    "diff --git a/app/api.py b/app/api.py",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/app/api.py",
+    "@@ -0,0 +1,2 @@",
+    "+import os",
+    "+os.system(cmd)",
+    "diff --git a/../escape.py b/../escape.py",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/../escape.py",
+    "@@ -0,0 +1,1 @@",
+    "+print('x')",
+  ].join("\n");
+
+  let seenCwd = "";
+  let seenFiles: string[] = [];
+  let content = "";
+  const runner = async (files: string[], o: { cwd?: string }) => {
+    seenCwd = o.cwd ?? "";
+    seenFiles = files;
+    content = await readFile(join(seenCwd, "app/api.py"), "utf8");
+    return JSON.stringify({ results: [] });
+  };
+  await analyzeDiffWithIntel(diff, { semgrep: { runner }, rust: { enabled: false } });
+
+  assert.ok(seenCwd, "Semgrep must run inside a scratch directory");
+  assert.deepEqual(seenFiles, ["app/api.py"]);
+  assert.equal(content, "import os\nos.system(cmd)");
+  // The scratch directory is cleaned up afterwards.
+  await assert.rejects(access(seenCwd));
+});
