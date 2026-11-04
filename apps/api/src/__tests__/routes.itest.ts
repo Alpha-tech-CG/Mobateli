@@ -364,6 +364,62 @@ test("client errors from Fastify stay 4xx (not 500)", async () => {
   assert.equal(res.statusCode, 400);
 });
 
+test("passwords: self-service change, admin reset, owner protected", async () => {
+  // An admin member (created by the owner) with a known temp password.
+  const invite = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "pw-admin@acme.test", role: "admin" },
+  });
+  const adminId: string = invite.json().user.id;
+  let adminPw: string = invite.json().tempPassword;
+  const loginAs = (email: string, password: string) =>
+    app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email, password } });
+  const adminAuth = { authorization: `Bearer ${(await loginAs("pw-admin@acme.test", adminPw)).json().token}` };
+
+  // Wrong current password → 401; right one → changed, old one stops working.
+  const wrong = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    headers: adminAuth,
+    payload: { currentPassword: "not-it-at-all", newPassword: "brand-new-password-42" },
+  });
+  assert.equal(wrong.statusCode, 401);
+  const ok = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    headers: adminAuth,
+    payload: { currentPassword: adminPw, newPassword: "brand-new-password-42" },
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal((await loginAs("pw-admin@acme.test", adminPw)).statusCode, 401);
+  adminPw = "brand-new-password-42";
+  assert.equal((await loginAs("pw-admin@acme.test", adminPw)).statusCode, 200);
+
+  // Owner resets the admin → temp password works.
+  const reset = await app.inject({
+    method: "POST",
+    url: `/api/v1/organization/members/${adminId}/reset-password`,
+    headers: auth(),
+  });
+  assert.equal(reset.statusCode, 200);
+  assert.equal((await loginAs("pw-admin@acme.test", reset.json().tempPassword)).statusCode, 200);
+
+  // An admin cannot reset the owner.
+  const members = await app.inject({ method: "GET", url: "/api/v1/organization/members", headers: auth() });
+  const ownerId = members.json().members.find((m: { role: string }) => m.role === "owner").id;
+  const freshAdmin = {
+    authorization: `Bearer ${(await loginAs("pw-admin@acme.test", reset.json().tempPassword)).json().token}`,
+  };
+  const denied = await app.inject({
+    method: "POST",
+    url: `/api/v1/organization/members/${ownerId}/reset-password`,
+    headers: freshAdmin,
+  });
+  assert.equal(denied.statusCode, 403);
+});
+
 test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {
   const res = await app.inject({
     method: "POST",

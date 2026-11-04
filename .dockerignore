@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.next
+**/target
+**/.turbo
+.git
+.claude
+.env
+.env.*
+!.env.example
+infra/docker/data
+apps/web
+services/ai-engine
+docs

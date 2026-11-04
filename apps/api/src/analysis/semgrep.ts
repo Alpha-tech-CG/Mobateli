@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import type { Confidence, FindingResult } from "./types.js";
+import { describeFailure, type Confidence, type EngineStatusFn, type FindingResult } from "./types.js";
 import type { Severity } from "@codegate/shared";
 
 /**
@@ -41,6 +41,8 @@ export interface SemgrepOptions {
   /** Répertoire de travail où résoudre les chemins des fichiers. */
   cwd?: string;
   timeoutMs?: number;
+  /** Reçoit si Semgrep a tourné, a été sauté ou a échoué (et pourquoi). */
+  onStatus?: EngineStatusFn;
 }
 
 /** Forme (partielle) de la sortie `semgrep --json`. */
@@ -186,9 +188,14 @@ export async function scanSemgrep(
   files: string[],
   opts: SemgrepOptions = {},
 ): Promise<FindingResult[]> {
-  if (!files.length) return [];
+  if (!files.length) {
+    opts.onStatus?.("skipped", "aucun fichier");
+    return [];
+  }
   const runner = opts.runner ?? defaultRunner;
-  const config = opts.config ?? DEFAULT_CONFIG;
+  // CODEGATE_SEMGREP_CONFIG: un ruleset embarqué (fichier) évite de retélécharger
+  // le registre (~12 s, et un point de panne réseau) à chaque analyse.
+  const config = opts.config ?? process.env.CODEGATE_SEMGREP_CONFIG ?? DEFAULT_CONFIG;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   try {
@@ -198,10 +205,12 @@ export async function scanSemgrep(
       timeoutMs,
     });
     const parsed = JSON.parse(raw) as SemgrepOutput;
+    opts.onStatus?.("ok");
     if (!parsed.results?.length) return [];
     return parsed.results.map(toFinding);
-  } catch {
+  } catch (err) {
     // Binaire absent, timeout, réseau de règles indisponible, JSON cassé.
+    opts.onStatus?.("failed", describeFailure(err));
     return [];
   }
 }

@@ -510,9 +510,15 @@ function GitlabCard() {
       <div className="mb-4 flex items-center gap-3">
         <Gitlab className="size-5 text-primary" aria-hidden />
         <div>
-          <h2 className="font-semibold">GitLab</h2>
+          <h2 className="font-semibold">
+            GitLab{" "}
+            <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+              bêta
+            </span>
+          </h2>
           <p className="text-xs text-muted-foreground">
-            Analyse les merge requests comme un 2ᵉ fournisseur SCM.
+            Les merge requests sont enregistrées et tracées, mais leur code n&apos;est pas encore
+            analysé : elles apparaissent « à revoir manuellement ».
           </p>
         </div>
       </div>

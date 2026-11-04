@@ -215,3 +215,39 @@ test("analyzeDiffWithIntel hands Semgrep the PR's added code on disk, never outs
   // The scratch directory is cleaned up afterwards.
   await assert.rejects(access(seenCwd));
 });
+
+test("analyzeDiffWithIntel reports which passes ran, were skipped or failed", async () => {
+  const { buildPrComment } = await import("./explainer.js");
+  const diff = [
+    "diff --git a/app.py b/app.py",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/app.py",
+    "@@ -0,0 +1,1 @@",
+    "+print('ok')",
+  ].join("\n");
+  const missing = Object.assign(new Error("spawn semgrep ENOENT"), { code: "ENOENT" });
+  const r = await analyzeDiffWithIntel(diff, {
+    semgrep: { runner: async () => Promise.reject(missing) },
+    rust: { enabled: false },
+  });
+  assert.deepEqual(r.engines?.semgrep, { status: "failed", detail: "binaire absent" });
+  assert.deepEqual(r.engines?.rust, { status: "skipped", detail: "désactivé" });
+  assert.equal(r.engines?.osv?.status, "skipped"); // no dependency in the diff
+  assert.equal(r.engines?.sca?.status, "skipped"); // no checkout to scan
+
+  // The PR comment must not read as "checked and clean".
+  const comment = buildPrComment(r);
+  assert.match(comment, /Analyse partielle/);
+  assert.match(comment, /Semgrep\) : binaire absent/);
+  assert.doesNotMatch(comment, /Aucun risque détecté\. ✅/);
+
+  // All passes fine → no warning.
+  const ok = await analyzeDiffWithIntel(diff, {
+    semgrep: { runner: async () => JSON.stringify({ results: [] }) },
+    rust: { runner: async () => "[]" },
+  });
+  assert.equal(ok.engines?.semgrep?.status, "ok");
+  assert.equal(ok.engines?.rust?.status, "ok");
+  assert.doesNotMatch(buildPrComment(ok), /Analyse partielle/);
+});

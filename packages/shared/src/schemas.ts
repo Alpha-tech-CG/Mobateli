@@ -41,6 +41,17 @@ export const mfaVerifySchema = z.object({
 });
 export type MfaVerifyInput = z.infer<typeof mfaVerifySchema>;
 
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(256),
+    newPassword: passwordSchema,
+  })
+  .refine((v) => v.currentPassword !== v.newPassword, {
+    message: "Le nouveau mot de passe doit être différent de l'actuel",
+    path: ["newPassword"],
+  });
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
 export const inviteMemberSchema = z.object({
   email: emailSchema,
   role: z.enum(ROLES),

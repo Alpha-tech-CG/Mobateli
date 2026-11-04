@@ -12,7 +12,12 @@ import {
   mergeRustFindings,
   type RustEngineOptions,
 } from "./rust-engine.js";
-import type { AnalysisResult, FindingResult } from "./types.js";
+import type {
+  AnalysisResult,
+  EngineName,
+  EngineStatusFn,
+  FindingResult,
+} from "./types.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -122,11 +127,22 @@ export async function analyzeDiffWithIntel(
     semgrepOpts = { ...opts.semgrep, cwd: scratch };
   }
 
+  // Record each pass's outcome (ran / skipped / failed) next to the caller's
+  // own callback, so a pass that never ran can't pass for "nothing found".
+  const engines: NonNullable<AnalysisResult["engines"]> = {};
+  const track =
+    (name: EngineName, chained?: EngineStatusFn): EngineStatusFn =>
+    (status, detail) => {
+      engines[name] = detail ? { status, detail } : { status };
+      chained?.(status, detail);
+    };
+  semgrepOpts = { ...semgrepOpts, onStatus: track("semgrep", opts.semgrep?.onStatus) };
+
   let osvEnriched, scaDeps, semgrepFindings, rustFindings;
   try {
     [osvEnriched, scaDeps, semgrepFindings, rustFindings] = await Promise.all([
-      enrichDependenciesWithOsv(base.dependencies, opts),
-      runSca(opts.sca ?? {}),
+      enrichDependenciesWithOsv(base.dependencies, { ...opts, onStatus: track("osv", opts.onStatus) }),
+      runSca({ ...opts.sca, onStatus: track("sca", opts.sca?.onStatus) }),
       scanSemgrep(
         // The scratch dir holds exactly the PR's files, so scan it as a whole:
         // listing thousands of paths overflows the OS command-line limit
@@ -136,7 +152,7 @@ export async function analyzeDiffWithIntel(
           : engineFiles.map((f) => f.path).filter((p) => isSafeRelativePath(p)),
         semgrepOpts,
       ),
-      runRustEngine(engineFiles, opts.rust ?? {}),
+      runRustEngine(engineFiles, { ...opts.rust, onStatus: track("rust", opts.rust?.onStatus) }),
     ]);
   } finally {
     // Best effort: a file still locked (Windows, a timed-out Semgrep child)
@@ -163,7 +179,7 @@ export async function analyzeDiffWithIntel(
     secrets: base.secrets,
     dependencies,
   });
-  return { ...base, findings, dependencies, riskScore, decision, status };
+  return { ...base, findings, dependencies, riskScore, decision, status, engines };
 }
 
 export * from "./types.js";

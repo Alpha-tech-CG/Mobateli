@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticator } from "otplib";
 import { prisma } from "@codegate/db";
 import {
+  changePasswordSchema,
   loginSchema,
   mfaVerifySchema,
   signupSchema,
@@ -101,6 +102,37 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
     });
     return reply.send({ token, mfaRequired: false });
   });
+
+  /**
+   * Change one's own password. The current password is required, so a stolen
+   * session alone can't lock the owner out of their account.
+   */
+  app.post(
+    "/api/v1/auth/password",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const body = changePasswordSchema.parse(req.body);
+      const user = await prisma.user.findUniqueOrThrow({
+        where: { id: req.principal.userId },
+      });
+      if (!(await verifyPassword(user.passwordHash, body.currentPassword))) {
+        return reply.code(401).send({ error: "invalid_credentials" });
+      }
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash: await hashPassword(body.newPassword) },
+      });
+      await recordAudit({
+        organizationId: user.organizationId,
+        actorType: "user",
+        actorId: user.id,
+        action: "auth.password_changed",
+        resourceType: "user",
+        resourceId: user.id,
+      });
+      return { changed: true };
+    },
+  );
 
   /**
    * Begin MFA enrollment: generate a TOTP secret, store it encrypted (not yet

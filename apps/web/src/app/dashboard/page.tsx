@@ -19,6 +19,22 @@ function Overview() {
   const [members, setMembers] = useState<Member[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [reset, setReset] = useState<{ email: string; tempPassword?: string; error?: string } | null>(
+    null,
+  );
+
+  async function resetPassword(m: Member) {
+    if (!window.confirm(`Réinitialiser le mot de passe de ${m.email} ?`)) return;
+    try {
+      const r = await api<{ tempPassword: string }>(
+        `/api/v1/organization/members/${m.id}/reset-password`,
+        { method: "POST" },
+      );
+      setReset({ email: m.email, tempPassword: r.tempPassword });
+    } catch {
+      setReset({ email: m.email, error: "Réinitialisation refusée (droits insuffisants ?)." });
+    }
+  }
 
   useEffect(() => {
     Promise.all([
@@ -57,6 +73,23 @@ function Overview() {
           <h2 className="mt-8 mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Membres
           </h2>
+          {reset ? (
+            <Card className="mb-3 p-4 text-sm">
+              {reset.tempPassword ? (
+                <>
+                  <p>
+                    Mot de passe temporaire de <span className="font-mono">{reset.email}</span> —
+                    transmettez-le par un canal sûr, il ne sera plus affiché :
+                  </p>
+                  <code className="mt-2 block break-all rounded bg-muted px-2 py-1 font-mono">
+                    {reset.tempPassword}
+                  </code>
+                </>
+              ) : (
+                <p className="text-destructive">{reset.error}</p>
+              )}
+            </Card>
+          ) : null}
           <Card>
             <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -65,6 +98,9 @@ function Overview() {
                   <th className="px-4 py-2 font-medium">Email</th>
                   <th className="px-4 py-2 font-medium">Rôle</th>
                   <th className="px-4 py-2 font-medium">MFA</th>
+                  <th className="px-4 py-2 font-medium">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -73,11 +109,19 @@ function Overview() {
                     <td className="px-4 py-2 font-mono text-xs">{m.email}</td>
                     <td className="px-4 py-2">{m.role}</td>
                     <td className="px-4 py-2">{m.mfaEnabled ? "activé" : "—"}</td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={() => resetPassword(m)}
+                        className="cursor-pointer whitespace-nowrap text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        Réinitialiser le mot de passe
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {!members.length ? (
                   <tr>
-                    <td colSpan={3} className="px-4 py-6 text-center text-muted-foreground">
+                    <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
                       Aucun membre.
                     </td>
                   </tr>

@@ -44,10 +44,28 @@ export function createPrAnalysisWorker(
         data: { status: "analyzing" },
       });
 
-      // Fetch the diff via GitHub when the App is configured; otherwise run on
-      // an empty diff (local dev / unconfigured) → clean result.
+      // No way to fetch this PR's code (GitLab: no API token yet; GitHub repo
+      // without an App installation). Analyzing an empty diff would show the
+      // PR as "passed" — say instead that it was not analyzed and needs a human.
+      if (pr.repository.installationId == null) {
+        await prisma.pullRequest.update({
+          where: { id: pr.id },
+          data: { status: "escalated", riskScore: null },
+        });
+        await recordAudit({
+          organizationId: pr.repository.organizationId,
+          actorType: "system",
+          action: "pr.analysis_unavailable",
+          resourceType: "pull_request",
+          resourceId: pr.id,
+          metadata: { reason: "no_diff_source", provider: pr.repository.provider },
+        });
+        return;
+      }
+
+      // Fetch the diff through the GitHub App installation.
       let diff = "";
-      if (pr.repository.installationId != null) {
+      {
         const fetched = await fetchPrDiff(
           config,
           Number(pr.repository.installationId),
@@ -151,6 +169,8 @@ export function createPrAnalysisWorker(
             dependencies: result.dependencies.length,
           },
           reason: job.data.reason,
+          // Which passes ran / were skipped / failed — shown on the PR page.
+          engines: JSON.parse(JSON.stringify(result.engines ?? {})),
         },
       });
 

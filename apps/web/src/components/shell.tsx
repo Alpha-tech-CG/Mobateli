@@ -12,6 +12,7 @@ import {
   Bot,
   Rocket,
   LogOut,
+  UserRound,
 } from "lucide-react";
 import { clearToken, getToken } from "@/lib/api";
 
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/deployments", label: "Déploiements", icon: Rocket },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
+  { href: "/account", label: "Mon compte", icon: UserRound },
 ];
 
 /** App shell with sidebar nav + client-side auth guard. */

@@ -68,6 +68,22 @@ export interface DependencyResult {
   license?: string;
 }
 
+/**
+ * What happened to one external analysis pass. Every pass fails open, so
+ * without this a pass that never ran is indistinguishable from "found
+ * nothing" — the result would look clean while nothing was checked.
+ */
+export interface EngineReport {
+  status: "ok" | "skipped" | "failed";
+  /** Why it was skipped or failed (e.g. "binaire absent", "délai dépassé"). */
+  detail?: string;
+}
+
+/** Status setter handed to a pass; last call wins. */
+export type EngineStatusFn = (status: EngineReport["status"], detail?: string) => void;
+
+export type EngineName = "osv" | "sca" | "semgrep" | "rust";
+
 /** Aggregate output of the analysis pipeline. */
 export interface AnalysisResult {
   findings: FindingResult[];
@@ -76,4 +92,19 @@ export interface AnalysisResult {
   riskScore: number; // 0..100 (higher = riskier)
   decision: Decision;
   status: PullRequestStatus;
+  /** Per-pass outcome; set by the full pipeline (not the offline core). */
+  engines?: Partial<Record<EngineName, EngineReport>>;
+}
+
+/** Short French reason for a subprocess failure (spawn/timeout/argv…). */
+export function describeFailure(err: unknown): string {
+  const e = err as { code?: string; killed?: boolean; signal?: string; message?: string };
+  if (e?.code === "ENOENT") return "binaire absent";
+  if (e?.killed || e?.signal === "SIGTERM" || e?.signal === "SIGKILL" || e?.code === "ETIMEDOUT") {
+    return "délai dépassé";
+  }
+  if (e?.code === "E2BIG" || e?.code === "ENAMETOOLONG") return "ligne de commande trop longue";
+  if (err instanceof SyntaxError) return "sortie illisible";
+  const msg = (e?.message ?? String(err)).split("\n")[0]!;
+  return msg.slice(0, 80) || "erreur inconnue";
 }

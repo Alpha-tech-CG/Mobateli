@@ -1,5 +1,5 @@
 import type { DependencyRisk } from "@codegate/shared";
-import type { DependencyResult, DependencyVulnerability } from "./types.js";
+import type { DependencyResult, DependencyVulnerability, EngineStatusFn } from "./types.js";
 
 /**
  * OSV enrichment (cahier §5.3, §9.3 — base de vulnérabilités OSV).
@@ -37,6 +37,10 @@ type FetchImpl = (
 export interface OsvOptions {
   fetchImpl?: FetchImpl;
   timeoutMs?: number;
+  /** Receives whether the lookup ran, was skipped, or (partly) failed. */
+  onStatus?: EngineStatusFn;
+  /** Called by `queryOsv` when one query could not be answered. */
+  onQueryFailure?: (detail: string) => void;
 }
 
 interface OsvVuln {
@@ -116,12 +120,18 @@ export async function queryOsv(
       body: JSON.stringify({ version: cleanVersion, package: { name, ecosystem: osvEcosystem } }),
       signal: controller.signal,
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      opts.onQueryFailure?.(`HTTP ${res.status}`);
+      return [];
+    }
     const data = (await res.json()) as { vulns?: OsvVuln[] };
     if (!data.vulns?.length) return [];
     return data.vulns.map(parseVuln);
-  } catch {
+  } catch (err) {
     // Timeout, network error, malformed response — fail open.
+    opts.onQueryFailure?.(
+      (err as { name?: string })?.name === "AbortError" ? "délai dépassé" : "réseau indisponible",
+    );
     return [];
   } finally {
     clearTimeout(timer);
@@ -137,9 +147,15 @@ export async function enrichDependenciesWithOsv(
   deps: DependencyResult[],
   opts: OsvOptions = {},
 ): Promise<DependencyResult[]> {
-  return Promise.all(
+  if (!deps.length) {
+    opts.onStatus?.("skipped", "aucune dépendance ajoutée");
+    return deps;
+  }
+  const failures: string[] = [];
+  const queryOpts = { ...opts, onQueryFailure: (d: string) => failures.push(d) };
+  const enriched = await Promise.all(
     deps.map(async (dep) => {
-      const vulns = await queryOsv(dep.ecosystem, dep.name, dep.version, opts);
+      const vulns = await queryOsv(dep.ecosystem, dep.name, dep.version, queryOpts);
       if (!vulns.length) return dep;
 
       const worst = vulns.reduce<DependencyRisk>((acc, v) => worstRisk(acc, v.severity), "low");
@@ -155,4 +171,14 @@ export async function enrichDependenciesWithOsv(
       };
     }),
   );
+  if (!failures.length) opts.onStatus?.("ok");
+  else {
+    opts.onStatus?.(
+      "failed",
+      failures.length === deps.length
+        ? failures[0]
+        : `${failures.length}/${deps.length} requêtes : ${failures[0]}`,
+    );
+  }
+  return enriched;
 }

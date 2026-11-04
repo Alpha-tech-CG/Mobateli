@@ -6,7 +6,7 @@ local, exposé par un tunnel HTTPS. ~20 minutes.
 ## Prérequis (déjà en place)
 
 - Postgres + Redis en Docker (`docker compose -f infra/docker/docker-compose.yml up -d`)
-- Migrations appliquées, API (:4400) + worker + tunnel démarrés par l'assistant
+- Migrations appliquées, API (:4000) + worker + tunnel démarrés par l'assistant
 - Une organisation CodeGate (créée à l'inscription — voir étape 4)
 
 ## 1. Récupérer l'URL publique du tunnel
@@ -68,7 +68,7 @@ Via le dashboard (`http://localhost:3000` → page de connexion → inscription)
 en API :
 
 ```bash
-curl -s -X POST http://127.0.0.1:4400/api/v1/auth/signup -H "content-type: application/json" \
+curl -s -X POST http://127.0.0.1:4000/api/v1/auth/signup -H "content-type: application/json" \
   -d '{"email":"toi@exemple.com","password":"mot-de-passe-12+","name":"Toi","organizationName":"Mon Org"}'
 ```
 

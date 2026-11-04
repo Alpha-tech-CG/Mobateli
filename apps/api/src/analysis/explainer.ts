@@ -1,4 +1,11 @@
-import type { DependencyResult, FindingResult, SecretResult } from "./types.js";
+import type {
+  AnalysisResult,
+  DependencyResult,
+  EngineName,
+  EngineReport,
+  FindingResult,
+  SecretResult,
+} from "./types.js";
 
 /** Hidden HTML marker identifying CodeGate's own PR comment, for upserts. */
 export const CODEGATE_COMMENT_MARKER = "<!-- codegate:report -->";
@@ -48,6 +55,23 @@ export function explainFinding(f: FindingResult): string {
 }
 
 /** Build the structured GitHub PR comment body (cahier §6.2, §5.6). */
+export const ENGINE_LABELS: Record<EngineName, string> = {
+  osv: "Vulnérabilités connues (OSV)",
+  sca: "Dépendances complètes (Trivy/Grype)",
+  semgrep: "Analyse sémantique (Semgrep)",
+  rust: "Analyse de flux (moteur Rust)",
+};
+
+/** Passes that were expected to run but failed (skipped-by-design is not shown). */
+export function failedEngines(
+  engines: AnalysisResult["engines"],
+): { name: EngineName; label: string; detail: string }[] {
+  if (!engines) return [];
+  return (Object.entries(engines) as [EngineName, EngineReport][])
+    .filter(([, r]) => r.status === "failed")
+    .map(([name, r]) => ({ name, label: ENGINE_LABELS[name], detail: r.detail ?? "échec" }));
+}
+
 export function buildPrComment(result: {
   riskScore: number;
   decision: string;
@@ -55,6 +79,7 @@ export function buildPrComment(result: {
   findings: FindingResult[];
   secrets: SecretResult[];
   dependencies: DependencyResult[];
+  engines?: AnalysisResult["engines"];
 }): string {
   const emoji =
     result.status === "blocked" ? "🛑" : result.status === "warning" ? "⚠️" : "✅";
@@ -83,9 +108,21 @@ export function buildPrComment(result: {
     for (const f of result.findings) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
     lines.push("");
   }
+  const failed = failedEngines(result.engines);
   if (!result.secrets.length && !result.findings.length &&
       !result.dependencies.some((d) => d.riskLevel !== "low")) {
-    lines.push("Aucun risque détecté. ✅");
+    lines.push(
+      failed.length
+        ? "Aucun risque détecté par les analyses qui ont pu s'exécuter (voir ci-dessous)."
+        : "Aucun risque détecté. ✅",
+    );
+  }
+  // A pass that could not run must be visible: otherwise "nothing found"
+  // reads as "checked and clean".
+  if (failed.length) {
+    lines.push("");
+    lines.push("> ⚠️ **Analyse partielle** — certaines vérifications n'ont pas pu s'exécuter :");
+    for (const { label, detail } of failed) lines.push(`> - ${label} : ${detail}`);
   }
 
   lines.push("");

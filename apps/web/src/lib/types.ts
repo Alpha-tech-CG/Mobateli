@@ -128,6 +128,19 @@ export interface Dependency {
   reason: string | null;
 }
 
+export interface EngineReport {
+  status: "ok" | "skipped" | "failed";
+  detail?: string;
+}
+
+/** How the last analysis of a PR went (from its audit trail). */
+export interface LastAnalysis {
+  outcome: "analyzed" | "analysis_unavailable" | "analysis_failed";
+  at: string;
+  engines: Partial<Record<"osv" | "sca" | "semgrep" | "rust", EngineReport>>;
+  reason?: string;
+}
+
 export interface PullRequestDetail {
   id: string;
   number: number;
