@@ -30,6 +30,10 @@ export const signupSchema = z.object({
   password: passwordSchema,
   name: z.string().min(1).max(120),
   organizationName: z.string().min(1).max(120),
+  /** The terms (CGU/CGV, privacy policy, DPA) must be accepted to sign up. */
+  acceptTerms: z.literal(true, { message: "Acceptez les conditions générales pour créer un compte" }),
+  /** Version of the legal texts shown to the user (LEGAL_VERSION on the web). */
+  termsVersion: z.string().trim().min(1).max(40).optional(),
 });
 export type SignupInput = z.infer<typeof signupSchema>;
 

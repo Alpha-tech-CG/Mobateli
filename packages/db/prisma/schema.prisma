@@ -161,6 +161,9 @@ model User {
   emailVerifiedAt   DateTime?
   // Sessions issued before this instant are rejected (password reset).
   sessionsRevokedAt DateTime?
+  // Proof of acceptance of the terms at signup (date + version of the texts).
+  termsAcceptedAt DateTime?
+  termsVersion    String?
   createdAt         DateTime  @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)

@@ -127,6 +127,8 @@ export async function authRoutes(app: FastifyInstance, config: AppConfig) {
             name: body.name,
             passwordHash,
             role: "owner",
+            termsAcceptedAt: new Date(),
+            termsVersion: body.termsVersion ?? "unspecified",
           },
         },
       },

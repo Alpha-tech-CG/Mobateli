@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, setToken, ApiError } from "@/lib/api";
 import { AuthShell, AuthField, AuthSubmit, authInput } from "@/components/auth-shell";
+import { LEGAL_VERSION } from "@/lib/legal";
 
 export default function SignupPage() {
   const router = useRouter();
   const [form, setForm] = useState({ name: "", organizationName: "", email: "", password: "" });
+  const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -17,12 +19,16 @@ export default function SignupPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!accepted) {
+      setError("Acceptez les conditions générales et la politique de confidentialité pour continuer.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const res = await api<{ token: string }>("/api/v1/auth/signup", {
         method: "POST",
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, acceptTerms: true, termsVersion: LEGAL_VERSION }),
       });
       setToken(res.token);
       router.replace("/dashboard");
@@ -80,6 +86,30 @@ export default function SignupPage() {
             className={authInput}
           />
         </AuthField>
+        <label className="flex items-start gap-2.5 text-[13px] leading-snug text-[#c4c9cc]">
+          <input
+            type="checkbox"
+            required
+            checked={accepted}
+            onChange={(e) => setAccepted(e.target.checked)}
+            className="mt-0.5 size-4 shrink-0 accent-[#bb3e2c]"
+          />
+          <span>
+            J&apos;accepte les{" "}
+            <Link href="/terms" target="_blank" className="text-white underline underline-offset-2">
+              conditions générales
+            </Link>
+            , l&apos;
+            <Link href="/dpa" target="_blank" className="text-white underline underline-offset-2">
+              accord de sous-traitance
+            </Link>{" "}
+            et la{" "}
+            <Link href="/privacy" target="_blank" className="text-white underline underline-offset-2">
+              politique de confidentialité
+            </Link>
+            .
+          </span>
+        </label>
         {error ? <p className="text-[13px] text-[#e8836f]">{error}</p> : null}
         <AuthSubmit busy={busy}>{busy ? "Création…" : "Créer mon compte"}</AuthSubmit>
       </form>

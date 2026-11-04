@@ -76,6 +76,7 @@ test("signup bootstraps org + owner and returns a token", async () => {
       password: "supersecret-password",
       name: "Owner",
       organizationName: "Acme",
+      acceptTerms: true,
     },
   });
   assert.equal(res.statusCode, 201);
@@ -109,7 +110,7 @@ test("validation errors are 400 with field info", async () => {
   const res = await app.inject({
     method: "POST",
     url: "/api/v1/auth/signup",
-    payload: { email: "x@y.test", password: "short", name: "X", organizationName: "Y" },
+    payload: { email: "x@y.test", password: "short", name: "X", organizationName: "Y", acceptTerms: true },
   });
   assert.equal(res.statusCode, 400);
   assert.equal(res.json().error, "validation_error");
@@ -305,6 +306,7 @@ test("gitlab: connect token governs the MR webhook", async () => {
       password: "intruder-password-123",
       name: "Intruder",
       organizationName: "Other",
+      acceptTerms: true,
     },
   });
   const otherCon = await app.inject({
@@ -517,7 +519,7 @@ test("github link: only a GitHub user with access to the installation can link i
     const other = await app.inject({
       method: "POST",
       url: "/api/v1/auth/signup",
-      payload: { email: "gh-link-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other GH" },
+      payload: { email: "gh-link-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other GH", acceptTerms: true },
     });
     const otherAuth = { authorization: `Bearer ${other.json().token}` };
     const otherState = new URL(
@@ -607,7 +609,7 @@ test("analysis settings: org defaults, repo overrides, protection level", async 
   const other = await app.inject({
     method: "POST",
     url: "/api/v1/auth/signup",
-    payload: { email: "settings-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other S" },
+    payload: { email: "settings-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other S", acceptTerms: true },
   });
   const foreign = await app.inject({
     method: "PUT",
@@ -1387,7 +1389,7 @@ test("platform: GitHub App manifest flow is operator-only and stores credentials
   const other = await app.inject({
     method: "POST",
     url: "/api/v1/auth/signup",
-    payload: { email: "other-owner@beta.test", password: "supersecret-password", name: "O", organizationName: "Beta" },
+    payload: { email: "other-owner@beta.test", password: "supersecret-password", name: "O", organizationName: "Beta", acceptTerms: true },
   });
   const otherAuth = { authorization: `Bearer ${other.json().token}` };
   const denied = await app.inject({
@@ -1509,7 +1511,7 @@ test("email: verification, forgotten password (sessions revoked), invitation", a
     const signup = await app.inject({
       method: "POST",
       url: "/api/v1/auth/signup",
-      payload: { email: "mail@acme-mail.test", password: "first-password-123", name: "Mia", organizationName: "MailCo" },
+      payload: { email: "mail@acme-mail.test", password: "first-password-123", name: "Mia", organizationName: "MailCo", acceptTerms: true },
     });
     assert.equal(signup.statusCode, 201);
     assert.equal(signup.json().verificationSent, true);
@@ -1605,4 +1607,19 @@ test("email: verification, forgotten password (sessions revoked), invitation", a
   } finally {
     setMailTransport(null);
   }
+});
+
+test("signup requires accepting the terms, and records which version", async () => {
+  const base = { email: "terms@acme-terms.test", password: "terms-password-1234", name: "T", organizationName: "Terms Co" };
+  const refused = await app.inject({ method: "POST", url: "/api/v1/auth/signup", payload: base });
+  assert.equal(refused.statusCode, 400);
+  const ok = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: { ...base, acceptTerms: true, termsVersion: "2026-11-05" },
+  });
+  assert.equal(ok.statusCode, 201);
+  const user = await prisma.user.findUniqueOrThrow({ where: { email: base.email } });
+  assert.equal(user.termsVersion, "2026-11-05");
+  assert.ok(user.termsAcceptedAt);
 });
