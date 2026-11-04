@@ -1,6 +1,11 @@
 import { execFile } from "node:child_process";
 import type { DependencyRisk } from "@codegate/shared";
-import type { DependencyResult, DependencyVulnerability } from "./types.js";
+import {
+  describeFailure,
+  type DependencyResult,
+  type DependencyVulnerability,
+  type EngineStatusFn,
+} from "./types.js";
 
 /**
  * Software Composition Analysis (cahier §5.3, §9.3 — Trivy/Grype).
@@ -50,6 +55,8 @@ export interface ScaOptions {
   /** Scan this container image reference (set when a Dockerfile is present). */
   image?: string;
   timeoutMs?: number;
+  /** Receives whether the scan ran, was skipped, or failed (and why). */
+  onStatus?: EngineStatusFn;
 }
 
 /** Default runner: `execFile` the real binary, rejecting only when it is absent. */
@@ -371,20 +378,31 @@ export async function runSca(opts: ScaOptions = {}): Promise<DependencyResult[]>
   const targets: { kind: "fs" | "image"; value: string }[] = [];
   if (opts.workspaceDir) targets.push({ kind: "fs", value: opts.workspaceDir });
   if (opts.image) targets.push({ kind: "image", value: opts.image });
-  if (!targets.length) return [];
+  if (!targets.length) {
+    opts.onStatus?.("skipped", "pas de copie du dépôt à scanner");
+    return [];
+  }
 
   const merged = new Map<string, ScaPackage>();
+  const failures: string[] = [];
   for (const target of targets) {
     try {
       const args = tool === "trivy" ? buildTrivyArgs(target) : buildGrypeArgs(target);
       const res = await runner(binary, args, { timeoutMs });
-      if (!res.stdout.trim()) continue;
+      if (!res.stdout.trim()) {
+        failures.push("sortie vide");
+        continue;
+      }
       const packages = tool === "trivy" ? parseTrivy(res.stdout) : parseGrype(res.stdout);
       for (const pkg of packages) accumulate(merged, pkg);
-    } catch {
+    } catch (err) {
       // Missing binary, timeout, crash, malformed JSON — fail open for this target.
+      failures.push(describeFailure(err));
     }
   }
+  if (failures.length === targets.length) opts.onStatus?.("failed", failures[0]);
+  else if (failures.length) opts.onStatus?.("failed", `partiel : ${failures[0]}`);
+  else opts.onStatus?.("ok");
 
   return [...merged.values()].filter(isNotable).map(toDependencyResult);
 }

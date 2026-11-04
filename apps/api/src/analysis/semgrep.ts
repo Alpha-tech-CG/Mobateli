@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import type { Confidence, FindingResult } from "./types.js";
+import { describeFailure, type Confidence, type EngineStatusFn, type FindingResult } from "./types.js";
 import type { Severity } from "@codegate/shared";
 
 /**
@@ -17,7 +17,9 @@ import type { Severity } from "@codegate/shared";
 
 /** Ruleset pinné : jeu de règles « CI » de Semgrep (curaté, peu de bruit). */
 const DEFAULT_CONFIG = "p/ci";
-const DEFAULT_TIMEOUT_MS = 20000;
+// Le téléchargement du ruleset seul prend ~12 s ; 20 s faisaient perdre des
+// résultats dès ~250 fichiers (mesuré), sans aucun signal.
+const DEFAULT_TIMEOUT_MS = 120_000;
 /** Semgrep peut produire un gros JSON ; on laisse de la marge au tampon. */
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
@@ -39,6 +41,8 @@ export interface SemgrepOptions {
   /** Répertoire de travail où résoudre les chemins des fichiers. */
   cwd?: string;
   timeoutMs?: number;
+  /** Reçoit si Semgrep a tourné, a été sauté ou a échoué (et pourquoi). */
+  onStatus?: EngineStatusFn;
 }
 
 /** Forme (partielle) de la sortie `semgrep --json`. */
@@ -72,7 +76,9 @@ const defaultRunner: SemgrepRunner = (files, { config, cwd, timeoutMs }) =>
   new Promise((resolve, reject) => {
     const args = ["--json", "--quiet", "--config", config, "--timeout", "0", "--", ...files];
     execFile(
-      "semgrep",
+      // CODEGATE_SEMGREP_BIN : chemin explicite quand semgrep n'est pas dans le PATH
+      // du processus (ex. installé par pip dans un dossier utilisateur).
+      process.env.CODEGATE_SEMGREP_BIN || "semgrep",
       args,
       { cwd, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES },
       (err, stdout) => {
@@ -161,7 +167,9 @@ function toFinding(result: SemgrepResult): FindingResult {
     remediation,
   };
 
-  if (result.path) finding.filePath = result.path;
+  // Semgrep rend des chemins natifs (`app\views.py` sous Windows) : on les
+  // normalise comme ceux du diff pour que la déduplication fonctionne.
+  if (result.path) finding.filePath = result.path.replace(/\\/g, "/").replace(/^\.\//, "");
   if (typeof result.start?.line === "number") finding.line = result.start.line;
 
   const cwe = normalizeCwe(firstString(metadata.cwe));
@@ -182,9 +190,14 @@ export async function scanSemgrep(
   files: string[],
   opts: SemgrepOptions = {},
 ): Promise<FindingResult[]> {
-  if (!files.length) return [];
+  if (!files.length) {
+    opts.onStatus?.("skipped", "aucun fichier");
+    return [];
+  }
   const runner = opts.runner ?? defaultRunner;
-  const config = opts.config ?? DEFAULT_CONFIG;
+  // CODEGATE_SEMGREP_CONFIG: un ruleset embarqué (fichier) évite de retélécharger
+  // le registre (~12 s, et un point de panne réseau) à chaque analyse.
+  const config = opts.config ?? process.env.CODEGATE_SEMGREP_CONFIG ?? DEFAULT_CONFIG;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   try {
@@ -194,10 +207,12 @@ export async function scanSemgrep(
       timeoutMs,
     });
     const parsed = JSON.parse(raw) as SemgrepOutput;
+    opts.onStatus?.("ok");
     if (!parsed.results?.length) return [];
     return parsed.results.map(toFinding);
-  } catch {
+  } catch (err) {
     // Binaire absent, timeout, réseau de règles indisponible, JSON cassé.
+    opts.onStatus?.("failed", describeFailure(err));
     return [];
   }
 }

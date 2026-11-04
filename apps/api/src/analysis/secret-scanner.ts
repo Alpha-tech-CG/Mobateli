@@ -44,11 +44,36 @@ const PLACEHOLDER =
 
 function looksLikePlaceholder(value: string): boolean {
   if (PLACEHOLDER.test(value)) return true;
-  // Templated/env references: ${VAR}, {{ VAR }}, <your-key>, process.env.X
-  if (/\$\{|\{\{|<[^>]+>|process\.env|os\.environ|import\.meta\.env/.test(value)) return true;
+  // Templated/env references: ${VAR}, {{ VAR }}, <your-key>, process.env.X,
+  // and Supabase/Terraform-style env("VAR") / env(VAR) indirections.
+  if (/\$\{|\{\{|<[^>]+>|process\.env|os\.environ|import\.meta\.env|^env\(/.test(value)) return true;
   // A run of a single repeated char (aaaa…, 0000…) is never a live secret.
   if (/^(.)\1{7,}$/.test(value)) return true;
   return false;
+}
+
+/**
+ * Qualify a provider-pattern match. Returns null when the match is clearly not
+ * a credential (template, placeholder, vendor doc example), "low" when it can
+ * only reach a local machine, "high" otherwise. Measured on real projects:
+ * CI/docker-compose URLs like postgres://postgres:postgres@localhost and
+ * `postgresql://${user}:${pw}@${host}` builders were blocking PRs.
+ */
+function qualifyProviderMatch(type: string, match: string): "low" | "high" | null {
+  if (/\$\{|\{\{|<[^>]+>/.test(match)) return null;
+  if (/EXAMPLE/i.test(match) || /x{4,}$/i.test(match)) return null;
+  if (type === "postgres_url") {
+    const m = match.match(/\/\/([^:@\s]+):([^@\s]+)@([^\s/:]+)/);
+    if (!m) return "high";
+    const [, user, pass, host] = m;
+    if (PLACEHOLDER.test(pass!) || /^(pw|pwd|pass|user|username)$/i.test(pass!)) return null;
+    if (/^(user|username)$/i.test(user!) && /^(host|hostname)$/i.test(host!)) return null;
+    const local =
+      /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?|host\.docker\.internal)$/i.test(host!) ||
+      !host!.includes(".");
+    return local ? "low" : "high";
+  }
+  return "high";
 }
 
 /** Shannon entropy (bits/char) — distinguishes random secrets from words. */
@@ -80,6 +105,8 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
     for (const p of PATTERNS) {
       const m = content.match(p.regex);
       if (m) {
+        const quality = qualifyProviderMatch(p.type, m[0]);
+        if (quality === null) continue;
         const key = `${p.type}:${file}:${line}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -90,7 +117,7 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
           severity: p.severity,
           // A structured provider key in a sample file is still worth noting,
           // but at low confidence — it is probably an illustrative value.
-          confidence: inSample ? "low" : "high",
+          confidence: inSample ? "low" : quality,
         });
       }
     }

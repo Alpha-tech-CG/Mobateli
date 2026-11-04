@@ -12,17 +12,23 @@ import {
   Bot,
   Rocket,
   LogOut,
+  UserRound,
+  FolderGit2,
+  SlidersHorizontal,
 } from "lucide-react";
 import { clearToken, getToken } from "@/lib/api";
 
 const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
+  { href: "/repositories", label: "Dépôts", icon: FolderGit2 },
   { href: "/policies", label: "Politiques", icon: ScrollText },
+  { href: "/settings", label: "Paramètres d'analyse", icon: SlidersHorizontal },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
   { href: "/deployments", label: "Déploiements", icon: Rocket },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
+  { href: "/account", label: "Mon compte", icon: UserRound },
 ];
 
 /** App shell with sidebar nav + client-side auth guard. */
@@ -76,7 +82,7 @@ export function Shell({ children }: { children: ReactNode }) {
           Se déconnecter
         </button>
       </aside>
-      <main className="flex-1 overflow-x-hidden px-6 py-6">{children}</main>
+      <main className="min-w-0 flex-1 overflow-x-hidden px-6 py-6">{children}</main>
     </div>
   );
 }

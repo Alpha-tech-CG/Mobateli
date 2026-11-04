@@ -2,6 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runSca, mergeScaIntoDependencies, type ScaProcessResult } from "./sca.js";
 import { analyzeDiffWithIntel } from "./analyzer.js";
+
+/** Keep these unit tests hermetic: no real Semgrep or Rust subprocess. */
+const OFFLINE = {
+  semgrep: { runner: async () => JSON.stringify({ results: [] }) },
+  rust: { enabled: false },
+};
 import type { DependencyResult } from "./types.js";
 
 /**
@@ -225,6 +231,7 @@ test("analyzeDiffWithIntel merges SCA findings and escalates the decision", asyn
   const r = await analyzeDiffWithIntel(diff, {
     fetchImpl: osvFetch,
     sca: { runner, workspaceDir: "/repo" },
+    ...OFFLINE,
   });
 
   const evil = r.dependencies.find((d) => d.name === "evil-transitive");
@@ -243,7 +250,7 @@ test("analyzeDiffWithIntel without SCA options equals the OSV-only pipeline", as
     "@@ -0,0 +1,1 @@",
     '+    "left-pad": "1.3.0",',
   ].join("\n");
-  const r = await analyzeDiffWithIntel(diff, { fetchImpl: osvFetch });
+  const r = await analyzeDiffWithIntel(diff, { fetchImpl: osvFetch, ...OFFLINE });
   // No SCA target → no extra dependencies, clean decision.
   assert.equal(r.dependencies.length, 1);
   assert.equal(r.dependencies[0]!.name, "left-pad");

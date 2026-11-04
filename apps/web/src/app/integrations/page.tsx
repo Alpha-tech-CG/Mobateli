@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plug, Bell, Gitlab, Ticket, UserCog, KeyRound } from "lucide-react";
+import { CheckCircle2, Plug, Bell, Github, Gitlab, Ticket, UserCog, KeyRound } from "lucide-react";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
@@ -71,7 +71,9 @@ function Integrations() {
         </p>
       </header>
 
-      <Card className="max-w-xl p-5">
+      <GithubCard />
+
+      <Card className="mt-6 max-w-xl p-5">
         <div className="mb-4 flex items-center gap-3">
           <Plug className="size-5 text-primary" aria-hidden />
           <div>
@@ -469,6 +471,142 @@ function JiraCard() {
   );
 }
 
+/** Outcome of the GitHub round trip, passed back as ?github=… by the API. */
+const GITHUB_OUTCOMES: Record<string, { ok: boolean; text: string }> = {
+  connected: { ok: true, text: "GitHub connecté : vos dépôts sont importés." },
+  invalid_state: {
+    ok: false,
+    text: "Lien expiré ou invalide. Relancez « Connecter GitHub » depuis cette page.",
+  },
+  not_authorized: {
+    ok: false,
+    text: "Votre compte GitHub n'a pas accès à cette installation : liaison refusée.",
+  },
+  already_linked: {
+    ok: false,
+    text: "Cette installation GitHub est déjà liée à une autre organisation CodeGate.",
+  },
+  missing_installation: {
+    ok: false,
+    text: "GitHub n'a pas renvoyé d'installation. Installez l'application puis réessayez.",
+  },
+  github_unreachable: { ok: false, text: "GitHub est injoignable. Réessayez dans un instant." },
+  not_configured: { ok: false, text: "L'application GitHub n'est pas configurée côté serveur." },
+};
+
+function GithubCard() {
+  const [configured, setConfigured] = useState(true);
+  const [installations, setInstallations] = useState<
+    { installationId: number; accountLogin: string }[]
+  >([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  function load() {
+    api<{ configured: boolean; installations: { installationId: number; accountLogin: string }[] }>(
+      "/api/v1/integrations/github",
+    )
+      .then((r) => {
+        setConfigured(r.configured);
+        setInstallations(r.installations);
+      })
+      .catch(() => {});
+  }
+  useEffect(() => {
+    load();
+    // Show the result of the GitHub round trip once, then clean the URL.
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("github");
+    if (outcome) {
+      setMsg(GITHUB_OUTCOMES[outcome] ?? { ok: false, text: "Connexion GitHub impossible." });
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+
+  async function connect() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api<{ url: string }>("/api/v1/integrations/github/connect", {
+        method: "POST",
+      });
+      window.location.assign(r.url);
+    } catch {
+      setMsg({ ok: false, text: "Connexion impossible (droits insuffisants ?)." });
+      setBusy(false);
+    }
+  }
+
+  async function disconnect(installationId: number) {
+    if (!window.confirm("Déconnecter cette installation GitHub ? Les PR ne seront plus analysées."))
+      return;
+    setBusy(true);
+    try {
+      await api(`/api/v1/integrations/github/${installationId}`, { method: "DELETE" });
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="max-w-xl p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <Github className="size-5 text-primary" aria-hidden />
+        <div>
+          <h2 className="font-semibold">GitHub</h2>
+          <p className="text-xs text-muted-foreground">
+            Analyse chaque pull request et publie un check + un commentaire.
+          </p>
+        </div>
+      </div>
+
+      {installations.length ? (
+        <ul className="mb-4 space-y-2">
+          {installations.map((i) => (
+            <li key={i.installationId} className="flex items-center justify-between gap-3 text-sm">
+              <span className="flex items-center gap-2 text-success">
+                <CheckCircle2 className="size-4" aria-hidden />
+                <span className="font-mono text-foreground">{i.accountLogin}</span>
+              </span>
+              <button
+                onClick={() => disconnect(i.installationId)}
+                disabled={busy}
+                className="cursor-pointer text-xs text-destructive underline-offset-2 hover:underline disabled:opacity-50"
+              >
+                Déconnecter
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {configured ? (
+        <button
+          onClick={connect}
+          disabled={busy}
+          className={
+            installations.length
+              ? "cursor-pointer rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+              : "cursor-pointer rounded-md bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:opacity-90 disabled:opacity-50"
+          }
+        >
+          {busy ? "Redirection vers GitHub…" : installations.length ? "Ajouter un compte GitHub" : "Connecter GitHub"}
+        </button>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          L&apos;application GitHub n&apos;est pas encore configurée sur ce serveur.
+        </p>
+      )}
+      {msg ? (
+        <p className={`mt-3 text-sm ${msg.ok ? "text-success" : "text-destructive"}`} role="status">
+          {msg.text}
+        </p>
+      ) : null}
+    </Card>
+  );
+}
+
 function GitlabCard() {
   const [connected, setConnected] = useState(false);
   const [token, setToken] = useState<string | null>(null);
@@ -510,9 +648,15 @@ function GitlabCard() {
       <div className="mb-4 flex items-center gap-3">
         <Gitlab className="size-5 text-primary" aria-hidden />
         <div>
-          <h2 className="font-semibold">GitLab</h2>
+          <h2 className="font-semibold">
+            GitLab{" "}
+            <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+              bêta
+            </span>
+          </h2>
           <p className="text-xs text-muted-foreground">
-            Analyse les merge requests comme un 2ᵉ fournisseur SCM.
+            Les merge requests sont enregistrées et tracées, mais leur code n&apos;est pas encore
+            analysé : elles apparaissent « à revoir manuellement ».
           </p>
         </div>
       </div>

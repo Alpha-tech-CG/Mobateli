@@ -19,6 +19,10 @@ process.env.JWT_SECRET = "integration_test_jwt_secret_0123456789abcd";
 process.env.ENCRYPTION_KEY = Buffer.from("0123456789abcdef0123456789abcdef").toString("base64");
 process.env.GITHUB_WEBHOOK_SECRET = "it_gh_secret";
 process.env.VERCEL_WEBHOOK_SECRET = "it_vercel_secret";
+process.env.GITHUB_APP_SLUG = "codegate-it";
+process.env.GITHUB_CLIENT_ID = "Iv1.it_client";
+process.env.GITHUB_CLIENT_SECRET = "it_client_secret";
+process.env.WEB_ORIGIN = "http://localhost:3000";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");
@@ -53,6 +57,8 @@ after(async () => {
   stopKeepAlive?.();
   await app.close();
   getRedis(process.env.REDIS_URL!).disconnect();
+  // An open Prisma pool can keep the runner alive after the last test.
+  await prisma.$disconnect();
 });
 
 test("signup bootstraps org + owner and returns a token", async () => {
@@ -283,6 +289,355 @@ test("gitlab: connect token governs the MR webhook", async () => {
   assert.ok(gl, "GitLab MR should appear as a pull request");
   assert.equal(gl.number, 9);
   assert.equal(gl.aiGenerated, true);
+
+  // Another org's GitLab token can't inject MRs into acme's project.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: {
+      email: "intruder@other.test",
+      password: "intruder-password-123",
+      name: "Intruder",
+      organizationName: "Other",
+    },
+  });
+  const otherCon = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/gitlab",
+    headers: { authorization: `Bearer ${other.json().token}` },
+  });
+  const hijack = await app.inject({
+    method: "POST",
+    url: "/webhooks/gitlab",
+    headers: {
+      "content-type": "application/json",
+      "x-gitlab-token": otherCon.json().webhookToken,
+      "x-gitlab-event": "Merge Request Hook",
+    },
+    payload: payload.replace('"iid":9', '"iid":10'),
+  });
+  assert.equal(hijack.statusCode, 403);
+});
+
+test("members: an admin cannot mint an owner", async () => {
+  const invite = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "admin2@acme.test", role: "admin" },
+  });
+  assert.equal(invite.statusCode, 201);
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "admin2@acme.test", password: invite.json().tempPassword },
+  });
+  const adminAuth = { authorization: `Bearer ${login.json().token}` };
+  const escalate = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: adminAuth,
+    payload: { email: "owner2@acme.test", role: "owner" },
+  });
+  assert.equal(escalate.statusCode, 403);
+});
+
+test("login: email is case- and space-insensitive", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "  Owner@ACME.test ", password: "supersecret-password" },
+  });
+  assert.equal(res.statusCode, 200);
+});
+
+test("session tokens expire after 12h, and an expired token is refused", async () => {
+  const claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString());
+  assert.equal(claims.exp - claims.iat, 12 * 3600);
+
+  const expired = app.jwt.sign(
+    { userId: claims.userId, organizationId: claims.organizationId, role: claims.role },
+    { expiresIn: -10 },
+  );
+  const res = await app.inject({
+    method: "GET",
+    url: "/api/v1/organization",
+    headers: { authorization: `Bearer ${expired}` },
+  });
+  assert.equal(res.statusCode, 401);
+});
+
+test("client errors from Fastify stay 4xx (not 500)", async () => {
+  // A JSON content-type with an empty body is a client mistake.
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/policies",
+    headers: { ...auth(), "content-type": "application/json" },
+  });
+  assert.equal(res.statusCode, 400);
+});
+
+test("passwords: self-service change, admin reset, owner protected", async () => {
+  // An admin member (created by the owner) with a known temp password.
+  const invite = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "pw-admin@acme.test", role: "admin" },
+  });
+  const adminId: string = invite.json().user.id;
+  let adminPw: string = invite.json().tempPassword;
+  const loginAs = (email: string, password: string) =>
+    app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email, password } });
+  const adminAuth = { authorization: `Bearer ${(await loginAs("pw-admin@acme.test", adminPw)).json().token}` };
+
+  // Wrong current password → 401; right one → changed, old one stops working.
+  const wrong = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    headers: adminAuth,
+    payload: { currentPassword: "not-it-at-all", newPassword: "brand-new-password-42" },
+  });
+  assert.equal(wrong.statusCode, 401);
+  const ok = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    headers: adminAuth,
+    payload: { currentPassword: adminPw, newPassword: "brand-new-password-42" },
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal((await loginAs("pw-admin@acme.test", adminPw)).statusCode, 401);
+  adminPw = "brand-new-password-42";
+  assert.equal((await loginAs("pw-admin@acme.test", adminPw)).statusCode, 200);
+
+  // Owner resets the admin → temp password works.
+  const reset = await app.inject({
+    method: "POST",
+    url: `/api/v1/organization/members/${adminId}/reset-password`,
+    headers: auth(),
+  });
+  assert.equal(reset.statusCode, 200);
+  assert.equal((await loginAs("pw-admin@acme.test", reset.json().tempPassword)).statusCode, 200);
+
+  // An admin cannot reset the owner.
+  const members = await app.inject({ method: "GET", url: "/api/v1/organization/members", headers: auth() });
+  const ownerId = members.json().members.find((m: { role: string }) => m.role === "owner").id;
+  const freshAdmin = {
+    authorization: `Bearer ${(await loginAs("pw-admin@acme.test", reset.json().tempPassword)).json().token}`,
+  };
+  const denied = await app.inject({
+    method: "POST",
+    url: `/api/v1/organization/members/${ownerId}/reset-password`,
+    headers: freshAdmin,
+  });
+  assert.equal(denied.statusCode, 403);
+});
+
+test("github connect: only a verified GitHub user can link an installation", async () => {
+  const { signConnectState } = await import("../lib/github-connect.js");
+
+  // Fake GitHub: OAuth code → user token → installations that user can see.
+  const users: Record<string, { token: string; installations: number[] }> = {
+    "code-alice": { token: "tok-alice", installations: [5001] },
+    "code-mallory": { token: "tok-mallory", installations: [9999] },
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u === "https://github.com/login/oauth/access_token") {
+      const { code } = JSON.parse(String(init?.body));
+      const user = users[code];
+      return new Response(JSON.stringify(user ? { access_token: user.token } : { error: "bad_verification_code" }));
+    }
+    if (u.startsWith("https://api.github.com/user/installations")) {
+      const tok = String((init?.headers as Record<string, string>).authorization).replace("Bearer ", "");
+      const user = Object.values(users).find((x) => x.token === tok);
+      return new Response(
+        JSON.stringify({ installations: (user?.installations ?? []).map((id) => ({ id, account: { login: "acme-gh" } })) }),
+      );
+    }
+    return realFetch(url, init);
+  }) as typeof fetch;
+
+  try {
+    const org = await app.inject({ method: "GET", url: "/api/v1/organization", headers: auth() });
+    const orgId: string = org.json().id;
+    const callback = (q: Record<string, string>) =>
+      app.inject({ method: "GET", url: `/api/v1/integrations/github/callback?${new URLSearchParams(q)}` });
+    const outcome = (res: { headers: Record<string, unknown> }) =>
+      new URL(String(res.headers.location)).searchParams.get("github");
+
+    // Owner gets an install URL carrying a signed state.
+    const connect = await app.inject({ method: "POST", url: "/api/v1/integrations/github/connect", headers: auth() });
+    assert.equal(connect.statusCode, 200);
+    const install = new URL(connect.json().url);
+    assert.equal(install.origin + install.pathname, "https://github.com/apps/codegate-it/installations/new");
+    const state = install.searchParams.get("state")!;
+
+    // Forged / tampered state → refused.
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state: state.slice(0, -2) + "xx" })), "invalid_state");
+    // Expired state → refused.
+    const members = await app.inject({ method: "GET", url: "/api/v1/organization/members", headers: auth() });
+    const ownerId = members.json().members.find((m: { role: string }) => m.role === "owner").id;
+    const expired = signConnectState(process.env.JWT_SECRET!, orgId, ownerId, Date.now() - 60 * 60 * 1000);
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state: expired })), "invalid_state");
+    // Valid state, but the GitHub user can't access that installation → refused.
+    assert.equal(outcome(await callback({ code: "code-mallory", installation_id: "5001", state })), "not_authorized");
+
+    const linked = async () =>
+      (await app.inject({ method: "GET", url: "/api/v1/integrations/github", headers: auth() })).json();
+    assert.ok(!(await linked()).installations.some((i: { installationId: number }) => i.installationId === 5001));
+
+    // Valid state + GitHub confirms access → linked.
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state })), "connected");
+    // The same return link replayed (back button, reload): GitHub rejects the
+    // spent code, but the installation is already ours → still "connected".
+    assert.equal(outcome(await callback({ code: "code-spent", installation_id: "5001", state })), "connected");
+    const after = await linked();
+    assert.equal(after.configured, true);
+    assert.deepEqual(
+      after.installations
+        .filter((i: { installationId: number }) => i.installationId === 5001)
+        .map((i: { installationId: number; accountLogin: string }) => [i.installationId, i.accountLogin]),
+      [[5001, "acme-gh"]],
+    );
+
+    // Another org can't take it over, even with its own valid state and a
+    // GitHub user who can see it.
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/signup",
+      payload: { email: "gh-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other GH" },
+    });
+    const otherConnect = await app.inject({
+      method: "POST",
+      url: "/api/v1/integrations/github/connect",
+      headers: { authorization: `Bearer ${other.json().token}` },
+    });
+    const otherState = new URL(otherConnect.json().url).searchParams.get("state")!;
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state: otherState })), "already_linked");
+
+    // A developer cannot start the flow.
+    const dev = await app.inject({
+      method: "POST",
+      url: "/api/v1/organization/members",
+      headers: auth(),
+      payload: { email: "gh-dev@acme.test", role: "developer" },
+    });
+    const devLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "gh-dev@acme.test", password: dev.json().tempPassword },
+    });
+    const devConnect = await app.inject({
+      method: "POST",
+      url: "/api/v1/integrations/github/connect",
+      headers: { authorization: `Bearer ${devLogin.json().token}` },
+    });
+    assert.equal(devConnect.statusCode, 403);
+
+    // Disconnect.
+    const del = await app.inject({ method: "DELETE", url: "/api/v1/integrations/github/5001", headers: auth() });
+    assert.equal(del.statusCode, 200);
+    assert.ok(!(await linked()).installations.some((i: { installationId: number }) => i.installationId === 5001));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("analysis settings: org defaults, repo overrides, protection level", async () => {
+  // Defaults + engine catalog.
+  const get0 = await app.inject({ method: "GET", url: "/api/v1/settings/analysis", headers: auth() });
+  assert.equal(get0.statusCode, 200);
+  assert.equal(get0.json().effective.engines.semgrep, true);
+  assert.ok(get0.json().engines.some((e: { id: string }) => e.id === "rust"));
+
+  // Invalid parameters are rejected with the failing field.
+  const bad = await app.inject({
+    method: "PUT",
+    url: "/api/v1/settings/analysis",
+    headers: auth(),
+    payload: { engines: { notAnEngine: true } },
+  });
+  assert.equal(bad.statusCode, 400);
+
+  const put = await app.inject({
+    method: "PUT",
+    url: "/api/v1/settings/analysis",
+    headers: auth(),
+    payload: { engines: { semgrep: false }, ignorePaths: ["vendor/**"], minSeverity: "low" },
+  });
+  assert.equal(put.statusCode, 200);
+
+  // Repository: block mode + an override re-enabling Semgrep for this repo.
+  const repoPut = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: auth(),
+    payload: { protectionLevel: "block", analysisSettings: { engines: { semgrep: true }, ignorePaths: ["**/*.snap"] } },
+  });
+  assert.equal(repoPut.statusCode, 200);
+  assert.equal(repoPut.json().protectionLevel, "block");
+  const eff = repoPut.json().effective;
+  assert.equal(eff.engines.semgrep, true); // repo override wins
+  assert.deepEqual(eff.ignorePaths, ["vendor/**", "**/*.snap"]); // exclusions accumulate
+  assert.equal(eff.minSeverity, "low"); // inherited from the org
+
+  // Clearing the overrides returns to the organization settings.
+  const cleared = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: auth(),
+    payload: { analysisSettings: null },
+  });
+  assert.equal(cleared.json().effective.engines.semgrep, false);
+  assert.equal(cleared.json().protectionLevel, "block"); // untouched
+
+  // A developer can read but not change the settings.
+  const dev = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "settings-dev@acme.test", role: "developer" },
+  });
+  const devToken = (
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "settings-dev@acme.test", password: dev.json().tempPassword },
+    })
+  ).json().token;
+  const devPut = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: { authorization: `Bearer ${devToken}` },
+    payload: { protectionLevel: "observe" },
+  });
+  assert.equal(devPut.statusCode, 403);
+
+  // Another organization cannot see or change this repository.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: { email: "settings-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other S" },
+  });
+  const foreign = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: { authorization: `Bearer ${other.json().token}` },
+    payload: { protectionLevel: "observe" },
+  });
+  assert.equal(foreign.statusCode, 404);
+});
+
+test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/slack",
+    headers: auth(),
+    payload: { webhookUrl: "http://169.254.169.254/latest/meta-data/" },
+  });
+  assert.equal(res.statusCode, 400);
 });
 
 test("jira integration: connect, status hides the token", async () => {
@@ -381,6 +736,10 @@ test("scim: provision, list, deactivate; deactivated user can't log in", async (
   assert.equal(blocked.statusCode, 403);
   assert.equal(blocked.json().error, "account_disabled");
 
+  // A token issued before deprovisioning stops working immediately.
+  const stale = await app.inject({ method: "GET", url: "/api/v1/organization", headers: auth() });
+  assert.equal(stale.statusCode, 401);
+
   // Reactivate so later tests / the session keep working.
   await app.inject({
     method: "PATCH",
@@ -439,6 +798,17 @@ test("saml: configure, metadata endpoint, ACS rejects invalid assertions", async
     payload: { SAMLResponse: Buffer.from("not-a-saml-response").toString("base64") },
   });
   assert.equal(garbage.statusCode, 401);
+
+  // Real IdPs use the HTTP-POST binding (form-encoded), not JSON.
+  const form = await app.inject({
+    method: "POST",
+    url: `/saml/${orgId}/acs`,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    payload: new URLSearchParams({
+      SAMLResponse: Buffer.from("not-a-saml-response").toString("base64"),
+    }).toString(),
+  });
+  assert.equal(form.statusCode, 401);
 });
 
 test("audit export returns a JSON evidence pack", async () => {

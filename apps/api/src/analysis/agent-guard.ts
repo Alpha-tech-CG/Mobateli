@@ -40,6 +40,20 @@ export function resolveRule(
   return repoRule ?? orgRule ?? AGENT_DEFAULTS[permission];
 }
 
+/** Shell operators that chain, pipe, redirect or substitute commands. */
+const SHELL_META = /[;&|`$<>\n\r(){}]/;
+
+/** Hostname of a URL or `host[:port]`, lowercased; null when unparseable. */
+function toHostname(target: string): string | null {
+  const raw = target.trim();
+  try {
+    const host = new URL(raw.includes("://") ? raw : `http://${raw}`).hostname;
+    return host ? host.toLowerCase().replace(/\.$/, "") : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Does `target` match an allowlist entry, per permission semantics? */
 function matchesAllowlist(
   permission: AgentPermission,
@@ -48,11 +62,20 @@ function matchesAllowlist(
 ): boolean {
   if (!target || allowlist.length === 0) return false;
   if (permission === "network_access") {
-    // Exact host or subdomain of an allowed domain.
-    return allowlist.some((d) => target === d || target.endsWith(`.${d}`));
+    // Exact host or subdomain of an allowed domain. The target is reduced to
+    // a bare hostname first, so "https://evil.com/x.allowed.com" or
+    // "evil.com#.allowed.com" can't pass a suffix check.
+    const host = toHostname(target);
+    if (!host) return false;
+    return allowlist.some((entry) => {
+      const d = entry.toLowerCase().replace(/\.$/, "");
+      return host === d || host.endsWith(`.${d}`);
+    });
   }
   if (permission === "run_shell") {
-    // Command must start with an allowed command/prefix.
+    // Command must start with an allowed command/prefix, and must not chain or
+    // substitute another command ("npm test && curl … | sh").
+    if (SHELL_META.test(target)) return false;
     return allowlist.some((c) => target === c || target.startsWith(`${c} `));
   }
   // Packages, paths: exact match.

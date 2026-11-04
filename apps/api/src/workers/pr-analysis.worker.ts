@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
+import { resolveAnalysisSettings } from "@codegate/shared";
 import { analyzeDiffWithIntel } from "../analysis/analyzer.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
@@ -35,7 +36,7 @@ export function createPrAnalysisWorker(
 
       const pr = await prisma.pullRequest.findUnique({
         where: { id: pullRequestId },
-        include: { repository: true },
+        include: { repository: { include: { organization: { select: { analysisSettings: true } } } } },
       });
       if (!pr) return; // PR deleted between enqueue and processing.
 
@@ -44,21 +45,65 @@ export function createPrAnalysisWorker(
         data: { status: "analyzing" },
       });
 
-      // Fetch the diff via GitHub when the App is configured; otherwise run on
-      // an empty diff (local dev / unconfigured) → clean result.
+      // No way to fetch this PR's code (GitLab: no API token yet; GitHub repo
+      // without an App installation). Analyzing an empty diff would show the
+      // PR as "passed" — say instead that it was not analyzed and needs a human.
+      if (pr.repository.installationId == null) {
+        await prisma.pullRequest.update({
+          where: { id: pr.id },
+          data: { status: "escalated", riskScore: null },
+        });
+        await recordAudit({
+          organizationId: pr.repository.organizationId,
+          actorType: "system",
+          action: "pr.analysis_unavailable",
+          resourceType: "pull_request",
+          resourceId: pr.id,
+          metadata: { reason: "no_diff_source", provider: pr.repository.provider },
+        });
+        return;
+      }
+
+      // Fetch the diff through the GitHub App installation.
       let diff = "";
-      if (pr.repository.installationId != null) {
+      {
         const fetched = await fetchPrDiff(
           config,
           Number(pr.repository.installationId),
           pr.repository.name,
           pr.number,
         );
-        if (fetched) diff = fetched;
+        // Fail closed: analyzing an empty diff would mark the PR "passed" and
+        // post a green check for code nobody looked at. Let BullMQ retry, and
+        // flag the PR for a human once retries are exhausted.
+        if (fetched == null) {
+          const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          await prisma.pullRequest.update({
+            where: { id: pr.id },
+            data: { status: lastAttempt ? "escalated" : "pending" },
+          });
+          if (lastAttempt) {
+            await recordAudit({
+              organizationId: pr.repository.organizationId,
+              actorType: "system",
+              action: "pr.analysis_failed",
+              resourceType: "pull_request",
+              resourceId: pr.id,
+              metadata: { reason: "diff_unavailable" },
+            });
+          }
+          throw new Error("diff_unavailable");
+        }
+        diff = fetched;
       }
 
       // Deterministic core + OSV known-vulnerability enrichment (fails open).
-      const result = await analyzeDiffWithIntel(diff);
+      // Effective parameters: built-in defaults ← organization ← repository.
+      const settings = resolveAnalysisSettings(
+        pr.repository.organization.analysisSettings,
+        pr.repository.analysisSettings,
+      );
+      const result = await analyzeDiffWithIntel(diff, {}, settings);
 
       // Replace previous findings for this PR (idempotent re-analysis), then
       // persist the new set and the decision — atomically, with retry on a
@@ -130,6 +175,8 @@ export function createPrAnalysisWorker(
             dependencies: result.dependencies.length,
           },
           reason: job.data.reason,
+          // Which passes ran / were skipped / failed — shown on the PR page.
+          engines: JSON.parse(JSON.stringify(result.engines ?? {})),
         },
       });
 

@@ -61,7 +61,28 @@ export async function pullRequestRoutes(app: FastifyInstance, connection: Redis)
         },
       });
       if (!pr) return reply.code(404).send({ error: "not_found" });
-      return { pullRequest: pr };
+
+      // How the last analysis went: which passes ran, or why there was none.
+      const last = await prisma.auditEvent.findFirst({
+        where: {
+          organizationId: req.principal.organizationId,
+          resourceType: "pull_request",
+          resourceId: pr.id,
+          action: { in: ["pr.analyzed", "pr.analysis_unavailable", "pr.analysis_failed"] },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { action: true, createdAt: true, metadata: true },
+      });
+      const meta = (last?.metadata ?? {}) as { engines?: unknown; reason?: string };
+      const lastAnalysis = last
+        ? {
+            outcome: last.action.replace("pr.", ""),
+            at: last.createdAt,
+            engines: meta.engines ?? {},
+            ...(last.action !== "pr.analyzed" && meta.reason ? { reason: meta.reason } : {}),
+          }
+        : null;
+      return { pullRequest: pr, lastAnalysis };
     },
   );
 
