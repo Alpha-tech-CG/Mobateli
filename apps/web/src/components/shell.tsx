@@ -19,6 +19,9 @@ import {
   ScanSearch,
   Users,
   LogOut,
+  UserRound,
+  FolderGit2,
+  SlidersHorizontal,
 } from "lucide-react";
 import { clearToken, getSession, getToken } from "@/lib/api";
 
@@ -26,7 +29,9 @@ const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
   { href: "/scans", label: "Analyser un dépôt", icon: ScanSearch },
+  { href: "/repositories", label: "Dépôts", icon: FolderGit2 },
   { href: "/policies", label: "Politiques", icon: ScrollText },
+  { href: "/settings/analysis", label: "Paramètres d'analyse", icon: SlidersHorizontal },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
   { href: "/approvals", label: "Approbations", icon: ClipboardCheck },
   { href: "/deployments", label: "Déploiements", icon: Rocket },
@@ -37,6 +42,7 @@ const NAV = [
   { href: "/audit", label: "Audit", icon: FileClock },
   { href: "/members", label: "Membres", icon: Users },
   { href: "/settings/security", label: "Sécurité du compte", icon: ShieldCheck },
+  { href: "/account", label: "Mon compte", icon: UserRound },
 ];
 
 /** App shell with sidebar nav + client-side auth guard. */
@@ -99,7 +105,7 @@ export function Shell({ children }: { children: ReactNode }) {
           Se déconnecter
         </button>
       </aside>
-      <main className="flex-1 overflow-x-hidden px-6 py-6">
+      <main className="min-w-0 flex-1 overflow-x-hidden px-6 py-6">
         {needsMfa && pathname !== "/settings/security" ? (
           <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
             <span>

@@ -17,6 +17,18 @@ const POPULAR_NPM = [
   "jsonwebtoken", "cors", "body-parser", "mongoose", "pg", "redis", "ioredis",
 ];
 
+// Well-known, legitimate packages whose names happen to sit a short edit
+// distance from a popular one (preact≈react, redux≈redis, knex≈next…). Without
+// this list a pure edit-distance check flags them as critical typosquats and
+// blocks the PR — the dominant source of false positives. Exact matches here
+// are never treated as suspicious.
+const KNOWN_LEGIT = new Set([
+  "preact", "redux", "@reduxjs/toolkit", "react-redux", "bootstrap",
+  "knex", "yup", "joi", "jose", "got", "ky", "ora", "zx", "chai", "mocha",
+  "nanoid", "esbuild", "tslib", "clsx", "swr", "mobx", "luxon", "undici",
+  "pino", "cosmiconfig", "picocolors", "date-fns",
+]);
+
 /**
  * Edit distance where swapping two adjacent letters counts as one typo
  * (optimal string alignment): "lodahs" is 1 away from "lodash".
@@ -45,6 +57,7 @@ export function nearestPopular(
   ecosystem: DepEntry["ecosystem"] = "npm",
 ): { target: string; distance: number } | null {
   if (ecosystem === "Go") return null; // module paths are host-qualified
+  if (ecosystem === "npm" && KNOWN_LEGIT.has(name)) return null; // preact, redux, knex…
   const popular = ecosystem === "PyPI" ? POPULAR_PYPI : POPULAR_NPM;
   const normalized = ecosystem === "PyPI" ? name.toLowerCase().replace(/[_.]/g, "-") : name;
   let best: { target: string; distance: number } | null = null;
@@ -156,6 +169,12 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   const reasons: string[] = [];
   let trust = 80;
   let risk: DependencyResult["riskLevel"] = "low";
+
+  // Known-legitimate npm packages skip every name heuristic (e.g. "bootstrap"
+  // read as an install-script bait, "preact" as a squat of "react").
+  if (dep.ecosystem === "npm" && KNOWN_LEGIT.has(dep.name)) {
+    return { ecosystem: dep.ecosystem, name: dep.name, version: dep.version, trustScore: trust, riskLevel: "low" };
+  }
 
   const squat = nearestPopular(dep.name, dep.ecosystem);
   if (squat) {

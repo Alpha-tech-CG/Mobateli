@@ -142,6 +142,20 @@ export interface Dependency {
   reason: string | null;
 }
 
+export interface EngineReport {
+  status: "ok" | "skipped" | "failed";
+  detail?: string;
+}
+
+/** How the last analysis of a PR went (from its audit trail). */
+export interface LastAnalysis {
+  outcome: "analyzed" | "analysis_unavailable" | "analysis_failed";
+  at: string;
+  /** One entry per engine id (see ENGINE_IDS in @codegate/shared). */
+  engines: Record<string, EngineReport>;
+  reason?: string;
+}
+
 export interface PullRequestDetail {
   id: string;
   number: number;

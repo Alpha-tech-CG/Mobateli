@@ -90,6 +90,7 @@ function AgentGuard() {
       </div>
 
       <Card className="mb-8">
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -105,6 +106,7 @@ function AgentGuard() {
             ))}
           </tbody>
         </table>
+        </div>
       </Card>
 
       {repoId ? <Simulator repoId={repoId} /> : null}

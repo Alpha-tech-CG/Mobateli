@@ -119,6 +119,9 @@ model Organization {
   plan      String   @default("free")
   region    String   @default("eu")
   createdAt DateTime @default(now())
+  // Analysis parameters (engines, ignored paths, thresholds…). Shape and
+  // defaults live in @codegate/shared (analysisSettingsSchema); null = defaults.
+  analysisSettings Json?
 
   users              User[]
   repositories       Repository[]
@@ -177,6 +180,8 @@ model Repository {
   // Re-scan the default branch automatically when it changes.
   autoScan        Boolean         @default(true)
   createdAt       DateTime        @default(now())
+  // Per-repository overrides of the organization analysis parameters.
+  analysisSettings Json?
 
   organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   pullRequests  PullRequest[]

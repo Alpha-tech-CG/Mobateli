@@ -1,9 +1,8 @@
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchPrDiff } from "../lib/github-diff.js";
-import { analyzeDiff } from "../analysis/analyzer.js";
-import { enrichDependencies } from "../analysis/dependency-intel.js";
-import { decide } from "../analysis/risk.js";
+import { resolveAnalysisSettings } from "@codegate/shared";
+import { runAnalysis } from "../analysis/engines/pipeline.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
 import { createCheckRun, upsertPrComment } from "../lib/github-feedback.js";
@@ -25,12 +24,17 @@ import type { AppConfig } from "../config.js";
  * decision (Slack, remediation issues, GitHub check + comment) — cahier §5,
  * §6.2. Shared by the BullMQ worker and the inline (serverless) mode.
  */
-export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob): Promise<void> {
+export async function processPrAnalysis(
+  config: AppConfig,
+  data: PrAnalysisJob,
+  /** False while BullMQ will retry (queue mode); inline mode has no retry. */
+  attempt: { last: boolean } = { last: true },
+): Promise<void> {
   const { pullRequestId } = data;
 
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
-    include: { repository: true },
+    include: { repository: { include: { organization: { select: { analysisSettings: true } } } } },
   });
   if (!pr) return; // PR deleted between enqueue and processing.
 
@@ -39,37 +43,79 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
     data: { status: "analyzing" },
   });
 
-  // Fetch the diff from the SCM (GitHub App, or GitLab API token); without
-  // access, run on an empty diff (local dev / unconfigured) → clean result.
-  let diff = "";
+  // Fetch the diff from the SCM (GitHub App, or GitLab API token).
   const gitlab =
     pr.repository.provider === "gitlab"
       ? await gitlabForOrg(pr.repository.organizationId, config.ENCRYPTION_KEY)
       : null;
-  if (gitlab) {
-    diff = await fetchMrDiff(gitlab, pr.repository.externalId, pr.number);
-  } else if (pr.repository.installationId != null) {
-    const fetched = await fetchPrDiff(
-      config,
-      Number(pr.repository.installationId),
-      pr.repository.name,
-      pr.number,
-    );
-    if (fetched) diff = fetched;
+  if (!gitlab && pr.repository.installationId == null) {
+    // No way to read this PR's code (GitLab not connected, GitHub repo without
+    // an App installation). Analyzing an empty diff would show it "passed" —
+    // say instead that nothing was checked and a human must review it.
+    await prisma.pullRequest.update({
+      where: { id: pr.id },
+      data: { status: "escalated", riskScore: null },
+    });
+    await recordAudit({
+      organizationId: pr.repository.organizationId,
+      actorType: "system",
+      action: "pr.analysis_unavailable",
+      resourceType: "pull_request",
+      resourceId: pr.id,
+      metadata: { reason: "no_diff_source", provider: pr.repository.provider },
+    });
+    return;
+  }
+
+  let diff: string | null = null;
+  try {
+    diff = gitlab
+      ? await fetchMrDiff(gitlab, pr.repository.externalId, pr.number)
+      : await fetchPrDiff(
+          config,
+          Number(pr.repository.installationId),
+          pr.repository.name,
+          pr.number,
+        );
+  } catch {
+    diff = null;
+  }
+  if (diff == null) {
+    // Fail closed: an unreadable diff must never become a green check. While
+    // retries remain, give it back to the queue; then flag it for a human.
+    await prisma.pullRequest.update({
+      where: { id: pr.id },
+      data: { status: attempt.last ? "escalated" : "pending" },
+    });
+    if (attempt.last) {
+      await recordAudit({
+        organizationId: pr.repository.organizationId,
+        actorType: "system",
+        action: "pr.analysis_failed",
+        resourceType: "pull_request",
+        resourceId: pr.id,
+        metadata: { reason: "diff_unavailable" },
+      });
+    }
+    throw new Error("diff_unavailable");
   }
 
   const suppressions = await prisma.findingSuppression.findMany({
     where: { repositoryId: pr.repository.id },
     select: { fingerprint: true },
   });
-  const base = analyzeDiff(diff, new Set(suppressions.map((s) => s.fingerprint)));
-  // Network enrichment (OSV, npm registry) — best effort, then re-decide.
-  const dependencies = await enrichDependencies(base.dependencies);
-  const result = {
-    ...base,
-    dependencies,
-    ...decide({ findings: base.findings, secrets: base.secrets, dependencies }),
-  };
+  // The analysis pipeline (docs/ARCHITECTURE-ANALYSE.md): every engine with
+  // its status, the organization/repository parameters, the human
+  // false-positive verdicts. Binary engines (Semgrep, Trivy, native taint
+  // engine) only run with a worker — reported as skipped in serverless mode.
+  const result = await runAnalysis(diff, {
+    settings: resolveAnalysisSettings(
+      pr.repository.organization.analysisSettings,
+      pr.repository.analysisSettings,
+    ),
+    suppressed: new Set(suppressions.map((s) => s.fingerprint)),
+    runtime: { worker: config.ANALYSIS_MODE === "queue" },
+  });
 
   // Replace previous findings for this PR (idempotent re-analysis), then
   // persist the new set and the decision — atomically, with retry on a
@@ -135,6 +181,8 @@ export async function processPrAnalysis(config: AppConfig, data: PrAnalysisJob):
       decision: result.decision,
       status: result.status,
       engine: result.engine,
+      // Which engines ran / were skipped / failed — shown on the PR page.
+      engines: JSON.parse(JSON.stringify(result.engines ?? {})),
       counts: {
         findings: result.findings.length,
         secrets: result.secrets.length,

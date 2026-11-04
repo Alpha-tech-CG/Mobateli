@@ -8,7 +8,7 @@ import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { ReportButton } from "@/components/report-button";
 import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
-import type { PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
+import type { LastAnalysis, PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
 
 export default function PullRequestDetailPage() {
   return (
@@ -28,12 +28,18 @@ const RISK_COLORS: Record<string, string> = {
 function Detail() {
   const { id } = useParams<{ id: string }>();
   const [pr, setPr] = useState<PullRequestDetail | null>(null);
+  const [lastAnalysis, setLastAnalysis] = useState<LastAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
 
   function load() {
-    api<{ pullRequest: PullRequestDetail }>(`/api/v1/pull-requests/${id}`)
-      .then((r) => setPr(r.pullRequest))
+    api<{ pullRequest: PullRequestDetail; lastAnalysis: LastAnalysis | null }>(
+      `/api/v1/pull-requests/${id}`,
+    )
+      .then((r) => {
+        setPr(r.pullRequest);
+        setLastAnalysis(r.lastAnalysis);
+      })
       .catch(() => setError("PR introuvable."));
   }
   useEffect(load, [id]);
@@ -110,6 +116,11 @@ function Detail() {
         </div>
       </header>
 
+      <AnalysisCoverage last={lastAnalysis} />
+
+      {/* Nothing was checked: "no secret detected" etc. would read as a clean bill. */}
+      {lastAnalysis && lastAnalysis.outcome !== "analyzed" ? null : (
+      <>
       <Section title={`🔑 Secrets (${pr.secretFindings.length})`}>
         {pr.secretFindings.length ? (
           <ul className="divide-y divide-border">
@@ -209,6 +220,8 @@ function Detail() {
           <Empty>Aucun problème de code détecté.</Empty>
         )}
       </Section>
+      </>
+      )}
     </div>
   );
 }
@@ -221,6 +234,69 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h2>
       <Card>{children}</Card>
     </div>
+  );
+}
+
+const ENGINE_LABELS: Record<string, string> = {
+  secrets: "Secrets exposés",
+  dependencies: "Confiance des dépendances",
+  sast: "Règles de code (SAST)",
+  sensitive_files: "Fichiers sensibles",
+  osv: "Vulnérabilités connues (OSV)",
+  sca: "Dépendances complètes (Trivy/Grype)",
+  semgrep: "Analyse sémantique (Semgrep)",
+  rust: "Analyse de flux (moteur Rust)",
+};
+
+const ENGINE_STATUS: Record<string, { mark: string; className: string }> = {
+  ok: { mark: "✓", className: "text-success" },
+  skipped: { mark: "–", className: "text-muted-foreground" },
+  failed: { mark: "✗", className: "text-destructive" },
+};
+
+/**
+ * What the last analysis actually covered. "Nothing found" only means
+ * something if the checks ran — say so when they did not.
+ */
+function AnalysisCoverage({ last }: { last: LastAnalysis | null }) {
+  if (!last) return null;
+  if (last.outcome !== "analyzed") {
+    const why =
+      last.reason === "no_diff_source"
+        ? "le code de cette PR n'est pas accessible (fournisseur non connecté ou GitLab en bêta)"
+        : "le code de cette PR n'a pas pu être récupéré";
+    return (
+      <Card className="mb-6 border-warning/40 p-4 text-sm">
+        <p className="font-medium text-warning">Non analysée — à revoir manuellement</p>
+        <p className="mt-1 text-muted-foreground">CodeGate n&apos;a rien vérifié : {why}.</p>
+      </Card>
+    );
+  }
+  const entries = Object.entries(last.engines);
+  if (!entries.length) return null;
+  const partial = entries.some(([, r]) => r.status === "failed");
+  return (
+    <Card className={`mb-6 p-4 text-sm ${partial ? "border-warning/40" : ""}`}>
+      <p className={`mb-2 font-medium ${partial ? "text-warning" : ""}`}>
+        {partial ? "Analyse partielle" : "Couverture de l'analyse"}
+      </p>
+      <ul className="grid gap-1 sm:grid-cols-2">
+        {entries.map(([name, r]) => {
+          const s = ENGINE_STATUS[r.status] ?? ENGINE_STATUS.skipped!;
+          return (
+            <li key={name} className="flex gap-2">
+              <span className={`font-mono ${s.className}`} aria-hidden>
+                {s.mark}
+              </span>
+              <span>
+                {ENGINE_LABELS[name] ?? name}
+                {r.detail ? <span className="text-muted-foreground"> — {r.detail}</span> : null}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
   );
 }
 

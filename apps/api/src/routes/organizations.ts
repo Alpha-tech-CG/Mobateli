@@ -110,6 +110,10 @@ export async function organizationRoutes(app: FastifyInstance) {
     { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
     async (req, reply) => {
       const body = inviteMemberSchema.parse(req.body);
+      // Only an owner may grant owner — otherwise an admin could escalate.
+      if (body.role === "owner" && req.principal.role !== "owner") {
+        return reply.code(403).send({ error: "forbidden" });
+      }
 
       const existing = await prisma.user.findUnique({ where: { email: body.email } });
       if (existing) {
@@ -184,6 +188,42 @@ export async function organizationRoutes(app: FastifyInstance) {
         metadata: { from: member.role, to: updated.role, active: updated.active },
       });
       return { member: updated };
+    },
+  );
+
+  /**
+   * Reset a member's password (lost password, no email flow yet). Returns a
+   * one-time temporary password to relay out-of-band. Owner/admin only; only
+   * an owner may reset an owner.
+   */
+  app.post(
+    "/api/v1/organization/members/:id/reset-password",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const member = await prisma.user.findFirst({
+        where: { id, organizationId: req.principal.organizationId },
+        select: { id: true, role: true },
+      });
+      if (!member) return reply.code(404).send({ error: "not_found" });
+      if (member.role === "owner" && req.principal.role !== "owner") {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+
+      const tempPassword = randomBytes(24).toString("base64url");
+      await prisma.user.update({
+        where: { id: member.id },
+        data: { passwordHash: await hashPassword(tempPassword) },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "member.password_reset",
+        resourceType: "user",
+        resourceId: member.id,
+      });
+      return { tempPassword };
     },
   );
 }

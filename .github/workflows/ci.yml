@@ -61,10 +61,16 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: services/scan-engine
+          workspaces: |
+            services/scan-engine
+            services/taint-engine
       - name: Scan engine (cargo test + wasm build)
         working-directory: services/scan-engine
         run: sh build-wasm.sh
+      # Native taint engine (tree-sitter, JS/TS/Python) run by the worker.
+      - name: Taint engine (cargo test)
+        working-directory: services/taint-engine
+        run: cargo test --locked
 
       - name: Prisma client + migrations
         working-directory: packages/db

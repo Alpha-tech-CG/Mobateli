@@ -1,4 +1,12 @@
-import type { DependencyResult, FindingResult, SecretResult } from "./types.js";
+import { ENGINE_CATALOG } from "@codegate/shared";
+import type {
+  AnalysisResult,
+  DependencyResult,
+  EngineName,
+  EngineReport,
+  FindingResult,
+  SecretResult,
+} from "./types.js";
 import { revocationGuide } from "./revocation.js";
 
 /** Hidden HTML marker identifying CodeGate's own PR comment, for upserts. */
@@ -23,16 +31,48 @@ export function explainSecret(s: SecretResult): string {
 
 export function explainDependency(d: DependencyResult): string {
   const base = `La dépendance « ${d.name}@${d.version} » a un score de confiance de ${d.trustScore}/100 (risque : ${d.riskLevel}).`;
-  return d.reason ? `${base} ${d.reason}` : base;
+  let out = d.reason ? `${base} ${d.reason}` : base;
+  if (d.vulnerabilities?.length) {
+    const cves = d.vulnerabilities
+      .slice(0, 5)
+      .map((v) => `${v.id} (${v.severity}${v.fixedVersion ? `, corrigé en ${v.fixedVersion}` : ""})`)
+      .join(", ");
+    out += ` Vulnérabilités : ${cves}.`;
+  }
+  return out;
+}
+
+/** Compact reference tag, e.g. "[CWE-89 · A03:2021-Injection · confiance: medium]". */
+function findingTags(f: FindingResult): string {
+  const tags: string[] = [];
+  if (f.cwe) tags.push(f.cwe);
+  if (f.owasp) tags.push(f.owasp);
+  if (f.confidence) tags.push(`confiance: ${f.confidence}`);
+  return tags.length ? ` _[${tags.join(" · ")}]_` : "";
 }
 
 export function explainFinding(f: FindingResult): string {
   const where = f.filePath ? ` (${f.filePath}${f.line ? `:${f.line}` : ""})` : "";
   const fix = f.remediation ? ` Correctif : ${f.remediation}` : "";
-  return `${f.title}${where}. ${f.description}${fix}`;
+  return `${f.title}${where}. ${f.description}${fix}${findingTags(f)}`;
 }
 
 /** Build the structured GitHub PR comment body (cahier §6.2, §5.6). */
+/** Engine labels, from the shared catalog (single source of truth). */
+export const ENGINE_LABELS: Record<EngineName, string> = Object.fromEntries(
+  Object.entries(ENGINE_CATALOG).map(([id, e]) => [id, e.label]),
+) as Record<EngineName, string>;
+
+/** Passes that were expected to run but failed (skipped-by-design is not shown). */
+export function failedEngines(
+  engines: AnalysisResult["engines"],
+): { name: EngineName; label: string; detail: string }[] {
+  if (!engines) return [];
+  return (Object.entries(engines) as [EngineName, EngineReport][])
+    .filter(([, r]) => r.status === "failed")
+    .map(([name, r]) => ({ name, label: ENGINE_LABELS[name], detail: r.detail ?? "échec" }));
+}
+
 export function buildPrComment(result: {
   riskScore: number;
   decision: string;
@@ -40,6 +80,7 @@ export function buildPrComment(result: {
   findings: FindingResult[];
   secrets: SecretResult[];
   dependencies: DependencyResult[];
+  engines?: AnalysisResult["engines"];
 }): string {
   const emoji =
     result.status === "blocked" ? "🛑" : result.status === "warning" ? "⚠️" : "✅";
@@ -70,9 +111,21 @@ export function buildPrComment(result: {
     for (const f of risks) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
     lines.push("");
   }
+  const failed = failedEngines(result.engines);
   if (!result.secrets.length && !risks.length &&
       !result.dependencies.some((d) => d.riskLevel !== "low")) {
-    lines.push("Aucun risque détecté. ✅");
+    lines.push(
+      failed.length
+        ? "Aucun risque détecté par les analyses qui ont pu s'exécuter (voir ci-dessous)."
+        : "Aucun risque détecté. ✅",
+    );
+    lines.push("");
+  }
+  // A pass that could not run must be visible: otherwise "nothing found"
+  // reads as "checked and clean".
+  if (failed.length) {
+    lines.push("> ⚠️ **Analyse partielle** — certaines vérifications n'ont pas pu s'exécuter :");
+    for (const { label, detail } of failed) lines.push(`> - ${label} : ${detail}`);
     lines.push("");
   }
   if (notes.length) {

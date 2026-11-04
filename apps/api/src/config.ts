@@ -30,6 +30,11 @@ const envSchema = z.object({
   GITHUB_APP_SLUG: z.string().optional(),
   // Organization whose owner operates this deployment (defaults to the first one).
   PLATFORM_ORG_ID: z.string().uuid().optional(),
+  // OAuth credentials of an env-configured App (the one-click App stores its
+  // own). Used at "Connecter GitHub" to prove the user really has access to
+  // the installation being linked.
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
 
   // ─── Vercel ───────────────────────────────────────────
   VERCEL_WEBHOOK_SECRET: z.string().optional(),

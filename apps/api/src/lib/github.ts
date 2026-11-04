@@ -18,6 +18,12 @@ export interface GithubAppSettings {
   slug: string | null;
   privateKey: string;
   webhookSecret: string | null;
+  /**
+   * OAuth credentials of the App — used at "Connecter GitHub" to verify the
+   * user really has access to the installation (null: not configured).
+   */
+  clientId: string | null;
+  clientSecret: string | null;
   source: "env" | "database";
 }
 
@@ -51,6 +57,8 @@ export async function getGithubSettings(config: AppConfig): Promise<GithubAppSet
       slug: config.GITHUB_APP_SLUG ?? null,
       privateKey: config.GITHUB_APP_PRIVATE_KEY,
       webhookSecret: config.GITHUB_WEBHOOK_SECRET ?? null,
+      clientId: config.GITHUB_CLIENT_ID ?? null,
+      clientSecret: config.GITHUB_CLIENT_SECRET ?? null,
       source: "env",
     };
   }
@@ -66,6 +74,8 @@ export async function getGithubSettings(config: AppConfig): Promise<GithubAppSet
         slug: stored.slug,
         privateKey: stored.privateKey,
         webhookSecret: stored.webhookSecret,
+        clientId: stored.clientId ?? null,
+        clientSecret: stored.clientSecret ?? null,
         source: "database",
       };
     }
@@ -83,6 +93,8 @@ function envSecretOnly(config: AppConfig): GithubAppSettings {
     slug: config.GITHUB_APP_SLUG ?? null,
     privateKey: "",
     webhookSecret: config.GITHUB_WEBHOOK_SECRET ?? null,
+    clientId: config.GITHUB_CLIENT_ID ?? null,
+    clientSecret: config.GITHUB_CLIENT_SECRET ?? null,
     source: "env",
   };
 }

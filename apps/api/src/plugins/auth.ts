@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import fastifyJwt from "@fastify/jwt";
 import fp from "fastify-plugin";
+import { prisma } from "@codegate/db";
 import type { Role } from "@codegate/shared";
 
 /** JWT payload carried in the bearer token. */
@@ -38,19 +39,47 @@ declare module "@fastify/jwt" {
   }
 }
 
+/** The account behind a session, as stored now (not as the token says). */
+export interface SessionAccount {
+  active: boolean;
+  role: Role;
+  organizationId: string;
+}
+
+const loadAccountFromDb = (p: AuthPrincipal): Promise<SessionAccount | null> =>
+  prisma.user.findUnique({
+    where: { id: p.userId },
+    select: { active: true, role: true, organizationId: true },
+  });
+
 async function authPlugin(
   app: FastifyInstance,
-  opts: { jwtSecret: string; mfaRequiredForAdmins: boolean },
+  opts: {
+    jwtSecret: string;
+    mfaRequiredForAdmins: boolean;
+    /** Account lookup (database by default; injectable for unit tests). */
+    loadAccount?: (principal: AuthPrincipal) => Promise<SessionAccount | null>;
+  },
 ) {
   await app.register(fastifyJwt, { secret: opts.jwtSecret, sign: { expiresIn: SESSION_TTL } });
+  const loadAccount = opts.loadAccount ?? loadAccountFromDb;
 
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       await req.jwtVerify();
-      req.principal = req.user;
     } catch {
       await reply.code(401).send({ error: "unauthorized" });
+      return;
     }
+    // Re-check the account on every request: a deprovisioned (SCIM) or
+    // deactivated user is locked out immediately, and a role change takes
+    // effect without waiting for the token to expire.
+    const user = await loadAccount(req.user);
+    if (!user || !user.active || user.organizationId !== req.user.organizationId) {
+      await reply.code(401).send({ error: "unauthorized" });
+      return;
+    }
+    req.principal = { ...req.user, role: user.role };
   });
 
   app.decorate("requireRole", (...roles: Role[]) => {

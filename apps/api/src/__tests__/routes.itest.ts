@@ -24,6 +24,10 @@ process.env.MFA_REQUIRED_FOR_ADMINS = "false";
 process.env.CRON_SECRET = "it_cron_secret_0123456789abcdef";
 // The whole suite runs from 127.0.0.1 in a few seconds on CI.
 process.env.RATE_LIMIT_PER_MINUTE = "100000";
+process.env.GITHUB_APP_SLUG = "codegate-it";
+process.env.GITHUB_CLIENT_ID = "Iv1.it_client";
+process.env.GITHUB_CLIENT_SECRET = "it_client_secret";
+process.env.WEB_ORIGIN = "http://localhost:3000";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");
@@ -59,6 +63,8 @@ after(async () => {
   stopKeepAlive?.();
   await app.close();
   getRedis(process.env.REDIS_URL!).disconnect();
+  // An open Prisma pool can keep the runner alive after the last test.
+  await prisma.$disconnect();
 });
 
 test("signup bootstraps org + owner and returns a token", async () => {
@@ -289,6 +295,337 @@ test("gitlab: connect token governs the MR webhook", async () => {
   assert.ok(gl, "GitLab MR should appear as a pull request");
   assert.equal(gl.number, 9);
   assert.equal(gl.aiGenerated, true);
+
+  // Another org's GitLab token can't inject MRs into acme's project.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: {
+      email: "intruder@other.test",
+      password: "intruder-password-123",
+      name: "Intruder",
+      organizationName: "Other",
+    },
+  });
+  const otherCon = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/gitlab",
+    headers: { authorization: `Bearer ${other.json().token}` },
+  });
+  const hijack = await app.inject({
+    method: "POST",
+    url: "/webhooks/gitlab",
+    headers: {
+      "content-type": "application/json",
+      "x-gitlab-token": otherCon.json().webhookToken,
+      "x-gitlab-event": "Merge Request Hook",
+    },
+    payload: payload.replace('"iid":9', '"iid":10'),
+  });
+  assert.equal(hijack.statusCode, 403);
+});
+
+test("members: an admin cannot mint an owner", async () => {
+  const invite = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "admin2@acme.test", role: "admin" },
+  });
+  assert.equal(invite.statusCode, 201);
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "admin2@acme.test", password: invite.json().tempPassword },
+  });
+  const adminAuth = { authorization: `Bearer ${login.json().token}` };
+  const escalate = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: adminAuth,
+    payload: { email: "owner2@acme.test", role: "owner" },
+  });
+  assert.equal(escalate.statusCode, 403);
+});
+
+test("login: email is case- and space-insensitive", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "  Owner@ACME.test ", password: "supersecret-password" },
+  });
+  assert.equal(res.statusCode, 200);
+});
+
+test("session tokens expire after 12h, and an expired token is refused", async () => {
+  const claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString());
+  assert.equal(claims.exp - claims.iat, 12 * 3600);
+
+  const expired = app.jwt.sign(
+    { userId: claims.userId, organizationId: claims.organizationId, role: claims.role },
+    { expiresIn: -10 },
+  );
+  const res = await app.inject({
+    method: "GET",
+    url: "/api/v1/organization",
+    headers: { authorization: `Bearer ${expired}` },
+  });
+  assert.equal(res.statusCode, 401);
+});
+
+test("client errors from Fastify stay 4xx (not 500)", async () => {
+  // A JSON content-type with an empty body is a client mistake.
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/policies",
+    headers: { ...auth(), "content-type": "application/json" },
+  });
+  assert.equal(res.statusCode, 400);
+});
+
+test("passwords: self-service change, admin reset, owner protected", async () => {
+  // An admin member (created by the owner) with a known temp password.
+  const invite = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "pw-admin@acme.test", role: "admin" },
+  });
+  const adminId: string = invite.json().user.id;
+  let adminPw: string = invite.json().tempPassword;
+  const loginAs = (email: string, password: string) =>
+    app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { email, password } });
+  const adminAuth = { authorization: `Bearer ${(await loginAs("pw-admin@acme.test", adminPw)).json().token}` };
+
+  // Wrong current password → 401; right one → changed, old one stops working.
+  const wrong = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    headers: adminAuth,
+    payload: { currentPassword: "not-it-at-all", newPassword: "brand-new-password-42" },
+  });
+  assert.equal(wrong.statusCode, 401);
+  const ok = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    headers: adminAuth,
+    payload: { currentPassword: adminPw, newPassword: "brand-new-password-42" },
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal((await loginAs("pw-admin@acme.test", adminPw)).statusCode, 401);
+  adminPw = "brand-new-password-42";
+  assert.equal((await loginAs("pw-admin@acme.test", adminPw)).statusCode, 200);
+
+  // Owner resets the admin → temp password works.
+  const reset = await app.inject({
+    method: "POST",
+    url: `/api/v1/organization/members/${adminId}/reset-password`,
+    headers: auth(),
+  });
+  assert.equal(reset.statusCode, 200);
+  assert.equal((await loginAs("pw-admin@acme.test", reset.json().tempPassword)).statusCode, 200);
+
+  // An admin cannot reset the owner.
+  const members = await app.inject({ method: "GET", url: "/api/v1/organization/members", headers: auth() });
+  const ownerId = members.json().members.find((m: { role: string }) => m.role === "owner").id;
+  const freshAdmin = {
+    authorization: `Bearer ${(await loginAs("pw-admin@acme.test", reset.json().tempPassword)).json().token}`,
+  };
+  const denied = await app.inject({
+    method: "POST",
+    url: `/api/v1/organization/members/${ownerId}/reset-password`,
+    headers: freshAdmin,
+  });
+  assert.equal(denied.statusCode, 403);
+});
+
+test("github link: only a GitHub user with access to the installation can link it", async () => {
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { writePlatformSetting } = await import("../lib/platform.js");
+  const { GITHUB_APP_SETTING, resetGithubAppCache } = await import("../lib/github.js");
+
+  // A test App with OAuth credentials, as the one-click flow stores it.
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const owner = await prisma.user.findFirstOrThrow({ where: { email: "owner@acme.test" } });
+  await writePlatformSetting(
+    GITHUB_APP_SETTING,
+    { appId: "123", slug: "codegate-test", privateKey, webhookSecret: "whsec", clientId: "Iv1.test", clientSecret: "s", owner: null },
+    process.env.ENCRYPTION_KEY!,
+    owner.id,
+  );
+  resetGithubAppCache();
+
+  // Fake GitHub: OAuth code → user token → installations that user can see;
+  // the App can read installation 5001; repository import is not needed here.
+  const users: Record<string, { token: string; installations: number[] }> = {
+    "code-alice": { token: "tok-alice", installations: [5001] },
+    "code-mallory": { token: "tok-mallory", installations: [9999] },
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (u === "https://github.com/login/oauth/access_token") {
+      const { code } = JSON.parse(String(init?.body));
+      const user = users[code];
+      return new Response(JSON.stringify(user ? { access_token: user.token } : { error: "bad_verification_code" }));
+    }
+    if (u.startsWith("https://api.github.com/user/installations")) {
+      const headers = new Headers(init?.headers);
+      const tok = (headers.get("authorization") ?? "").replace("Bearer ", "");
+      const user = Object.values(users).find((x) => x.token === tok);
+      return new Response(
+        JSON.stringify({ installations: (user?.installations ?? []).map((id) => ({ id, account: { login: "acme-gh" } })) }),
+      );
+    }
+    if (u.startsWith("https://api.github.com/app/installations/5001")) {
+      if (u.endsWith("/access_tokens")) return new Response("{}", { status: 403 });
+      return new Response(JSON.stringify({ id: 5001, account: { login: "acme-gh" } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+
+  try {
+    const installUrl = await app.inject({ method: "GET", url: "/api/v1/github/install-url", headers: auth() });
+    assert.equal(installUrl.statusCode, 200);
+    const state = new URL(installUrl.json().url).searchParams.get("state")!;
+    const link = (payload: Record<string, unknown>, headers = auth()) =>
+      app.inject({ method: "POST", url: "/api/v1/github/link", headers, payload });
+
+    // OAuth configured: the code is mandatory.
+    assert.equal((await link({ installationId: 5001, state })).json().error, "oauth_code_required");
+    // A valid state is not enough: this GitHub user cannot see installation 5001.
+    const refused = await link({ installationId: 5001, state, code: "code-mallory" });
+    assert.equal(refused.statusCode, 403);
+    assert.equal(refused.json().error, "installation_not_authorized");
+    assert.equal(await prisma.githubInstallation.count({ where: { installationId: 5001n } }), 0);
+
+    // GitHub confirms access → linked.
+    const ok = await link({ installationId: 5001, state, code: "code-alice" });
+    assert.ok(ok.statusCode === 200 || ok.statusCode === 201, ok.body);
+    assert.equal((await prisma.githubInstallation.findUniqueOrThrow({ where: { installationId: 5001n } })).accountLogin, "acme-gh");
+
+    // The same return link replayed (spent code): still fine for its org.
+    assert.ok((await link({ installationId: 5001, state, code: "code-spent" })).statusCode < 300);
+
+    // Another organization can't take it over, even with a GitHub user who sees it.
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/signup",
+      payload: { email: "gh-link-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other GH" },
+    });
+    const otherAuth = { authorization: `Bearer ${other.json().token}` };
+    const otherState = new URL(
+      (await app.inject({ method: "GET", url: "/api/v1/github/install-url", headers: otherAuth })).json().url,
+    ).searchParams.get("state")!;
+    const takeover = await link({ installationId: 5001, state: otherState, code: "code-alice" }, otherAuth);
+    assert.equal(takeover.statusCode, 409);
+  } finally {
+    globalThis.fetch = realFetch;
+    await prisma.githubInstallation.deleteMany({ where: { installationId: 5001n } });
+    await prisma.platformSetting.deleteMany({});
+    resetGithubAppCache();
+  }
+});
+
+test("analysis settings: org defaults, repo overrides, protection level", async () => {
+  // Defaults + engine catalog.
+  const get0 = await app.inject({ method: "GET", url: "/api/v1/settings/analysis", headers: auth() });
+  assert.equal(get0.statusCode, 200);
+  assert.equal(get0.json().effective.engines.semgrep, true);
+  assert.ok(get0.json().engines.some((e: { id: string }) => e.id === "rust"));
+
+  // Invalid parameters are rejected with the failing field.
+  const bad = await app.inject({
+    method: "PUT",
+    url: "/api/v1/settings/analysis",
+    headers: auth(),
+    payload: { engines: { notAnEngine: true } },
+  });
+  assert.equal(bad.statusCode, 400);
+
+  const put = await app.inject({
+    method: "PUT",
+    url: "/api/v1/settings/analysis",
+    headers: auth(),
+    payload: { engines: { semgrep: false }, ignorePaths: ["vendor/**"], minSeverity: "low" },
+  });
+  assert.equal(put.statusCode, 200);
+
+  // Repository: block mode + an override re-enabling Semgrep for this repo.
+  const repoPut = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: auth(),
+    payload: { protectionLevel: "block", analysisSettings: { engines: { semgrep: true }, ignorePaths: ["**/*.snap"] } },
+  });
+  assert.equal(repoPut.statusCode, 200);
+  assert.equal(repoPut.json().protectionLevel, "block");
+  const eff = repoPut.json().effective;
+  assert.equal(eff.engines.semgrep, true); // repo override wins
+  assert.deepEqual(eff.ignorePaths, ["vendor/**", "**/*.snap"]); // exclusions accumulate
+  assert.equal(eff.minSeverity, "low"); // inherited from the org
+
+  // Clearing the overrides returns to the organization settings.
+  const cleared = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: auth(),
+    payload: { analysisSettings: null },
+  });
+  assert.equal(cleared.json().effective.engines.semgrep, false);
+  assert.equal(cleared.json().protectionLevel, "block"); // untouched
+
+  // A developer can read but not change the settings.
+  const dev = await app.inject({
+    method: "POST",
+    url: "/api/v1/organization/members",
+    headers: auth(),
+    payload: { email: "settings-dev@acme.test", role: "developer" },
+  });
+  const devToken = (
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "settings-dev@acme.test", password: dev.json().tempPassword },
+    })
+  ).json().token;
+  const devPut = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: { authorization: `Bearer ${devToken}` },
+    payload: { protectionLevel: "observe" },
+  });
+  assert.equal(devPut.statusCode, 403);
+
+  // Another organization cannot see or change this repository.
+  const other = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/signup",
+    payload: { email: "settings-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other S" },
+  });
+  const foreign = await app.inject({
+    method: "PUT",
+    url: `/api/v1/repositories/${repoId}/settings`,
+    headers: { authorization: `Bearer ${other.json().token}` },
+    payload: { protectionLevel: "observe" },
+  });
+  assert.equal(foreign.statusCode, 404);
+});
+
+test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/integrations/slack",
+    headers: auth(),
+    payload: { webhookUrl: "http://169.254.169.254/latest/meta-data/" },
+  });
+  assert.equal(res.statusCode, 400);
 });
 
 test("jira integration: connect, status hides the token", async () => {
@@ -387,6 +724,10 @@ test("scim: provision, list, deactivate; deactivated user can't log in", async (
   assert.equal(blocked.statusCode, 403);
   assert.equal(blocked.json().error, "account_disabled");
 
+  // A token issued before deprovisioning stops working immediately.
+  const stale = await app.inject({ method: "GET", url: "/api/v1/organization", headers: auth() });
+  assert.equal(stale.statusCode, 401);
+
   // Reactivate so later tests / the session keep working.
   await app.inject({
     method: "PATCH",
@@ -445,6 +786,17 @@ test("saml: configure, metadata endpoint, ACS rejects invalid assertions", async
     payload: { SAMLResponse: Buffer.from("not-a-saml-response").toString("base64") },
   });
   assert.equal(garbage.statusCode, 401);
+
+  // Real IdPs use the HTTP-POST binding (form-encoded), not JSON.
+  const form = await app.inject({
+    method: "POST",
+    url: `/saml/${orgId}/acs`,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    payload: new URLSearchParams({
+      SAMLResponse: Buffer.from("not-a-saml-response").toString("base64"),
+    }).toString(),
+  });
+  assert.equal(form.statusCode, 401);
 });
 
 test("audit export returns a JSON evidence pack", async () => {
