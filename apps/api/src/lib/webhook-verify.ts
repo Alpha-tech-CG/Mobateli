@@ -37,3 +37,17 @@ export function verifyGithubSignature(
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
+
+/** Linear signs the raw body with HMAC-SHA256 (hex) in `linear-signature`. */
+export function verifyLinearSignature(
+  rawBody: Buffer,
+  signatureHeader: string | undefined,
+  secret: string,
+): boolean {
+  if (!signatureHeader) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  const a = Buffer.from(signatureHeader);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}

@@ -69,3 +69,20 @@ test("PR comment carries the upsert marker", () => {
   assert.ok(body.startsWith(CODEGATE_COMMENT_MARKER));
   assert.ok(body.includes("CodeGate"));
 });
+
+test("observe mode: informational notes only ⇒ green check", () => {
+  const r = resolveEnforcement(
+    {
+      findings: [{ type: "config", severity: "info", title: "Fichier sensible modifié : ci.yml", description: "x" }],
+      secrets: [],
+      dependencies: [],
+      riskScore: 0,
+      decision: "allow",
+      status: "passed",
+    },
+    "observe",
+    [],
+  );
+  assert.equal(r.conclusion, "success");
+  assert.equal(r.title, "Aucun risque détecté");
+});

@@ -1,4 +1,5 @@
-import { isCommentLine, type AddedLine } from "./diff.js";
+import type { AddedLine } from "./diff.js";
+import { htmlSinkIsSafe } from "./html-sink.js";
 import type { Confidence, FindingResult } from "./types.js";
 import type { Severity } from "@codegate/shared";
 
@@ -20,7 +21,40 @@ interface Rule {
   title: string;
   description: string;
   remediation: string;
-  test: (line: string) => boolean;
+  /** `line` is the raw text; `code` the same line with string contents blanked. */
+  test: (line: string, code: string) => boolean;
+}
+
+/**
+ * `x.innerHTML = '…'` / `= ""` with no interpolation writes fixed markup the
+ * author controls (or clears the element) — nothing to inject.
+ */
+function assignsLiteralOnly(line: string): boolean {
+  const rhs = line.split(/\.innerHTML\s*=/)[1]?.trim().replace(/;\s*$/, "") ?? "";
+  return (
+    /^(['"])(?:(?!\1)[^\\]|\\.)*\1$/.test(rhs) ||
+    /^`[^`$]*`$/.test(rhs) ||
+    // An UPPER_CASE constant is markup fixed at build time (`= HTML`).
+    /^[A-Z][A-Z0-9_]*$/.test(rhs)
+  );
+}
+
+/** `dangerouslySetInnerHTML={{ __html: SOME_CONSTANT }}` — same reasoning. */
+function dangerousHtmlFromConstant(line: string): boolean {
+  return /__html\s*:\s*[A-Z][A-Z0-9_]*\s*\}/.test(line);
+}
+
+/**
+ * SSRF needs the request's *host* to be attacker-influenced. A template URL
+ * whose first segment is a config constant (`${API_URL}/…`,
+ * `${process.env.X}/…`) or a fixed origin (`https://api.x.com/${id}`) can't
+ * be redirected elsewhere — that was the bulk of this rule's noise.
+ */
+function hasDynamicHost(line: string): boolean {
+  const m = line.match(/\(\s*`\$\{\s*([^}]+?)\s*\}/);
+  if (!m) return false;
+  const expr = m[1]!;
+  return !/^(process\.env\.\w+|import\.meta\.env\.\w+|(?:[\w$]+\.)*[A-Z][A-Z0-9_]*)$/.test(expr);
 }
 
 const RULES: Rule[] = [
@@ -48,7 +82,7 @@ const RULES: Rule[] = [
     description:
       "eval() ou new Function() exécute du code arbitraire ; combiné à une entrée externe, c'est une exécution de code à distance.",
     remediation: "Supprimez eval. Utilisez JSON.parse pour des données, ou une logique explicite.",
-    test: (l) => /\beval\s*\(/.test(l) || /\bnew\s+Function\s*\(/.test(l),
+    test: (_l, code) => /\beval\s*\(/.test(code) || /\bnew\s+Function\s*\(/.test(code),
   },
   {
     id: "CHILD_PROCESS_INJECTION",
@@ -60,7 +94,7 @@ const RULES: Rule[] = [
     description:
       "exec() avec une chaîne interpolée permet l'injection de commandes. L'agent ne doit jamais exécuter de shell non maîtrisé (cahier §5.4).",
     remediation: "Utilisez execFile/spawn avec un tableau d'arguments, jamais une chaîne shell concaténée.",
-    test: (l) => /\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l),
+    test: (l, code) => /\b(exec|execSync)\s*\(/.test(code) && /\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l),
   },
   {
     id: "PYTHON_SHELL_INJECTION",
@@ -96,7 +130,12 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (l) => /\.innerHTML\s*=/.test(l) || /dangerouslySetInnerHTML/.test(l),
+    // Matched on the code (strings blanked): the real assignment / JSX prop,
+    // not the word quoted in docs or rule sources; a literal or an
+    // UPPER_CASE constant on the right-hand side carries no input.
+    test: (l, code) =>
+      (/\.innerHTML\s*=(?!=)/.test(code) && !assignsLiteralOnly(l)) ||
+      (/\bdangerouslySetInnerHTML\s*[=:]/.test(code) && !dangerousHtmlFromConstant(l)),
   },
   {
     id: "PATH_TRAVERSAL",
@@ -124,7 +163,7 @@ const RULES: Rule[] = [
     remediation: "Validez l'URL contre une liste blanche de domaines ; bloquez les IP privées et les métadonnées cloud.",
     test: (l) =>
       /\b(fetch|axios(\.get|\.post)?|got|request|http\.get|https\.get)\s*\(/.test(l) &&
-      /(req\.(params|query|body)|request\.|`.*\$\{)/.test(l),
+      (/(req\.(params|query|body)|request\.)/.test(l) || hasDynamicHost(l)),
   },
   {
     id: "WEAK_HASH",
@@ -135,7 +174,9 @@ const RULES: Rule[] = [
     title: "Algorithme de hachage faible",
     description: "MD5 et SHA-1 sont cassés pour un usage de sécurité.",
     remediation: "Utilisez SHA-256+ pour l'intégrité, et argon2/bcrypt/scrypt pour les mots de passe.",
-    test: (l) => /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l) || /\bhashlib\.(md5|sha1)\s*\(/.test(l),
+    test: (l, code) =>
+      (/createHash\(/.test(code) && /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l)) ||
+      /\bhashlib\.(md5|sha1)\s*\(/.test(code),
   },
   {
     id: "WEAK_RANDOM",
@@ -196,22 +237,48 @@ const RULES: Rule[] = [
   },
 ];
 
-/** Config/sensitive-file awareness (cahier §5.1 — .env, workflows, vercel.json). */
-const SENSITIVE_FILES = [
-  ".env",
-  "docker-compose.yml",
-  "vercel.json",
-  "Dockerfile",
-];
+/**
+ * Languages these line rules are written for. Docs (.md), config and other
+ * languages (Rust, Go…) are skipped: matching JavaScript API names in them
+ * only produces noise.
+ */
+const CODE_FILE = /\.(m?[jt]sx?|cjs|cts|mts|py|php|rb|html?|vue|svelte)$/i;
+const HASH_COMMENT_FILE = /\.(py|rb|php)$/i;
 
-export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
+/** A line that is only a comment cannot execute anything. */
+function isCommentLine(file: string, content: string): boolean {
+  const t = content.trimStart();
+  return t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") ||
+    (HASH_COMMENT_FILE.test(file) && t.startsWith("#"));
+}
+
+/**
+ * Blank the contents of string literals: "eval(" quoted in a string (a test
+ * fixture, a message) is data, not a call. Rules that need the text of a
+ * string (SQL, hash names) still read the raw line.
+ */
+export function blankStrings(line: string): string {
+  return (
+    line
+      .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""')
+      // Regex literals (after an operator, bracket or keyword) are data too.
+      .replace(
+        /(^|[=(,:!&|?{};[]|\breturn)(\s*)\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+\/[dgimsuy]*/g,
+        "$1$2/r/",
+      )
+  );
+}
+
+export function runSastRules(addedLines: AddedLine[], completeFiles = false): FindingResult[] {
   const findings: FindingResult[] = [];
+  const fileText = textByFile(addedLines);
 
   for (const { file, line, content } of addedLines) {
-    // A rule example written in a comment is not a vulnerability.
-    if (isCommentLine(content)) continue;
+    if (!CODE_FILE.test(file) || isCommentLine(file, content)) continue;
+    const code = blankStrings(content);
     for (const rule of RULES) {
-      if (rule.test(content)) {
+      if (rule.test(content, code)) {
+        if (rule.id === "XSS_INNERHTML" && htmlSinkIsSafe(content, fileText.get(file) ?? "", file, completeFiles)) continue;
         findings.push({
           type: "sast",
           severity: rule.severity,
@@ -232,29 +299,37 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   return findings;
 }
 
-/** Flags added lines inside sensitive config files for reviewer attention. */
-export function flagSensitiveFiles(files: string[]): FindingResult[] {
-  const findings: FindingResult[] = [];
-  for (const file of files) {
-    const base = file.split("/").pop() ?? file;
-    if (
-      SENSITIVE_FILES.includes(base) ||
-      file.includes(".github/workflows/")
-    ) {
-      findings.push({
-        type: "config",
-        severity: "low",
-        confidence: "high",
-        cwe: "CWE-732",
-        owasp: "A05:2021-Security Misconfiguration",
-        title: `Fichier sensible modifié : ${base}`,
-        description:
-          "Une modification touche un fichier de configuration sensible (secrets, CI/CD ou déploiement).",
-        filePath: file,
-        ruleId: "SENSITIVE_FILE_CHANGED",
-        remediation: "Vérifiez qu'aucun secret ni affaiblissement de configuration n'est introduit.",
-      });
-    }
+/**
+ * Context exclusions shared by every code engine. The Rust engine reads the
+ * syntax tree but not these proofs of safety, so its findings get the same
+ * second look as the line rules: a comment, a literal or an UPPER_CASE
+ * constant written to innerHTML carries no attacker input.
+ */
+export function refutedByContext(
+  finding: { ruleId?: string; filePath?: string },
+  line: string | undefined,
+  fileText = "",
+  completeFile = false,
+): boolean {
+  if (line === undefined || !finding.filePath) return false;
+  if (isCommentLine(finding.filePath, line)) return true;
+  if (finding.ruleId === "XSS_INNERHTML") {
+    return (
+      (/\.innerHTML\s*=/.test(line) && assignsLiteralOnly(line)) ||
+      dangerousHtmlFromConstant(line) ||
+      htmlSinkIsSafe(line, fileText, finding.filePath, completeFile)
+    );
   }
-  return findings;
+  return false;
+}
+
+/** The analysed text of each file (whole file in a repository scan). */
+export function textByFile(addedLines: AddedLine[]): Map<string, string> {
+  const parts = new Map<string, string[]>();
+  for (const l of addedLines) {
+    let list = parts.get(l.file);
+    if (!list) parts.set(l.file, (list = []));
+    list.push(l.content);
+  }
+  return new Map([...parts].map(([f, lines]) => [f, lines.join("\n")]));
 }

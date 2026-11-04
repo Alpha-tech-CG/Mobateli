@@ -1,7 +1,7 @@
 # Contrat d'intégration : moteur de scan Rust ↔ API TypeScript
 
 Ce document décrit le contrat entre le moteur d'analyse statique en Rust
-([`services/scan-engine`](../services/scan-engine)) et l'API TypeScript qui le
+([`services/taint-engine`](../services/taint-engine)) et l'API TypeScript qui le
 consomme ([`apps/api/src/analysis/rust-engine.ts`](../apps/api/src/analysis/rust-engine.ts)).
 
 ## Modèle d'intégration

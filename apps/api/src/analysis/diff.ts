@@ -12,9 +12,23 @@ export interface AddedLine {
 
 export interface ParsedDiff {
   files: string[];
+  /** Whole files (repository scan), not a diff: context rules may look at the full file. */
+  snapshot?: boolean;
   addedLines: AddedLine[];
   /** Added content per file, joined — convenient for structured parsing. */
   addedByFile: Map<string, string>;
+  /**
+   * New-side lines per file (added + context), in order, so a structured
+   * scanner can tell which section an added line sits in. `hunkStart` marks
+   * the first line of each hunk — structure is unknown across a gap.
+   */
+  newSideByFile: Map<string, NewSideLine[]>;
+}
+
+export interface NewSideLine {
+  content: string;
+  added: boolean;
+  hunkStart: boolean;
 }
 
 const FILE_HEADER = /^\+\+\+ b\/(.+)$/;
@@ -25,9 +39,17 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
   const files: string[] = [];
   const addedLines: AddedLine[] = [];
   const addedByFile = new Map<string, string>();
+  const newSideByFile = new Map<string, NewSideLine[]>();
 
   let currentFile: string | null = null;
   let newLineNo = 0;
+  let hunkStart = false;
+  const pushNewSide = (file: string, content: string, added: boolean) => {
+    let list = newSideByFile.get(file);
+    if (!list) newSideByFile.set(file, (list = []));
+    list.push({ content, added, hunkStart });
+    hunkStart = false;
+  };
 
   for (const raw of diff.split("\n")) {
     const fileMatch = raw.match(FILE_HEADER);
@@ -43,6 +65,7 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
     const hunk = raw.match(HUNK_HEADER);
     if (hunk) {
       newLineNo = Number(hunk[1]);
+      hunkStart = true;
       continue;
     }
     if (currentFile === null) continue;
@@ -52,16 +75,18 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
       const content = raw.slice(1).replace(/\r$/, "");
       addedLines.push({ file: currentFile, line: newLineNo, content });
       addedByFile.set(currentFile, (addedByFile.get(currentFile) ?? "") + content + "\n");
+      pushNewSide(currentFile, content, true);
       newLineNo++;
     } else if (raw.startsWith("-")) {
       // Removed line — does not advance the new-file counter.
     } else {
       // Context line.
+      if (!raw.startsWith("\\")) pushNewSide(currentFile, raw.slice(1).replace(/\r$/, ""), false);
       newLineNo++;
     }
   }
 
-  return { files, addedLines, addedByFile };
+  return { files, addedLines, addedByFile, newSideByFile };
 }
 
 /**

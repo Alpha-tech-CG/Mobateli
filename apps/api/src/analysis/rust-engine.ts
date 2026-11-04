@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
 import type { ParsedDiff } from "./diff.js";
-import type { Confidence, FindingResult } from "./types.js";
+import { describeFailure, type Confidence, type EngineStatusFn, type FindingResult } from "./types.js";
 import type { FindingType, Severity } from "@codegate/shared";
 
 /**
- * Adapter for the Rust semantic scan engine (services/scan-engine).
+ * Adapter for the native Rust taint engine (services/taint-engine), run as a
+ * subprocess by the worker. Not to be confused with services/scan-engine, the
+ * WebAssembly engine run in-process (analysis/engine).
  *
  * The engine is a separate process — a Rust binary (`codegate-scan`) that does
  * tree-sitter parsing + taint analysis, far beyond the line-by-line regex rules
@@ -41,9 +43,13 @@ export interface RustEngineOptions {
   runner?: EngineRunner;
   /** Explicit on/off. Defaults to enabled unless CODEGATE_SCAN_DISABLE is set. */
   enabled?: boolean;
+  /** Receives whether the engine ran, was skipped, or failed (and why). */
+  onStatus?: EngineStatusFn;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+// Measured: a 1 900-file / 20 MB PR takes ~7 s with the release binary (25 s
+// in debug). 5 s silently dropped the engine on every large PR.
+const DEFAULT_TIMEOUT_MS = 60_000;
 const VALID_SEVERITIES: ReadonlySet<string> = new Set([
   "info",
   "low",
@@ -64,11 +70,11 @@ function isEnabled(opts: RustEngineOptions): boolean {
 
 /**
  * Default runner: spawn `codegate-scan --stdin`, write the manifest, collect
- * stdout. Resolves `"[]"` on ANY failure (missing binary, non-zero exit,
- * timeout) — this is the fail-open boundary.
+ * stdout. Rejects with the reason on any failure (missing binary, non-zero
+ * exit, timeout); `runRustEngine` is the fail-open boundary and reports it.
  */
 const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     let settled = false;
     const done = (out: string) => {
       if (!settled) {
@@ -76,30 +82,37 @@ const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
         resolve(out);
       }
     };
+    const fail = (err: unknown) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    };
 
     let child;
     try {
       child = spawn(binaryPath, ["--stdin"], { stdio: ["pipe", "pipe", "ignore"] });
-    } catch {
-      return done("[]");
+    } catch (err) {
+      return fail(err);
     }
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      done("[]");
+      fail(Object.assign(new Error("timeout"), { killed: true }));
     }, timeoutMs);
 
     let stdout = "";
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
-    child.on("error", () => {
+    child.on("error", (err) => {
       clearTimeout(timer);
-      done("[]");
+      fail(err);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      done(code === 0 ? stdout : "[]");
+      if (code === 0) done(stdout);
+      else fail(new Error(`code de sortie ${code}`));
     });
 
     child.stdin.on("error", () => {
@@ -175,7 +188,14 @@ export async function runRustEngine(
   files: EngineFile[],
   opts: RustEngineOptions = {},
 ): Promise<FindingResult[]> {
-  if (!isEnabled(opts) || files.length === 0) return [];
+  if (!isEnabled(opts)) {
+    opts.onStatus?.("skipped", "désactivé");
+    return [];
+  }
+  if (files.length === 0) {
+    opts.onStatus?.("skipped", "aucun fichier");
+    return [];
+  }
   const runner = opts.runner ?? spawnRunner;
   const manifest = JSON.stringify({ files });
   try {
@@ -183,8 +203,11 @@ export async function runRustEngine(
       binaryPath: resolveBinary(opts),
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
-    return parseOutput(stdout);
-  } catch {
+    const findings = parseOutput(stdout);
+    opts.onStatus?.("ok");
+    return findings;
+  } catch (err) {
+    opts.onStatus?.("failed", describeFailure(err));
     return [];
   }
 }

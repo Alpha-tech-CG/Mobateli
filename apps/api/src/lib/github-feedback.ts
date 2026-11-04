@@ -33,6 +33,27 @@ export async function createCheckRun(
   });
 }
 
+interface IssueComment {
+  id: number;
+  body?: string | null;
+  performed_via_github_app?: { id: number } | null;
+}
+
+/**
+ * Our own previous report on the PR, if any. Matching the hidden marker alone
+ * is not enough: another CodeGate App on the same repository (production next
+ * to a dev App, or another tenant) writes the same marker, and we would
+ * overwrite its report — seen on the first real run. The comment must also
+ * have been posted by this App.
+ */
+export function findOwnReport(comments: IssueComment[], appId: number): IssueComment | undefined {
+  return comments.find(
+    (c) =>
+      (c.body ?? "").includes(CODEGATE_COMMENT_MARKER) &&
+      c.performed_via_github_app?.id === appId,
+  );
+}
+
 export async function upsertPrComment(
   config: AppConfig,
   installationId: number,
@@ -49,8 +70,9 @@ export async function upsertPrComment(
     "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
     { owner, repo, issue_number: prNumber, per_page: 100 },
   );
-  const existing = comments.data.find((c) =>
-    (c.body ?? "").includes(CODEGATE_COMMENT_MARKER),
+  const existing = findOwnReport(
+    comments.data as IssueComment[],
+    Number(config.GITHUB_APP_ID),
   );
 
   if (existing) {

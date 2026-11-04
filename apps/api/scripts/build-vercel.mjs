@@ -44,7 +44,14 @@ await build({
   logLevel: "warning",
 });
 
+// Rust scan engine, loaded next to the bundle (new URL("./codegate_scan.wasm", import.meta.url)).
+cpSync(join(apiDir, "src", "analysis", "engine", "codegate_scan.wasm"), join(out, "api", "codegate_scan.wasm"));
+// Audit report branding, loaded next to the bundle (new URL("./assets/…", import.meta.url)).
+cpSync(join(apiDir, "src", "lib", "assets"), join(out, "api", "assets"), { recursive: true });
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
+cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), {
+  recursive: true,
+});
 writeFileSync(join(out, "public", "robots.txt"), "User-agent: *\nDisallow: /\n");
 
 writeFileSync(
@@ -55,8 +62,15 @@ writeFileSync(
       private: true,
       type: "module",
       engines: { node: "22.x" },
-      scripts: { build: "prisma generate" },
+      // Sensitive Neon vars can't be pulled locally, so migrations run here,
+      // on Vercel, against the direct (non-PgBouncer) endpoint.
+      scripts: {
+        build:
+          'DATABASE_URL="${DATABASE_URL_UNPOOLED:-$DATABASE_URL}" prisma migrate deploy && prisma generate',
+      },
       dependencies: deps,
+      // Same security overrides as the monorepo (see pnpm-workspace.yaml).
+      overrides: { zod: deps.zod },
     },
     null,
     2,
@@ -69,16 +83,21 @@ writeFileSync(
     {
       $schema: "https://openapi.vercel.sh/vercel.json",
       framework: null,
+      // EU hosting (cahier §10.1), next to the Neon database (Frankfurt).
+      regions: ["fra1"],
       installCommand: "npm install",
       buildCommand: "npm run build",
       outputDirectory: "public",
       functions: {
         "api/index.js": {
-          maxDuration: 30,
-          includeFiles: "node_modules/pdfkit/js/data/**",
+          // Whole-repository scans run after the response (waitUntil).
+          maxDuration: 60,
+          includeFiles: "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm,api/assets/**}",
         },
       },
       rewrites: [{ source: "/(.*)", destination: "/api" }],
+      // Daily maintenance: retention purge + proactive alerts (Hobby: daily).
+      crons: [{ path: "/api/v1/cron/maintenance", schedule: "0 5 * * *" }],
     },
     null,
     2,

@@ -145,12 +145,13 @@ test("analyzeDiffWithIntel merges Semgrep findings and recomputes the decision",
 });
 
 test("analyzeDiffWithIntel deduplicates a finding already flagged by the regex rules", async () => {
-  // A line the regex rule SQL_STRING_CONCAT (CWE-89) already catches.
-  const vulnLine = 'const q = "SELECT * FROM users WHERE id = " + req.params.id;';
+  // A line the regex rule SQL_STRING_CONCAT (CWE-89) already catches. Python:
+  // JS/TS go through the WebAssembly engine, other languages the line rules.
+  const vulnLine = 'q = "SELECT * FROM users WHERE id = " + request.args["id"]';
   const diff = [
-    "diff --git a/src/db.js b/src/db.js",
-    "--- a/src/db.js",
-    "+++ b/src/db.js",
+    "diff --git a/src/db.py b/src/db.py",
+    "--- a/src/db.py",
+    "+++ b/src/db.py",
     "@@ -0,0 +1,1 @@",
     `+${vulnLine}`,
   ].join("\n");
@@ -160,7 +161,7 @@ test("analyzeDiffWithIntel deduplicates a finding already flagged by the regex r
     results: [
       {
         check_id: "javascript.express.security.audit.sqli",
-        path: "src/db.js",
+        path: "src/db.py",
         start: { line: 1 },
         extra: { message: "SQLi", severity: "ERROR", metadata: { cwe: "CWE-89" } },
       },
@@ -174,4 +175,80 @@ test("analyzeDiffWithIntel deduplicates a finding already flagged by the regex r
   assert.equal(regexHits.length, 1, "regex rule should flag the line");
   // Dedup: the Semgrep duplicate on the same (CWE, file, line) is dropped.
   assert.equal(merged.findings.length, baseline.findings.length);
+});
+
+test("analyzeDiffWithIntel hands Semgrep the PR's added code on disk, never outside it", async () => {
+  const { readFile, access } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const diff = [
+    "diff --git a/app/api.py b/app/api.py",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/app/api.py",
+    "@@ -0,0 +1,2 @@",
+    "+import os",
+    "+os.system(cmd)",
+    "diff --git a/../escape.py b/../escape.py",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/../escape.py",
+    "@@ -0,0 +1,1 @@",
+    "+print('x')",
+  ].join("\n");
+
+  let seenCwd = "";
+  let seenFiles: string[] = [];
+  let content = "";
+  const runner = async (files: string[], o: { cwd?: string }) => {
+    seenCwd = o.cwd ?? "";
+    seenFiles = files;
+    content = await readFile(join(seenCwd, "app/api.py"), "utf8");
+    return JSON.stringify({ results: [] });
+  };
+  await analyzeDiffWithIntel(diff, { semgrep: { runner }, rust: { enabled: false } });
+
+  assert.ok(seenCwd, "Semgrep must run inside a scratch directory");
+  // The scratch dir is scanned as a whole (no per-file argv to overflow), and
+  // the traversal path was never written into it.
+  assert.deepEqual(seenFiles, ["."]);
+  await assert.rejects(access(join(seenCwd, "..", "escape.py")));
+  assert.equal(content, "import os\nos.system(cmd)");
+  // The scratch directory is cleaned up afterwards.
+  await assert.rejects(access(seenCwd));
+});
+
+test("analyzeDiffWithIntel reports which passes ran, were skipped or failed", async () => {
+  const { buildPrComment } = await import("./explainer.js");
+  const diff = [
+    "diff --git a/app.py b/app.py",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/app.py",
+    "@@ -0,0 +1,1 @@",
+    "+print('ok')",
+  ].join("\n");
+  const missing = Object.assign(new Error("spawn semgrep ENOENT"), { code: "ENOENT" });
+  const r = await analyzeDiffWithIntel(diff, {
+    semgrep: { runner: async () => Promise.reject(missing) },
+    rust: { enabled: false },
+  });
+  assert.deepEqual(r.engines?.semgrep, { status: "failed", detail: "binaire absent" });
+  assert.deepEqual(r.engines?.rust, { status: "skipped", detail: "désactivé" });
+  assert.equal(r.engines?.osv?.status, "skipped"); // no dependency in the diff
+  assert.equal(r.engines?.sca?.status, "skipped"); // no checkout to scan
+
+  // The PR comment must not read as "checked and clean".
+  const comment = buildPrComment(r);
+  assert.match(comment, /Analyse partielle/);
+  assert.match(comment, /Semgrep\) : binaire absent/);
+  assert.doesNotMatch(comment, /Aucun risque détecté\. ✅/);
+
+  // All passes fine → no warning.
+  const ok = await analyzeDiffWithIntel(diff, {
+    semgrep: { runner: async () => JSON.stringify({ results: [] }) },
+    rust: { runner: async () => "[]" },
+  });
+  assert.equal(ok.engines?.semgrep?.status, "ok");
+  assert.equal(ok.engines?.rust?.status, "ok");
+  assert.doesNotMatch(buildPrComment(ok), /Analyse partielle/);
 });

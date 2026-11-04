@@ -86,7 +86,7 @@ Détails, variables d'environnement, intégrations (GitHub App, Linear, Vercel, 
 
 ## Tests
 
-**49 tests** : 35 unitaires (moteurs, policy, agent guard, builders Linear/Jira/Slack…) + 14 d'intégration bout en bout (parcours HTTP réels via `app.inject`).
+**110 tests** : 76 unitaires (moteurs, policy, agent guard, builders Linear/Jira/Slack…) + 18 d'intégration bout en bout (parcours HTTP réels via `app.inject`) + 16 pour le moteur Rust (`cargo test` dans `services/scan-engine`).
 
 ```bash
 pnpm --filter @codegate/api test                 # tests unitaires

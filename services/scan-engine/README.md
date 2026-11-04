@@ -1,92 +1,22 @@
 # scan-engine
 
-Moteur d'analyse statique sémantique de CodeGate, écrit en **Rust**
-(cahier §7, §8.2, §9.3, §14.4). C'est le cœur critique de l'analyse : il
-utilise [tree-sitter](https://tree-sitter.github.io/) pour construire un AST
-réel et applique une **analyse de taint** intraprocédurale — bien au-delà des
-règles regex ligne-à-ligne de `apps/api/src/analysis/sast.ts`.
+Moteur d'analyse de CodeGate en **Rust** (cahier §8, §9.3), compilé en **WebAssembly** et exécuté dans le processus de l'API (Vercel comme VPS), sans serveur séparé.
 
-Il est consommé par l'API TypeScript comme un **sous-processus** via
-l'adaptateur [`apps/api/src/analysis/rust-engine.ts`](../../apps/api/src/analysis/rust-engine.ts),
-selon le contrat décrit dans [`docs/scan-engine-contract.md`](../../docs/scan-engine-contract.md).
+## Ce qu'il fait
 
-## Ce qu'il détecte
+- **Secret Shield** : motifs fournisseurs (AWS, Stripe, OpenAI, Anthropic, GitHub, Google, Slack, clés privées, URL Postgres) + affectations génériques à forte entropie — mêmes règles que le moteur TypeScript.
+- **SAST sur arbre syntaxique** (parseur [oxc](https://oxc.rs)) pour JavaScript / TypeScript / JSX : `eval` / `new Function`, `exec` interpolé, `innerHTML` / `dangerouslySetInnerHTML`, SQL interpolé (les gabarits balisés `sql\`…\`` sont reconnus comme paramétrés), `createHash('md5'|'sha1')`, TLS désactivé. Le code en commentaire ou dans une chaîne ne déclenche plus de règle.
+- Les identifiants de règles sont ceux du moteur TypeScript : les faux positifs déjà qualifiés restent reconnus.
+- Un bloc ajouté qui ne s'analyse pas (hunk coupé au milieu d'une construction) est signalé ; l'API applique alors ses règles par ligne à ce fichier. Les autres langages restent couverts par les règles par ligne.
 
-Analyse sémantique par taint (source entrée utilisateur → sink dangereux),
-pour **JavaScript / TypeScript** et **Python** :
+## Contrat
 
-| Règle | CWE | OWASP | Description |
-|------|-----|-------|-------------|
-| `RUST-*-SQLI-TAINT` | CWE-89 | A03:2021-Injection | Entrée utilisateur atteignant une requête SQL non paramétrée |
-| `RUST-*-CMDI-*-TAINT` | CWE-78 | A03:2021-Injection | Entrée utilisateur atteignant `exec`/`os.system`/`subprocess(shell=True)` |
-| `RUST-*-CODE-INJECTION-TAINT` | CWE-94 | A03:2021-Injection | Entrée utilisateur atteignant `eval`/`new Function`/`exec` |
+Entrée JSON `{ "lines": [{ "file", "line", "content" }] }` → sortie `{ engine, version, secrets[], findings[], astFiles[] }`. ABI WebAssembly : `cg_alloc`, `cg_scan`, `cg_free` (chargeur : `apps/api/src/analysis/engine/index.ts`). `CODEGATE_SCAN_ENGINE=off` force le moteur TypeScript.
 
-Faible taux de faux positifs par construction :
-
-- **liaison de variables** (`a = source; b = a; sink(b)` est suivi jusqu'au sink
-  par point fixe), pas de simple match ligne-à-ligne ;
-- seul le **premier argument positionnel** d'un sink est testé, donc une requête
-  **paramétrée** (`execute(sql, params)`) n'est pas signalée ;
-- prise en compte des **assainisseurs** (`parseInt`, `shlex.quote`…) qui coupent
-  le taint ;
-- `subprocess` n'est signalé qu'avec `shell=True`.
-
-La confiance (`confidence`) est `high` quand la source atteint le sink en
-ligne, `medium` quand elle y arrive via une variable.
-
-## Build
-
-Nécessite une toolchain Rust/Cargo (voir [rustup.rs](https://rustup.rs/)). Les
-grammaires tree-sitter sont compilées depuis du C, donc un compilateur C est
-requis (MSVC Build Tools, ou mingw-w64 + cible `x86_64-pc-windows-gnu` sous
-Windows).
+## Construire (aucune installation de Rust sur la machine)
 
 ```bash
-cargo build --release        # produit target/release/codegate-scan
-cargo test                   # suite unitaire + intégration, sans réseau
-cargo clippy --all-targets   # lint
+docker run --rm -v cg-cargo:/usr/local/cargo/registry -v "$PWD:/repo" -w /repo/services/scan-engine rust:1-slim sh build-wasm.sh
 ```
 
-## CLI
-
-Le binaire `codegate-scan` émet un tableau JSON de findings sur stdout.
-
-```bash
-# Scanner des fichiers / dossiers sur disque :
-codegate-scan path/to/file.ts src/
-
-# Ou lire un manifeste JSON sur stdin (mode utilisé par l'adaptateur TS) :
-echo '{"files":[{"path":"a.js","content":"db.query(req.query.id)"}]}' \
-  | codegate-scan --stdin --pretty
-```
-
-Le processus sort avec le code 0 en cas de succès (même s'il y a des findings),
-et 2 uniquement sur erreur fatale (manifeste invalide) — en imprimant `[]`.
-
-## Service HTTP (optionnel)
-
-Un binaire Axum est disponible derrière le feature `server`, pour une
-exposition HTTP ultérieure (`POST /scan` avec le même manifeste JSON) :
-
-```bash
-cargo run --features server --bin codegate-scan-server
-# SCAN_ENGINE_ADDR=127.0.0.1:7878 par défaut
-```
-
-## Architecture
-
-```
-src/
-  finding.rs   # le type Finding + sérialisation JSON (compatible FindingResult TS)
-  lang.rs      # détection de langage + choix de la grammaire tree-sitter
-  rules.rs     # DONNÉES : sources, sinks, assainisseurs par famille de langage
-  engine.rs    # moteur de taint générique (parse → point fixe → sinks)
-  main.rs      # CLI codegate-scan
-  bin/server.rs# service HTTP optionnel (feature "server")
-tests/
-  integration.rs  # TP détectés, FP non signalés, fail-open
-```
-
-Ajouter une règle = ajouter une entrée `SinkRule` dans `rules.rs` (et au besoin
-une source/assainisseur). Le moteur est piloté par les données : aucune
-modification de `engine.rs` n'est nécessaire.
+Le script lance `cargo test`, compile `wasm32-unknown-unknown` en release et copie `codegate_scan.wasm` dans `apps/api/src/analysis/engine/`. La CI fait de même à chaque push. `GET /health` indique le moteur actif (`scanEngine: "rust-wasm"`).

@@ -1,17 +1,22 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { Redis } from "ioredis";
 import { createHash } from "node:crypto";
 import { prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
-import { verifyGithubSignature, verifyVercelSignature } from "../lib/webhook-verify.js";
-import { claimDelivery, releaseDelivery } from "../lib/redis.js";
-import { enqueuePrAnalysis } from "../queues/pr-analysis.js";
+import {
+  verifyGithubSignature,
+  verifyLinearSignature,
+  verifyVercelSignature,
+} from "../lib/webhook-verify.js";
+import { decrypt } from "../lib/crypto.js";
+import { getGithubSettings } from "../lib/github.js";
+import type { Jobs } from "../lib/jobs.js";
 import { recordAudit } from "../lib/audit.js";
 import { evaluateDeployGate } from "../analysis/deploy-gate.js";
 import { notifySlack } from "../lib/notify.js";
+import { requestApproval } from "../lib/approvals.js";
 
 /** Heuristic: was this PR likely opened by an AI coding agent? (cahier §5.1) */
-function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
+export function looksAiGenerated(authorLogin: string, title: string, body: string): boolean {
   const needles = ["cursor", "claude", "copilot", "codex", "windsurf", "devin", "[bot]"];
   const hay = `${authorLogin} ${title} ${body}`.toLowerCase();
   return needles.some((n) => hay.includes(n)) || /generated with/i.test(body);
@@ -46,9 +51,9 @@ async function resolveOrg(
   return null;
 }
 
-type GithubRepo = { id: number; full_name: string; default_branch?: string };
+export type GithubRepo = { id: number; full_name: string; default_branch?: string };
 
-async function upsertRepository(
+export async function upsertRepository(
   organizationId: string,
   installationId: number,
   repo: GithubRepo,
@@ -77,7 +82,7 @@ async function upsertRepository(
 async function handlePullRequest(
   req: FastifyRequest,
   payload: any,
-  connection: Redis,
+  jobs: Jobs,
   devAutoLink: boolean,
 ): Promise<void> {
   const action: string = payload.action;
@@ -133,9 +138,10 @@ async function handlePullRequest(
     metadata: { number: pr.number, aiGenerated },
   });
 
-  await enqueuePrAnalysis(connection, {
+  await jobs.dispatchPrAnalysis({
     pullRequestId: row.id,
     reason: action as "opened" | "synchronize" | "reopened",
+    headSha: pr.head?.sha ?? null,
   });
 }
 
@@ -155,10 +161,13 @@ async function handleInstallationRepositories(payload: any): Promise<void> {
   }
 }
 
+/** A GitLab webhook referenced a project owned by another organization. */
+class ForeignProjectError extends Error {}
+
 async function handleGitlabMergeRequest(
   organizationId: string,
   payload: any,
-  connection: Redis,
+  jobs: Jobs,
 ): Promise<void> {
   const attrs = payload.object_attributes ?? {};
   const action: string = attrs.action;
@@ -166,6 +175,16 @@ async function handleGitlabMergeRequest(
 
   const project = payload.project ?? {};
   if (!project.id || !project.path_with_namespace) return;
+
+  // The GitLab token only proves which org is calling, not that the project
+  // is theirs. Never attach an MR to a project another org already owns.
+  const owned = await prisma.repository.findUnique({
+    where: { provider_externalId: { provider: "gitlab", externalId: String(project.id) } },
+    select: { organizationId: true },
+  });
+  if (owned && owned.organizationId !== organizationId) {
+    throw new ForeignProjectError();
+  }
 
   const repoRow = await prisma.repository.upsert({
     where: { provider_externalId: { provider: "gitlab", externalId: String(project.id) } },
@@ -211,9 +230,10 @@ async function handleGitlabMergeRequest(
     metadata: { provider: "gitlab", iid: attrs.iid, aiGenerated },
   });
 
-  await enqueuePrAnalysis(connection, {
+  await jobs.dispatchPrAnalysis({
     pullRequestId: row.id,
     reason: action === "open" ? "opened" : action === "reopen" ? "reopened" : "synchronize",
+    headSha: attrs.last_commit?.id ?? null,
   });
 }
 
@@ -268,7 +288,7 @@ async function handleVercelDeployment(
     repo.protectionLevel,
   );
 
-  await prisma.deployCheck.upsert({
+  const check = await prisma.deployCheck.upsert({
     where: { provider_externalId: { provider: "vercel", externalId: deploymentId } },
     create: {
       repositoryId: repo.id,
@@ -298,6 +318,18 @@ async function handleVercelDeployment(
       repository: fullName,
       detail: result.reason,
     });
+  } else if (result.decision === "requires_approval") {
+    // US05: the decision is a human's; the reviewer is notified.
+    await requestApproval({
+      organizationId: repo.organizationId,
+      encryptionKey,
+      kind: "deployment",
+      dedupeKey: `deploy:${deploymentId}`,
+      title: `Déploiement de ${fullName}${meta.githubCommitRef ? ` (${meta.githubCommitRef})` : ""}`,
+      detail: { deploymentId, deployCheckId: check.id, reason: result.reason },
+      repositoryId: repo.id,
+      repositoryName: fullName,
+    });
   }
 }
 
@@ -319,7 +351,7 @@ async function handleInstallationDeleted(payload: any): Promise<void> {
 export async function webhookRoutes(
   app: FastifyInstance,
   config: AppConfig,
-  connection: Redis,
+  jobs: Jobs,
 ) {
   // Capture the raw body (needed for signature verification) instead of the
   // default JSON parse. Scoped to this plugin only.
@@ -330,20 +362,15 @@ export async function webhookRoutes(
   );
 
   app.post("/webhooks/github", async (req, reply) => {
-    if (!config.GITHUB_WEBHOOK_SECRET) {
+    const webhookSecret = (await getGithubSettings(config))?.webhookSecret;
+    if (!webhookSecret) {
       return reply.code(503).send({ error: "github_not_configured" });
     }
 
     const raw = req.body as Buffer;
     const signature = req.headers["x-hub-signature-256"] as string | undefined;
-    if (!verifyGithubSignature(raw, signature, config.GITHUB_WEBHOOK_SECRET)) {
+    if (!verifyGithubSignature(raw, signature, webhookSecret)) {
       return reply.code(401).send({ error: "invalid_signature" });
-    }
-
-    const deliveryId = req.headers["x-github-delivery"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
-      // Replay of an already-processed delivery — acknowledge and stop.
-      return reply.code(200).send({ status: "duplicate" });
     }
 
     const event = req.headers["x-github-event"] as string | undefined;
@@ -354,11 +381,19 @@ export async function webhookRoutes(
       return reply.code(400).send({ error: "invalid_json" });
     }
 
+    // Claim only once the body is known-good, so a rejected delivery doesn't
+    // turn its retry into a "duplicate".
+    const deliveryId = req.headers["x-github-delivery"] as string | undefined;
+    if (deliveryId && !(await jobs.claimDelivery(deliveryId))) {
+      // Replay of an already-processed delivery — acknowledge and stop.
+      return reply.code(200).send({ status: "duplicate" });
+    }
+
     const devAutoLink = config.NODE_ENV !== "production";
     try {
       switch (event) {
         case "pull_request":
-          await handlePullRequest(req, payload, connection, devAutoLink);
+          await handlePullRequest(req, payload, jobs, devAutoLink);
           break;
         case "installation_repositories":
           await handleInstallationRepositories(payload);
@@ -389,7 +424,7 @@ export async function webhookRoutes(
     } catch (err) {
       req.log.error({ err, event }, "webhook handler error");
       // Release the idempotency claim so GitHub's retry is processed afresh.
-      if (deliveryId) await releaseDelivery(connection, deliveryId);
+      if (deliveryId) await jobs.releaseDelivery(deliveryId);
       return reply.code(500).send({ error: "handler_error" });
     }
 
@@ -409,9 +444,51 @@ export async function webhookRoutes(
     });
     if (!conn) return reply.code(401).send({ error: "invalid_token" });
 
+    let payload: any;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      return reply.code(400).send({ error: "invalid_json" });
+    }
+
     const deliveryId = req.headers["x-gitlab-event-uuid"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
+    if (deliveryId && !(await jobs.claimDelivery(deliveryId))) {
       return reply.code(200).send({ status: "duplicate" });
+    }
+
+    try {
+      if (payload.object_kind === "merge_request") {
+        await handleGitlabMergeRequest(conn.organizationId, payload, jobs);
+      }
+    } catch (err) {
+      if (err instanceof ForeignProjectError) {
+        req.log.warn({ organizationId: conn.organizationId }, "gitlab MR for a project owned by another org — rejected");
+        return reply.code(403).send({ error: "project_not_owned" });
+      }
+      req.log.error({ err }, "gitlab webhook handler error");
+      if (deliveryId) await jobs.releaseDelivery(deliveryId);
+      return reply.code(500).send({ error: "handler_error" });
+    }
+
+    return reply.code(202).send({ status: "accepted" });
+  });
+
+  // Linear → CodeGate (§13.3): keep remediation issues in sync. One URL per
+  // organization; the body is signed with that organization's secret.
+  app.post("/webhooks/linear/:orgId", async (req, reply) => {
+    const { orgId } = req.params as { orgId: string };
+    const conn = /^[0-9a-f-]{36}$/i.test(orgId)
+      ? await prisma.linearConnection.findUnique({
+          where: { organizationId: orgId },
+          select: { webhookSecretEncrypted: true },
+        })
+      : null;
+    if (!conn?.webhookSecretEncrypted) return reply.code(404).send({ error: "not_configured" });
+
+    const raw = req.body as Buffer;
+    const secret = decrypt(conn.webhookSecretEncrypted, config.ENCRYPTION_KEY);
+    if (!verifyLinearSignature(raw, req.headers["linear-signature"] as string | undefined, secret)) {
+      return reply.code(401).send({ error: "invalid_signature" });
     }
 
     let payload: any;
@@ -420,18 +497,44 @@ export async function webhookRoutes(
     } catch {
       return reply.code(400).send({ error: "invalid_json" });
     }
-
-    try {
-      if (payload.object_kind === "merge_request") {
-        await handleGitlabMergeRequest(conn.organizationId, payload, connection);
-      }
-    } catch (err) {
-      req.log.error({ err }, "gitlab webhook handler error");
-      if (deliveryId) await releaseDelivery(connection, deliveryId);
-      return reply.code(500).send({ error: "handler_error" });
+    // Replay protection: Linear stamps each delivery (ms since epoch).
+    if (typeof payload.webhookTimestamp === "number" && Math.abs(Date.now() - payload.webhookTimestamp) > 5 * 60_000) {
+      return reply.code(401).send({ error: "stale_delivery" });
+    }
+    if (payload.type !== "Issue" || payload.action !== "update" || !payload.data?.id) {
+      return reply.code(200).send({ status: "ignored" });
     }
 
-    return reply.code(202).send({ status: "accepted" });
+    const issue = await prisma.remediationIssue.findFirst({
+      where: { provider: "linear", externalId: String(payload.data.id), pullRequest: { repository: { organizationId: orgId } } },
+    });
+    if (!issue) return reply.code(200).send({ status: "unknown_issue" });
+
+    const stateType: string | undefined = payload.data.state?.type;
+    const status = stateType === "completed" ? "done" : stateType === "canceled" ? "canceled" : "open";
+    if (status === issue.status) return reply.code(200).send({ status: "unchanged" });
+
+    await prisma.remediationIssue.update({
+      where: { id: issue.id },
+      data: { status, closedAt: status === "open" ? null : new Date() },
+    });
+    if (status === "done") {
+      // The fix shipped: open findings of that PR are resolved (false
+      // positives keep their verdict).
+      await prisma.finding.updateMany({
+        where: { pullRequestId: issue.pullRequestId, status: { in: ["open", "acknowledged"] } },
+        data: { status: "resolved" },
+      });
+    }
+    await recordAudit({
+      organizationId: orgId,
+      actorType: "system",
+      action: `remediation.${status}`,
+      resourceType: "pull_request",
+      resourceId: issue.pullRequestId,
+      metadata: { provider: "linear", identifier: issue.identifier },
+    });
+    return reply.code(202).send({ status });
   });
 
   app.post("/webhooks/vercel", async (req, reply) => {
@@ -445,16 +548,16 @@ export async function webhookRoutes(
       return reply.code(401).send({ error: "invalid_signature" });
     }
 
-    const deliveryId = req.headers["x-vercel-id"] as string | undefined;
-    if (deliveryId && !(await claimDelivery(connection, deliveryId))) {
-      return reply.code(200).send({ status: "duplicate" });
-    }
-
     let payload: unknown;
     try {
       payload = JSON.parse(raw.toString("utf8"));
     } catch {
       return reply.code(400).send({ error: "invalid_json" });
+    }
+
+    const deliveryId = req.headers["x-vercel-id"] as string | undefined;
+    if (deliveryId && !(await jobs.claimDelivery(deliveryId))) {
+      return reply.code(200).send({ status: "duplicate" });
     }
 
     try {
@@ -463,7 +566,7 @@ export async function webhookRoutes(
       }
     } catch (err) {
       req.log.error({ err }, "vercel webhook handler error");
-      if (deliveryId) await releaseDelivery(connection, deliveryId);
+      if (deliveryId) await jobs.releaseDelivery(deliveryId);
       return reply.code(500).send({ error: "handler_error" });
     }
 

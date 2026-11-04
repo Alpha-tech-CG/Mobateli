@@ -52,8 +52,9 @@ export function resolveEnforcement(
   policies: PolicyRule[],
 ): Enforcement {
   const worst = worstSeverity(result);
+  // Informational notes (test fixtures, review reminders) are not findings.
   const hasFindings =
-    result.findings.length > 0 ||
+    result.findings.some((f) => f.severity !== "info") ||
     result.secrets.length > 0 ||
     result.dependencies.some((d) => d.riskLevel !== "low");
 

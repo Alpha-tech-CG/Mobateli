@@ -46,6 +46,7 @@ function Deployments() {
         <Card className="p-4 text-sm text-destructive">{error}</Card>
       ) : (
         <Card>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -85,6 +86,7 @@ function Deployments() {
               ) : null}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
     </div>

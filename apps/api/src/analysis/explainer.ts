@@ -1,4 +1,13 @@
-import type { DependencyResult, FindingResult, SecretResult } from "./types.js";
+import { ENGINE_CATALOG } from "@codegate/shared";
+import type {
+  AnalysisResult,
+  DependencyResult,
+  EngineName,
+  EngineReport,
+  FindingResult,
+  SecretResult,
+} from "./types.js";
+import { revocationGuide } from "./revocation.js";
 
 /** Hidden HTML marker identifying CodeGate's own PR comment, for upserts. */
 export const CODEGATE_COMMENT_MARKER = "<!-- codegate:report -->";
@@ -10,12 +19,13 @@ export const CODEGATE_COMMENT_MARKER = "<!-- codegate:report -->";
  */
 
 export function explainSecret(s: SecretResult): string {
+  const guide = revocationGuide(s.secretType);
   return (
     `Un secret de type « ${s.secretType} » a été détecté dans ${s.location} ` +
     `(valeur masquée : ${s.maskedPreview}). ` +
     `Un secret exposé dans le code peut être lu par quiconque a accès au dépôt ou à l'historique. ` +
-    `Révoquez immédiatement cette clé, régénérez-en une nouvelle, et déplacez-la dans une variable ` +
-    `d'environnement ou un gestionnaire de secrets.`
+    `Révoquez immédiatement cette clé${guide.url ? ` (${guide.provider} : ${guide.url})` : ""}, ` +
+    `régénérez-en une nouvelle, et déplacez-la dans une variable d'environnement ou un gestionnaire de secrets.`
   );
 }
 
@@ -48,6 +58,21 @@ export function explainFinding(f: FindingResult): string {
 }
 
 /** Build the structured GitHub PR comment body (cahier §6.2, §5.6). */
+/** Engine labels, from the shared catalog (single source of truth). */
+export const ENGINE_LABELS: Record<EngineName, string> = Object.fromEntries(
+  Object.entries(ENGINE_CATALOG).map(([id, e]) => [id, e.label]),
+) as Record<EngineName, string>;
+
+/** Passes that were expected to run but failed (skipped-by-design is not shown). */
+export function failedEngines(
+  engines: AnalysisResult["engines"],
+): { name: EngineName; label: string; detail: string }[] {
+  if (!engines) return [];
+  return (Object.entries(engines) as [EngineName, EngineReport][])
+    .filter(([, r]) => r.status === "failed")
+    .map(([name, r]) => ({ name, label: ENGINE_LABELS[name], detail: r.detail ?? "échec" }));
+}
+
 export function buildPrComment(result: {
   riskScore: number;
   decision: string;
@@ -55,6 +80,7 @@ export function buildPrComment(result: {
   findings: FindingResult[];
   secrets: SecretResult[];
   dependencies: DependencyResult[];
+  engines?: AnalysisResult["engines"];
 }): string {
   const emoji =
     result.status === "blocked" ? "🛑" : result.status === "warning" ? "⚠️" : "✅";
@@ -78,16 +104,38 @@ export function buildPrComment(result: {
     }
     lines.push("");
   }
-  if (result.findings.length) {
-    lines.push(`### 🔎 Problèmes de code (${result.findings.length})`);
-    for (const f of result.findings) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+  const risks = result.findings.filter((f) => f.severity !== "info");
+  const notes = result.findings.filter((f) => f.severity === "info");
+  if (risks.length) {
+    lines.push(`### 🔎 Problèmes de code (${risks.length})`);
+    for (const f of risks) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
     lines.push("");
   }
-  if (!result.secrets.length && !result.findings.length &&
+  const failed = failedEngines(result.engines);
+  if (!result.secrets.length && !risks.length &&
       !result.dependencies.some((d) => d.riskLevel !== "low")) {
-    lines.push("Aucun risque détecté. ✅");
+    lines.push(
+      failed.length
+        ? "Aucun risque détecté par les analyses qui ont pu s'exécuter (voir ci-dessous)."
+        : "Aucun risque détecté. ✅",
+    );
+    lines.push("");
   }
-
+  // A pass that could not run must be visible: otherwise "nothing found"
+  // reads as "checked and clean".
+  if (failed.length) {
+    lines.push("> ⚠️ **Analyse partielle** — certaines vérifications n'ont pas pu s'exécuter :");
+    for (const { label, detail } of failed) lines.push(`> - ${label} : ${detail}`);
+    lines.push("");
+  }
+  if (notes.length) {
+    // Shown for transparency, folded: they carry no risk and no score.
+    lines.push(`<details><summary>ℹ️ ${notes.length} information(s) sans impact sur le score</summary>`);
+    lines.push("");
+    for (const f of notes) lines.push(`- ${explainFinding(f)}`);
+    lines.push("");
+    lines.push("</details>");
+  }
   lines.push("");
   lines.push("<sub>CodeGate vérifie chaque PR générée par IA avant la production.</sub>");
   return lines.join("\n");

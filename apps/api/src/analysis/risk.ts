@@ -2,7 +2,7 @@ import type { Decision, PullRequestStatus, Severity } from "@codegate/shared";
 import type { AnalysisResult, DependencyResult, FindingResult, SecretResult } from "./types.js";
 
 /** Risk weight per severity — tuned so a single critical dominates. */
-const SEVERITY_WEIGHT: Record<Severity, number> = {
+export const SEVERITY_WEIGHT: Record<Severity, number> = {
   critical: 40,
   high: 20,
   medium: 8,
@@ -10,8 +10,8 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
   info: 0,
 };
 
-const SECRET_WEIGHT = 45;
-const DEP_RISK_WEIGHT: Record<DependencyResult["riskLevel"], number> = {
+export const SECRET_WEIGHT = 45;
+export const DEP_RISK_WEIGHT: Record<DependencyResult["riskLevel"], number> = {
   critical: 40,
   high: 20,
   medium: 8,
@@ -44,7 +44,21 @@ export function decide(input: DecisionInput): Pick<
   "riskScore" | "decision" | "status"
 > {
   let score = 0;
-  for (const f of input.findings) score += SEVERITY_WEIGHT[f.severity] * confidenceFactor(f.confidence);
+  // Repeats of the same rule are one weakness to fix, not N independent risks:
+  // the first hit counts in full, each repeat a quarter, capped at 2× a single
+  // hit. Linear summing pushed whole codebases to 100 on hygiene warnings
+  // (e.g. 8 unpinned GitHub Actions = 64 points).
+  const perRule = new Map<string, { weight: number; repeats: number }>();
+  for (const f of input.findings) {
+    const w = SEVERITY_WEIGHT[f.severity] * confidenceFactor(f.confidence);
+    const key = `${f.ruleId ?? f.title}:${f.severity}`;
+    const seen = perRule.get(key);
+    if (!seen) perRule.set(key, { weight: w, repeats: 0 });
+    else seen.repeats++;
+  }
+  for (const { weight, repeats } of perRule.values()) {
+    score += Math.min(weight * (1 + 0.25 * repeats), weight * 2);
+  }
   for (const s of input.secrets) score += (SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity]) * confidenceFactor(s.confidence);
   for (const d of input.dependencies) score += DEP_RISK_WEIGHT[d.riskLevel];
   score = Math.round(Math.min(100, score));

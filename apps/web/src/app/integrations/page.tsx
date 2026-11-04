@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Plug, Bell, Gitlab, Ticket, UserCog, KeyRound } from "lucide-react";
-import { api } from "@/lib/api";
+import { CheckCircle2, Plug, Bell, Gitlab, Github, Ticket, UserCog, KeyRound } from "lucide-react";
+import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card } from "@/components/ui";
 
@@ -71,6 +71,8 @@ function Integrations() {
         </p>
       </header>
 
+      <GithubCard />
+
       <Card className="max-w-xl p-5">
         <div className="mb-4 flex items-center gap-3">
           <Plug className="size-5 text-primary" aria-hidden />
@@ -88,6 +90,7 @@ function Integrations() {
               <CheckCircle2 className="size-4" aria-hidden />
               Connecté — équipe <span className="font-mono">{teamId}</span>
             </p>
+            <LinearWebhook />
             <button
               onClick={disconnect}
               disabled={busy}
@@ -536,6 +539,7 @@ function GitlabCard() {
             <CheckCircle2 className="size-4" aria-hidden />
             Connecté
           </p>
+          <GitlabApiForm />
           <div className="flex gap-2">
             <button
               onClick={connect}
@@ -682,5 +686,223 @@ function SlackCard() {
       )}
       {msg ? <p className="mt-3 text-sm text-muted-foreground">{msg}</p> : null}
     </Card>
+  );
+}
+
+interface GithubInstallationRow {
+  id: string;
+  installationId: number;
+  accountLogin: string;
+  repositories: number;
+  createdAt: string;
+}
+
+/** US01 — install the CodeGate GitHub App, choose repositories, revoke anytime. */
+function GithubCard() {
+  const [configured, setConfigured] = useState(true);
+  const [rows, setRows] = useState<GithubInstallationRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function load() {
+    api<{ configured: boolean; installations: GithubInstallationRow[] }>("/api/v1/github/installations")
+      .then((r) => {
+        setConfigured(r.configured);
+        setRows(r.installations);
+      })
+      .catch(() => setMsg("Impossible de charger GitHub."));
+  }
+  useEffect(load, []);
+
+  async function connect() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const { url } = await api<{ url: string }>("/api/v1/github/install-url");
+      window.location.href = url;
+    } catch (err) {
+      setMsg(
+        err instanceof ApiError && err.code === "mfa_enrollment_required"
+          ? "Activez d'abord la MFA (Sécurité du compte)."
+          : "Connexion GitHub impossible pour le moment.",
+      );
+      setBusy(false);
+    }
+  }
+
+  async function revoke(id: string) {
+    if (!confirm("Désinstaller CodeGate de ce compte GitHub ? Les PR ne seront plus analysées.")) return;
+    await api(`/api/v1/github/installations/${id}`, { method: "DELETE" });
+    load();
+  }
+
+  return (
+    <Card className="mb-6 max-w-xl p-5">
+      <div className="mb-3 flex items-center gap-3">
+        <Github className="size-5" aria-hidden />
+        <h2 className="font-medium">GitHub</h2>
+        {rows.length ? <CheckCircle2 className="size-4 text-success" aria-label="connecté" /> : null}
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Installez l&apos;application CodeGate et choisissez les dépôts : chaque pull request reçoit un
+        check et un commentaire de sécurité. Permissions minimales, révocables à tout moment.
+      </p>
+      {rows.map((r) => (
+        <div
+          key={r.id}
+          className="mb-3 flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm"
+        >
+          <span>
+            <span className="font-medium">{r.accountLogin}</span>{" "}
+            <span className="text-xs text-muted-foreground">
+              · {r.repositories} dépôt{r.repositories > 1 ? "s" : ""}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => revoke(r.id)}
+            className="cursor-pointer text-xs text-destructive hover:underline"
+          >
+            Révoquer
+          </button>
+        </div>
+      ))}
+      {configured ? (
+        <button
+          type="button"
+          onClick={connect}
+          disabled={busy}
+          className="cursor-pointer rounded-md bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-colors duration-150 hover:opacity-90 disabled:opacity-50"
+        >
+          {rows.length ? "Ajouter un compte / des dépôts" : "Connecter GitHub"}
+        </button>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          L&apos;application GitHub n&apos;est pas encore créée pour ce CodeGate.{" "}
+          <a href="/settings/github-app" className="text-primary hover:underline">
+            Créer l&apos;App GitHub
+          </a>
+        </p>
+      )}
+      {msg ? <p className="mt-3 text-sm text-destructive">{msg}</p> : null}
+    </Card>
+  );
+}
+
+/** Linear → CodeGate webhook: issues closed in Linear resolve the findings. */
+function LinearWebhook() {
+  const [cfg, setCfg] = useState<{ url: string; secret: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function configure() {
+    setErr(null);
+    try {
+      setCfg(await api<{ url: string; secret: string }>("/api/v1/integrations/linear/webhook", { method: "POST" }));
+    } catch {
+      setErr("Configuration impossible.");
+    }
+  }
+
+  if (cfg) {
+    return (
+      <div className="space-y-2 rounded-md border border-border p-3 text-xs">
+        <p>
+          Dans Linear : Settings → API → Webhooks → « New webhook », événement <strong>Issues</strong>.
+          Le secret ne sera plus affiché.
+        </p>
+        <p className="text-muted-foreground">URL</p>
+        <pre className="overflow-x-auto rounded bg-muted p-2 font-mono">{cfg.url}</pre>
+        <p className="text-muted-foreground">Secret de signature</p>
+        <pre className="overflow-x-auto rounded bg-muted p-2 font-mono">{cfg.secret}</pre>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={configure}
+        className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm transition-colors duration-150 hover:bg-muted"
+      >
+        Synchroniser les statuts depuis Linear
+      </button>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Une issue terminée dans Linear marque les problèmes de la PR comme résolus.
+      </p>
+      {err ? <p className="mt-1 text-xs text-destructive">{err}</p> : null}
+    </div>
+  );
+}
+
+/** GitLab API access: diffs of MRs + commit status and note feedback. */
+function GitlabApiForm() {
+  const [status, setStatus] = useState<{ apiConfigured: boolean; baseUrl: string | null } | null>(null);
+  const [baseUrl, setBaseUrl] = useState("https://gitlab.com");
+  const [token, setToken] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api<{ apiConfigured: boolean; baseUrl: string | null }>("/api/v1/integrations/gitlab")
+      .then((r) => {
+        setStatus(r);
+        if (r.baseUrl) setBaseUrl(r.baseUrl);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api<{ apiConfigured: boolean; baseUrl: string }>("/api/v1/integrations/gitlab/api", {
+        method: "PUT",
+        body: JSON.stringify({ baseUrl, accessToken: token }),
+      });
+      setStatus(r);
+      setToken("");
+    } catch (err) {
+      setMsg(
+        err instanceof ApiError && err.code === "gitlab_token_invalid"
+          ? "Jeton refusé par GitLab (portée « api » requise)."
+          : err instanceof ApiError && err.code === "private_address"
+            ? "Instance GitLab sur un réseau privé : non joignable depuis CodeGate."
+            : "Enregistrement impossible.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="space-y-2 rounded-md border border-border p-3">
+      <p className="text-xs text-muted-foreground">
+        {status?.apiConfigured
+          ? `Accès API actif (${status.baseUrl}) : diff des MR, statut « CodeGate » et commentaire publiés.`
+          : "Ajoutez un jeton d'accès (portée « api ») pour analyser le code des MR et publier le résultat dans GitLab."}
+      </p>
+      <input
+        value={baseUrl}
+        onChange={(e) => setBaseUrl(e.target.value)}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      />
+      <input
+        type="password"
+        required
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="glpat-…"
+        className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      />
+      <button
+        type="submit"
+        disabled={busy}
+        className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+      >
+        {status?.apiConfigured ? "Remplacer le jeton" : "Enregistrer l'accès API"}
+      </button>
+      {msg ? <p className="text-xs text-destructive">{msg}</p> : null}
+    </form>
   );
 }

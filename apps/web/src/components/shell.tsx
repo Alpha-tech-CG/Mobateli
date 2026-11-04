@@ -11,18 +11,38 @@ import {
   FileClock,
   Bot,
   Rocket,
+  Server,
+  KeyRound,
+  DatabaseBackup,
+  ShieldCheck,
+  ClipboardCheck,
+  ScanSearch,
+  Users,
   LogOut,
+  UserRound,
+  FolderGit2,
+  SlidersHorizontal,
 } from "lucide-react";
-import { clearToken, getToken } from "@/lib/api";
+import { api, clearToken, getSession, getToken } from "@/lib/api";
 
 const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/pull-requests", label: "Pull requests", icon: GitPullRequest },
+  { href: "/scans", label: "Analyser un dépôt", icon: ScanSearch },
+  { href: "/repositories", label: "Dépôts", icon: FolderGit2 },
   { href: "/policies", label: "Politiques", icon: ScrollText },
+  { href: "/settings/analysis", label: "Paramètres d'analyse", icon: SlidersHorizontal },
   { href: "/agent-guard", label: "Agent Guard", icon: Bot },
+  { href: "/approvals", label: "Approbations", icon: ClipboardCheck },
   { href: "/deployments", label: "Déploiements", icon: Rocket },
+  { href: "/servers", label: "Serveurs", icon: Server },
+  { href: "/bruteforce", label: "Brute force", icon: KeyRound },
+  { href: "/backups", label: "Sauvegardes", icon: DatabaseBackup },
   { href: "/integrations", label: "Intégrations", icon: Plug },
   { href: "/audit", label: "Audit", icon: FileClock },
+  { href: "/members", label: "Membres", icon: Users },
+  { href: "/settings/security", label: "Sécurité du compte", icon: ShieldCheck },
+  { href: "/account", label: "Mon compte", icon: UserRound },
 ];
 
 /** App shell with sidebar nav + client-side auth guard. */
@@ -31,10 +51,35 @@ export function Shell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
 
+  const [needsMfa, setNeedsMfa] = useState(false);
+  const [unverified, setUnverified] = useState<string | null>(null);
+  const [resend, setResend] = useState<"idle" | "sending" | "sent" | "error">("idle");
+
   useEffect(() => {
-    if (!getToken()) router.replace("/login");
-    else setReady(true);
+    const session = getSession();
+    // Expired sessions (cahier §10.2) go back to login.
+    if (!getToken() || !session || (session.exp && session.exp * 1000 < Date.now())) {
+      clearToken();
+      router.replace("/login");
+      return;
+    }
+    setNeedsMfa((session.role === "owner" || session.role === "admin") && !session.mfa);
+    setReady(true);
+    api<{ user: { email: string; emailVerified: boolean } }>("/api/v1/me")
+      .then((r) => setUnverified(r.user.emailVerified ? null : r.user.email))
+      .catch(() => undefined);
   }, [router]);
+
+  async function resendVerification() {
+    setResend("sending");
+    try {
+      const r = await api<{ sent: boolean; alreadyVerified: boolean }>("/api/v1/auth/verify-email/resend", { method: "POST" });
+      if (r.alreadyVerified) setUnverified(null);
+      setResend(r.sent || r.alreadyVerified ? "sent" : "error");
+    } catch {
+      setResend("error");
+    }
+  }
 
   if (!ready) return null;
 
@@ -76,7 +121,43 @@ export function Shell({ children }: { children: ReactNode }) {
           Se déconnecter
         </button>
       </aside>
-      <main className="flex-1 overflow-x-hidden px-6 py-6">{children}</main>
+      <main className="min-w-0 flex-1 overflow-x-hidden px-6 py-6">
+        {unverified ? (
+          <div
+            className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/60 px-4 py-3 text-sm"
+            role="status"
+          >
+            <span>
+              Confirmez votre adresse <span className="font-medium">{unverified}</span> avec le lien reçu par email
+              pour recevoir les alertes de sécurité.
+              {resend === "sent" ? " Nouveau lien envoyé." : resend === "error" ? " Envoi impossible, réessayez plus tard." : ""}
+            </span>
+            <button
+              type="button"
+              onClick={resendVerification}
+              disabled={resend === "sending" || resend === "sent"}
+              className="cursor-pointer rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-default disabled:opacity-60"
+            >
+              {resend === "sending" ? "Envoi…" : "Renvoyer le lien"}
+            </button>
+          </div>
+        ) : null}
+        {needsMfa && pathname !== "/settings/security" ? (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+            <span>
+              La double authentification (MFA) est obligatoire pour les administrateurs : les
+              actions d&apos;administration restent bloquées jusqu&apos;à son activation.
+            </span>
+            <Link
+              href="/settings/security"
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-on-primary hover:opacity-90"
+            >
+              Activer la MFA
+            </Link>
+          </div>
+        ) : null}
+        {children}
+      </main>
     </div>
   );
 }

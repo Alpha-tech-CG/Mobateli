@@ -45,7 +45,7 @@ export class ApiError extends Error {
   }
 }
 
-/** POST that downloads the response as a file (for evidence exports). */
+/** Downloads the response as a file (POST with a body, or GET when body is null). */
 export async function apiDownload(
   path: string,
   body: unknown,
@@ -53,12 +53,12 @@ export async function apiDownload(
 ): Promise<void> {
   const token = getToken();
   const res = await fetch(`${API_URL}${path}`, {
-    method: "POST",
+    method: body === null ? "GET" : "POST",
     headers: {
-      "content-type": "application/json",
+      ...(body === null ? {} : { "content-type": "application/json" }),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify(body),
+    ...(body === null ? {} : { body: JSON.stringify(body) }),
   });
   if (!res.ok) throw new ApiError(res.status, `http_${res.status}`);
   const blob = await res.blob();
@@ -77,7 +77,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
-      "content-type": "application/json",
+      // Only declare JSON when there is a body: an empty JSON body is a 400.
+      ...(init?.body !== undefined ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
@@ -91,8 +92,28 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error */
     }
+    // The session itself was refused (token expired, account deactivated):
+    // drop it and go back to the login page instead of leaving every page
+    // stuck on a load error. Other 401s (a wrong current password…) are
+    // ordinary errors for the caller to show.
+    if (res.status === 401 && code === "unauthorized" && token && typeof window !== "undefined") {
+      clearToken();
+      window.location.assign("/login");
+    }
     throw new ApiError(res.status, code);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** Claims of the current session (read-only, for UI hints — the API enforces). */
+export function getSession(): { role?: string; mfa?: boolean; exp?: number } | null {
+  const token = getToken();
+  if (!token) return null;
+  try {
+    const payload = token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(payload)) as { role?: string; mfa?: boolean; exp?: number };
+  } catch {
+    return null;
+  }
 }

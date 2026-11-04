@@ -50,11 +50,44 @@ Avancement par rapport au plan Phase 1 du cahier des charges §14.
 - [x] SCIM 2.0 (provisioning d'utilisateurs, `User.active`)
 - [x] SAML SSO (SP par org : métadonnées, login, ACS)
 
+## Étape 8 — Mise en ligne & extension infra 🚧
+- [x] API serverless sur Vercel + Neon (migrations au build)
+- [x] Analyse des PR sans Redis (`ANALYSIS_MODE=inline`, idempotence en base)
+- [x] **Infra Shield** : agent VPS en lecture seule, règles ports/SSH/firewall/Docker/mises à jour, score, page Serveurs
+- [x] **BruteForce Shield** : verrouillage progressif compte + IP sur l'auth CodeGate, politiques, cibles vérifiées, tests login / énumération
+- [ ] BruteForce Shield (suite) : tests OTP et reset password, CAPTCHA après N échecs
+- [x] **Backup Shield** : déclaration des exécutions, chiffrement / SHA-256 / rétention / immutabilité, revérification d'intégrité, restauration PostgreSQL isolée, score de récupération, découverte dans l'agent
+- [ ] Backup Shield (suite) : restauration MySQL / MongoDB, alerte proactive « sauvegarde manquante » (cron), lecture directe des réglages S3 Object Lock
+- [x] Écran « Connecter GitHub » (installation, choix des dépôts, révocation) — reste : créer l'App GitHub et renseigner ses clés en production
+- [x] Faux positifs mémorisés (US02), vulnérabilités connues OSV + paquets inexistants (US04), prompt injection (§10.5)
+- [x] Sessions de 12 h, MFA obligatoire pour owner/admin (§10.2), page Sécurité du compte
+
+## Étape 9 — Conformité & exploitation ✅
+- [x] RGPD : export complet, effacement de l'organisation / du compte, rétention 365 j (audit 730 j)
+- [x] Hébergement UE réel : API et site à Francfort (fra1), à côté de la base Neon
+- [x] Page de sécurité publique (`/security`)
+- [x] Maintenance quotidienne (Vercel Cron) : purge + alertes sauvegarde manquante / agent silencieux
+- [x] Dossier de preuves étendu à l'infrastructure, au brute force et aux sauvegardes
+- [x] Audit TLS dans l'agent (v1.2)
+- [x] Webhook Linear (synchronisation des issues de remédiation)
+- [x] CI GitHub Actions (typecheck, tests unitaires, tests d'intégration Postgres/Redis, build web)
+
+## Étape 10 — Workflows humains & multi-écosystèmes ✅
+- [x] Approbations humaines : actions d'agents (US06) et déploiements (US05), expiration 24 h, page Approbations
+- [x] Gestion des membres : rôles, désactivation, garde-fous (§12.1)
+- [x] Révocation guidée des secrets + preuve de remédiation (US03)
+- [x] Dépendances PyPI et Go (extraction, typosquatting, OSV, paquets inexistants)
+- [x] GitLab : analyse du vrai diff des MR, statut de commit et note (feedback équivalent à GitHub)
+
+## Étape 11 — Moteur Rust ✅
+- [x] `services/scan-engine` : secrets + SAST sur arbre syntaxique (oxc) pour JS/TS, compilé en WebAssembly et exécuté dans l'API (repli TypeScript automatique)
+- [x] Construction sans installation locale (image Docker officielle `rust`), tests Rust et build WebAssembly dans la CI
+
 ## Reste à faire (post-MVP)
-- [ ] Moteur de scan Rust avancé (`services/scan-engine`)
-- [ ] Observabilité (OpenTelemetry), CI/CD, déploiement UE
-- [ ] Enrichissement IA (triage via Claude), détection de prompt injection
-- [ ] SAML : poster dans le dépôt GitLab (statut/commentaire MR), feedback GitLab-like
+- [ ] Observabilité (OpenTelemetry, Sentry) — nécessite un compte
+- [ ] Facturation Stripe — nécessite un compte
+- [x] Création de l'App GitHub en un clic depuis CodeGate (flux manifeste, clés chiffrées) — reste : cliquer sur « Créer l'App sur GitHub »
+- [ ] Enrichissement IA des explications via Gemini — nécessite une clé API
 
 ---
 
