@@ -58,6 +58,8 @@ test("secret scanner: templates, doc examples and local dev DBs don't block", ()
   assert.equal(scan("url: postgresql://user:<MOT_DE_PASSE>@db.example.com/x").length, 0);
   assert.equal(scan("'postgres://user:pw@host'").length, 0);
   assert.equal(scan('aws = "AKIAIOSFODNN7EXAMPLE"').length, 0);
+  // Supabase config.toml: a reference to an env var, not a value.
+  assert.equal(scan('secret = "env(SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET)"').length, 0);
   // Local-only database → reported at low confidence (does not block).
   for (const line of [
     "DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci",
@@ -106,6 +108,58 @@ test("dependency scanner: legitimate near-miss packages are not typosquats", () 
     );
     assert.equal(dep!.riskLevel, "low", `${name} should score low risk`);
   }
+});
+
+test("dependency scanner: scripts/engines are not dependencies (section-aware)", () => {
+  const names = (diff: string) => scanDependencies(parseUnifiedDiff(diff)).map((d) => d.name);
+  // A whole new package.json: only the dependency sections count.
+  const whole = diffFor("package.json", [
+    "{",
+    '  "name": "app",',
+    '  "scripts": {',
+    '    "test": "jest",',
+    '    "dev": "next dev",',
+    '    "build": "vitest run"',
+    "  },",
+    '  "engines": {',
+    '    "node": ">=22"',
+    "  },",
+    '  "dependencies": {',
+    '    "express": "^4.18.0"',
+    "  },",
+    '  "devDependencies": {',
+    '    "vitest": "^1.6.0"',
+    "  }",
+    "}",
+  ]);
+  assert.deepEqual(names(whole), ["express", "vitest"]);
+
+  // A partial edit whose section header is in the hunk's context lines.
+  const ctx = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -10,4 +10,6 @@",
+    '   "scripts": {',
+    '+    "test": "jest",',
+    '     "lint": "eslint ."',
+    "   },",
+    '   "dependencies": {',
+    '+    "zod": "^3.23.0",',
+    '     "express": "^4.18.0"',
+  ].join("\n");
+  assert.deepEqual(names(ctx), ["zod"]);
+
+  // Section out of view: fall back to "does the value look like a version?".
+  const blind = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -20,2 +20,4 @@",
+    '+    "test": "jest --maxWorkers=4",',
+    '+    "left-pad": "1.3.0",',
+  ].join("\n");
+  assert.deepEqual(names(blind), ["left-pad"]);
 });
 
 test("dependency scanner scores a typosquat as critical", () => {
@@ -196,6 +250,32 @@ test("secret scanner: placeholders and sample files do not block", () => {
   // Low-confidence secret warns but never blocks on its own.
   const d = decide({ findings: [], secrets: sample, dependencies: [] });
   assert.notEqual(d.decision, "block");
+});
+
+test("score: repeats of one rule have diminishing weight; distinct rules add up", () => {
+  const f = (ruleId: string) => ({
+    type: "sast" as const,
+    severity: "medium" as const,
+    title: ruleId,
+    description: "",
+    ruleId,
+  });
+  // 8 × the same medium hygiene rule: one fix, not a block.
+  const repeated = decide({
+    findings: Array.from({ length: 8 }, () => f("github-actions-mutable-action-tag")),
+    secrets: [],
+    dependencies: [],
+  });
+  assert.equal(repeated.riskScore, 16); // 8 × min(1 + 0.25·7, 2)
+  assert.notEqual(repeated.decision, "block");
+  // Distinct medium rules still accumulate.
+  const distinct = decide({
+    findings: ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map(f),
+    secrets: [],
+    dependencies: [],
+  });
+  assert.equal(distinct.riskScore, 72);
+  assert.equal(distinct.decision, "block");
 });
 
 test("decision: secret ⇒ blocked, high ⇒ warning, clean ⇒ passed", () => {

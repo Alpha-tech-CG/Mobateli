@@ -78,21 +78,68 @@ interface DepEntry {
   version: string;
 }
 
-/** Extract dependency entries from the added lines of any package.json. */
+const DEP_SECTIONS = new Set([
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+]);
+
+/**
+ * Does this look like an npm version spec (`^1.2`, `~3`, `>=2 <3`, `*`,
+ * `workspace:*`, `git+https://…`)? Used only when the enclosing section is out
+ * of the hunk's view.
+ */
+function isVersionSpec(v: string): boolean {
+  return (
+    /^(\^|~|[<>]=?|=)?\s*v?\d/.test(v) ||
+    /^(\*|x|latest|next|beta|canary)$/i.test(v) ||
+    /^(workspace|catalog|npm|file|link|portal|git\+?\w*|github|https?):/.test(v)
+  );
+}
+
+/**
+ * Extract dependency entries added to any package.json.
+ *
+ * Section-aware: only `dependencies`/`devDependencies`/`peerDependencies`/
+ * `optionalDependencies` count. A plain line-by-line match also picked up
+ * `scripts` — `"test": "jest"` became a package "test", one edit away from
+ * "jest", i.e. a *critical typosquat* that blocked most real projects.
+ */
 export function extractAddedDependencies(diff: ParsedDiff): DepEntry[] {
   const deps: DepEntry[] = [];
   const entry = /^\s*"([^"]+)"\s*:\s*"([^"]+)"\s*,?\s*$/;
-  for (const line of diff.addedLines) {
-    if (!line.file.endsWith("package.json")) continue;
-    const m = line.content.match(entry);
-    if (!m) continue;
-    const name = m[1]!;
-    const version = m[2]!;
-    // Skip non-dependency fields that also look like "k": "v".
-    if (["name", "version", "description", "license", "main", "module", "type"].includes(name)) {
-      continue;
+  const opens = /^\s*(?:"([^"]+)"\s*:\s*)?\{\s*$/;
+  const closes = /^\s*\}/;
+
+  for (const [file, lines] of diff.newSideByFile) {
+    if (!file.endsWith("package.json")) continue;
+    // Stack of enclosing object keys; null = structure unknown (hunk began
+    // mid-file and we haven't seen the section header).
+    let stack: string[] | null = null;
+    for (const l of lines) {
+      if (l.hunkStart) stack = null;
+      const open = l.content.match(opens);
+      if (open) {
+        if (open[1] === undefined) stack = ["<root>"];
+        else (stack ??= ["<root>"]).push(open[1]);
+        continue;
+      }
+      if (closes.test(l.content)) {
+        if (stack) {
+          stack.pop();
+          if (!stack.length) stack = null;
+        }
+        continue;
+      }
+      if (!l.added) continue;
+      const m = l.content.match(entry);
+      if (!m) continue;
+      const [, name, version] = m as unknown as [string, string, string];
+      const section = stack?.[stack.length - 1];
+      const isDep = section !== undefined ? DEP_SECTIONS.has(section) : isVersionSpec(version);
+      if (isDep) deps.push({ name, version });
     }
-    deps.push({ name, version });
   }
   return deps;
 }

@@ -44,8 +44,9 @@ const PLACEHOLDER =
 
 function looksLikePlaceholder(value: string): boolean {
   if (PLACEHOLDER.test(value)) return true;
-  // Templated/env references: ${VAR}, {{ VAR }}, <your-key>, process.env.X
-  if (/\$\{|\{\{|<[^>]+>|process\.env|os\.environ|import\.meta\.env/.test(value)) return true;
+  // Templated/env references: ${VAR}, {{ VAR }}, <your-key>, process.env.X,
+  // and Supabase/Terraform-style env("VAR") / env(VAR) indirections.
+  if (/\$\{|\{\{|<[^>]+>|process\.env|os\.environ|import\.meta\.env|^env\(/.test(value)) return true;
   // A run of a single repeated char (aaaa…, 0000…) is never a live secret.
   if (/^(.)\1{7,}$/.test(value)) return true;
   return false;
