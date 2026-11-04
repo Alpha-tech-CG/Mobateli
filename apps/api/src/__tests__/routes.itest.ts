@@ -342,6 +342,15 @@ test("members: an admin cannot mint an owner", async () => {
   assert.equal(escalate.statusCode, 403);
 });
 
+test("login: email is case- and space-insensitive", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    payload: { email: "  Owner@ACME.test ", password: "supersecret-password" },
+  });
+  assert.equal(res.statusCode, 200);
+});
+
 test("session tokens expire after 12h, and an expired token is refused", async () => {
   const claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString());
   assert.equal(claims.exp - claims.iat, 12 * 3600);

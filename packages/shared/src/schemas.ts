@@ -6,7 +6,9 @@ import { ROLES, SEVERITIES, AGENT_PERMISSIONS, AGENT_DECISIONS } from "./enums.j
  * for request shapes — the API validates every input against them (cahier §13.4).
  */
 
-export const emailSchema = z.string().email().max(320);
+// Normalized: "Zlat@CodeGate.dev " and "zlat@codegate.dev" are one account —
+// otherwise a capital letter at login reads as "no such user".
+export const emailSchema = z.string().trim().toLowerCase().email().max(320);
 
 /**
  * Password policy: min 12 chars. We do not cap length aggressively (argon2
