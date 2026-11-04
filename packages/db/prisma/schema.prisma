@@ -114,11 +114,11 @@ enum DeployDecision {
 // ─── Core tenancy ───────────────────────────────────────
 
 model Organization {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String
-  plan      String   @default("free")
-  region    String   @default("eu")
-  createdAt DateTime @default(now())
+  id               String   @id @default(uuid()) @db.Uuid
+  name             String
+  plan             String   @default("free")
+  region           String   @default("eu")
+  createdAt        DateTime @default(now())
   // Analysis parameters (engines, ignored paths, thresholds…). Shape and
   // defaults live in @codegate/shared (analysisSettingsSchema); null = defaults.
   analysisSettings Json?
@@ -146,40 +146,62 @@ model Organization {
 }
 
 model User {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @db.Uuid
-  email          String   @unique
-  name           String
-  passwordHash   String
-  role           Role     @default(developer)
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @db.Uuid
+  email             String    @unique
+  name              String
+  passwordHash      String
+  role              Role      @default(developer)
   // Active flag for SCIM provisioning/deprovisioning (cahier §12.2 P3).
-  active         Boolean  @default(true)
-  mfaEnabled     Boolean  @default(false)
+  active            Boolean   @default(true)
+  mfaEnabled        Boolean   @default(false)
   // TOTP secret, encrypted at rest (AES-256-GCM). Null until MFA is set up.
-  mfaSecret      String?
-  createdAt      DateTime @default(now())
+  mfaSecret         String?
+  // Set once the user proved they own the mailbox (link or invite/reset).
+  emailVerifiedAt   DateTime?
+  // Sessions issued before this instant are rejected (password reset).
+  sessionsRevokedAt DateTime?
+  createdAt         DateTime  @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  authTokens   AuthToken[]
 
   @@index([organizationId])
   @@map("users")
 }
 
+/// One-time links sent by email (verification, password reset, invitation).
+/// Only the SHA-256 of the token is stored; the raw token lives in the email.
+model AuthToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  purpose   String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@map("auth_tokens")
+}
+
 // ─── Repositories & pull requests ───────────────────────
 
 model Repository {
-  id              String          @id @default(uuid()) @db.Uuid
-  organizationId  String          @db.Uuid
-  provider        ScmProvider
-  externalId      String
-  name            String
-  defaultBranch   String          @default("main")
-  protectionLevel ProtectionLevel @default(observe)
+  id               String          @id @default(uuid()) @db.Uuid
+  organizationId   String          @db.Uuid
+  provider         ScmProvider
+  externalId       String
+  name             String
+  defaultBranch    String          @default("main")
+  protectionLevel  ProtectionLevel @default(observe)
   // GitHub App installation that grants access to this repo (for token minting).
-  installationId  BigInt?
+  installationId   BigInt?
   // Re-scan the default branch automatically when it changes.
-  autoScan        Boolean         @default(true)
-  createdAt       DateTime        @default(now())
+  autoScan         Boolean         @default(true)
+  createdAt        DateTime        @default(now())
   // Per-repository overrides of the organization analysis parameters.
   analysisSettings Json?
 

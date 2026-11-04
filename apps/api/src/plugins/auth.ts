@@ -11,6 +11,8 @@ export interface AuthPrincipal {
   role: Role;
   /** True when this session passed a second factor (TOTP or the SSO IdP). */
   mfa?: boolean;
+  /** Issued-at (seconds), set by @fastify/jwt. */
+  iat?: number;
 }
 
 /** Roles that must use MFA before any administrative action (cahier §10.2). */
@@ -44,12 +46,14 @@ export interface SessionAccount {
   active: boolean;
   role: Role;
   organizationId: string;
+  /** Sessions issued before this instant are void (password reset). */
+  sessionsRevokedAt?: Date | null;
 }
 
 const loadAccountFromDb = (p: AuthPrincipal): Promise<SessionAccount | null> =>
   prisma.user.findUnique({
     where: { id: p.userId },
-    select: { active: true, role: true, organizationId: true },
+    select: { active: true, role: true, organizationId: true, sessionsRevokedAt: true },
   });
 
 async function authPlugin(
@@ -76,6 +80,10 @@ async function authPlugin(
     // effect without waiting for the token to expire.
     const user = await loadAccount(req.user);
     if (!user || !user.active || user.organizationId !== req.user.organizationId) {
+      await reply.code(401).send({ error: "unauthorized" });
+      return;
+    }
+    if (user.sessionsRevokedAt && (req.user.iat ?? 0) * 1000 < user.sessionsRevokedAt.getTime()) {
       await reply.code(401).send({ error: "unauthorized" });
       return;
     }

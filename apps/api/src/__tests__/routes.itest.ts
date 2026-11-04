@@ -1489,3 +1489,120 @@ test("rgpd: export without secrets, then erase the organization", async () => {
   assert.equal(await prisma.organization.count({ where: { name: "Acme" } }), 0);
   assert.equal(await prisma.user.count({ where: { email: "owner@acme.test" } }), 0);
 });
+
+test("email: verification, forgotten password (sessions revoked), invitation", async () => {
+  const { setMailTransport } = await import("../lib/mailer.js");
+  const outbox: { to: string; tag: string; text: string }[] = [];
+  setMailTransport(async (m) => {
+    outbox.push({ to: m.to, tag: m.tag, text: m.text });
+    return { sent: true, id: `it-${outbox.length}` };
+  });
+  const linkToken = (tag: string, to: string) => {
+    const mail = [...outbox].reverse().find((m) => m.tag === tag && m.to === to);
+    assert.ok(mail, `a ${tag} email went to ${to}`);
+    const m = /#token=([A-Za-z0-9_-]+)/.exec(mail.text);
+    assert.ok(m, "the link carries the token in the URL fragment");
+    return m[1]!;
+  };
+  try {
+    // 1. Signup sends a verification link; the account starts unverified.
+    const signup = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/signup",
+      payload: { email: "mail@acme-mail.test", password: "first-password-123", name: "Mia", organizationName: "MailCo" },
+    });
+    assert.equal(signup.statusCode, 201);
+    assert.equal(signup.json().verificationSent, true);
+    const session = signup.json().token as string;
+    const me = () => app.inject({ method: "GET", url: "/api/v1/me", headers: { authorization: `Bearer ${session}` } });
+    assert.equal((await me()).json().user.emailVerified, false);
+
+    const verifyToken = linkToken("verify_email", "mail@acme-mail.test");
+    const bad = await app.inject({ method: "POST", url: "/api/v1/auth/verify-email", payload: { token: "x".repeat(43) } });
+    assert.equal(bad.statusCode, 400);
+    const ok = await app.inject({ method: "POST", url: "/api/v1/auth/verify-email", payload: { token: verifyToken } });
+    assert.equal(ok.statusCode, 200);
+    assert.equal((await me()).json().user.emailVerified, true);
+    const reused = await app.inject({ method: "POST", url: "/api/v1/auth/verify-email", payload: { token: verifyToken } });
+    assert.equal(reused.statusCode, 400, "single use");
+    // Only the hash is stored.
+    const stored = await prisma.authToken.findMany({ select: { tokenHash: true } });
+    assert.ok(stored.every((t) => t.tokenHash !== verifyToken && /^[0-9a-f]{64}$/.test(t.tokenHash)));
+
+    // 2. Forgot password: same answer for unknown addresses, no email sent.
+    const before = outbox.length;
+    const unknown = await app.inject({ method: "POST", url: "/api/v1/auth/forgot-password", payload: { email: "nobody@acme-mail.test" } });
+    assert.equal(unknown.statusCode, 202);
+    assert.equal(outbox.length, before, "no email for an unknown address");
+    const known = await app.inject({ method: "POST", url: "/api/v1/auth/forgot-password", payload: { email: "MAIL@acme-mail.test " } });
+    assert.equal(known.statusCode, 202);
+    assert.deepEqual(known.json(), unknown.json(), "indistinguishable answers");
+    const resetToken = linkToken("reset_password", "mail@acme-mail.test");
+
+    // Sessions are second-precision: let the current one become "older".
+    await new Promise((r) => setTimeout(r, 1100));
+    const reset = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/reset-password",
+      payload: { token: resetToken, password: "second-password-456" },
+    });
+    assert.equal(reset.statusCode, 200);
+    assert.equal((await me()).statusCode, 401, "existing sessions are logged out");
+    assert.ok(outbox.some((m) => m.tag === "password_changed" && m.to === "mail@acme-mail.test"));
+    const again = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/reset-password",
+      payload: { token: resetToken, password: "third-password-789" },
+    });
+    assert.equal(again.statusCode, 400, "reset link is single use");
+    const oldLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "mail@acme-mail.test", password: "first-password-123" },
+    });
+    assert.equal(oldLogin.statusCode, 401);
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "mail@acme-mail.test", password: "second-password-456" },
+    });
+    assert.equal(login.statusCode, 200);
+    const owner = login.json().token as string;
+    const meNew = await app.inject({ method: "GET", url: "/api/v1/me", headers: { authorization: `Bearer ${owner}` } });
+    assert.equal(meNew.statusCode, 200, "a session opened after the reset works");
+
+    // 3. Invitation: an activation link instead of a temporary password.
+    const invite = await app.inject({
+      method: "POST",
+      url: "/api/v1/organization/members",
+      headers: { authorization: `Bearer ${owner}` },
+      payload: { email: "newdev@acme-mail.test", role: "developer" },
+    });
+    assert.equal(invite.statusCode, 201);
+    assert.equal(invite.json().inviteSent, true);
+    assert.equal(invite.json().tempPassword, undefined, "no password travels through the inviter");
+    const inviteToken = linkToken("invite", "newdev@acme-mail.test");
+    const accept = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/accept-invite",
+      payload: { token: inviteToken, password: "invitee-password-1", name: "New Dev" },
+    });
+    assert.equal(accept.statusCode, 200);
+    const invitee = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${accept.json().token}` },
+    });
+    assert.equal(invitee.json().user.name, "New Dev");
+    assert.equal(invitee.json().user.emailVerified, true);
+    assert.equal(invitee.json().user.role, "developer");
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/accept-invite",
+      payload: { token: inviteToken, password: "attacker-password-1" },
+    });
+    assert.equal(replay.statusCode, 400, "invite link is single use");
+  } finally {
+    setMailTransport(null);
+  }
+});

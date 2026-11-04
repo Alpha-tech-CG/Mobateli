@@ -60,6 +60,18 @@ export const changePasswordSchema = z
   });
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
+/** One-time token from an email link (base64url, 256 bits). */
+const emailTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{20,100}$/, "Lien invalide");
+
+export const forgotPasswordSchema = z.object({ email: emailSchema });
+export const resetPasswordSchema = z.object({ token: emailTokenSchema, password: passwordSchema });
+export const verifyEmailSchema = z.object({ token: emailTokenSchema });
+export const acceptInviteSchema = z.object({
+  token: emailTokenSchema,
+  password: passwordSchema,
+  name: z.string().trim().min(1).max(120).optional(),
+});
+
 export const inviteMemberSchema = z.object({
   email: emailSchema,
   role: z.enum(ROLES),

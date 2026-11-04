@@ -23,7 +23,7 @@ import {
   FolderGit2,
   SlidersHorizontal,
 } from "lucide-react";
-import { clearToken, getSession, getToken } from "@/lib/api";
+import { api, clearToken, getSession, getToken } from "@/lib/api";
 
 const NAV = [
   { href: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
@@ -52,6 +52,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
 
   const [needsMfa, setNeedsMfa] = useState(false);
+  const [unverified, setUnverified] = useState<string | null>(null);
+  const [resend, setResend] = useState<"idle" | "sending" | "sent" | "error">("idle");
 
   useEffect(() => {
     const session = getSession();
@@ -63,7 +65,21 @@ export function Shell({ children }: { children: ReactNode }) {
     }
     setNeedsMfa((session.role === "owner" || session.role === "admin") && !session.mfa);
     setReady(true);
+    api<{ user: { email: string; emailVerified: boolean } }>("/api/v1/me")
+      .then((r) => setUnverified(r.user.emailVerified ? null : r.user.email))
+      .catch(() => undefined);
   }, [router]);
+
+  async function resendVerification() {
+    setResend("sending");
+    try {
+      const r = await api<{ sent: boolean; alreadyVerified: boolean }>("/api/v1/auth/verify-email/resend", { method: "POST" });
+      if (r.alreadyVerified) setUnverified(null);
+      setResend(r.sent || r.alreadyVerified ? "sent" : "error");
+    } catch {
+      setResend("error");
+    }
+  }
 
   if (!ready) return null;
 
@@ -106,6 +122,26 @@ export function Shell({ children }: { children: ReactNode }) {
         </button>
       </aside>
       <main className="min-w-0 flex-1 overflow-x-hidden px-6 py-6">
+        {unverified ? (
+          <div
+            className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/60 px-4 py-3 text-sm"
+            role="status"
+          >
+            <span>
+              Confirmez votre adresse <span className="font-medium">{unverified}</span> avec le lien reçu par email
+              pour recevoir les alertes de sécurité.
+              {resend === "sent" ? " Nouveau lien envoyé." : resend === "error" ? " Envoi impossible, réessayez plus tard." : ""}
+            </span>
+            <button
+              type="button"
+              onClick={resendVerification}
+              disabled={resend === "sending" || resend === "sent"}
+              className="cursor-pointer rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-default disabled:opacity-60"
+            >
+              {resend === "sending" ? "Envoi…" : "Renvoyer le lien"}
+            </button>
+          </div>
+        ) : null}
         {needsMfa && pathname !== "/settings/security" ? (
           <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
             <span>

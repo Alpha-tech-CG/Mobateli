@@ -18,6 +18,14 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 | POST | `/api/v1/auth/mfa/setup` | ✅ | Génère un secret TOTP, renvoie l'`otpauth://` |
 | POST | `/api/v1/auth/mfa/verify` | ✅ | Confirme le premier code et active la MFA |
 | POST | `/api/v1/auth/password` | ✅ | `{ currentPassword, newPassword }` — change son propre mot de passe (l'actuel est exigé) |
+| GET | `/api/v1/me` | ✅ | Profil de l'utilisateur connecté (`emailVerified`, `mfaEnabled`, rôle) |
+| POST | `/api/v1/auth/verify-email` | — | `{ token }` — confirme l'adresse (lien reçu à l'inscription, 48 h, usage unique) |
+| POST | `/api/v1/auth/verify-email/resend` | ✅ | Renvoie le lien de vérification (3/heure) |
+| POST | `/api/v1/auth/forgot-password` | — | `{ email }` → toujours `202` (pas d'énumération) ; envoie un lien valable 1 h |
+| POST | `/api/v1/auth/reset-password` | — | `{ token, password }` — nouveau mot de passe, **déconnecte toutes les sessions** |
+| POST | `/api/v1/auth/accept-invite` | — | `{ token, password, name? }` — active un compte invité, renvoie un JWT |
+
+Les liens envoyés par email portent le jeton dans le fragment d'URL (`#token=…`) : jamais transmis au serveur web, ni dans les logs, ni dans l'en-tête Referer. Seul son SHA-256 est stocké (`auth_tokens`).
 
 ## Organisation & dépôts
 
@@ -25,7 +33,7 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 |---|---|---|---|
 | GET | `/api/v1/organization` | tous | Organisation courante |
 | GET | `/api/v1/organization/members` | tous | Membres |
-| POST | `/api/v1/organization/members` | owner/admin | Invite un membre (mot de passe temporaire renvoyé une fois ; seul un owner peut créer un owner) |
+| POST | `/api/v1/organization/members` | owner/admin | Invite un membre : lien d'activation par email (7 jours) si l'envoi d'emails est configuré, sinon mot de passe temporaire renvoyé une fois ; seul un owner peut créer un owner |
 | POST | `/api/v1/organization/members/:id/reset-password` | owner/admin | Réinitialise le mot de passe d'un membre (temporaire renvoyé une fois ; seul un owner réinitialise un owner) |
 | GET | `/api/v1/repositories` | tous | Dépôts connectés |
 

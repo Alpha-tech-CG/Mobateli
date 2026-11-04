@@ -72,6 +72,10 @@ const envSchema = z.object({
   REPORT_SIGNING_P12_PASSPHRASE: z.string().optional(),
 
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  // Transactional email (verification, password reset, invitations) via
+  // Resend. Without a key, development logs the emails instead.
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().min(3).default("CodeGate <onboarding@resend.dev>"),
   // Public base URL of this API — used to build SAML SP entityId/ACS URLs.
   PUBLIC_API_URL: z.string().url().default("http://localhost:4000"),
 });

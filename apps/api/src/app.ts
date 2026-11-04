@@ -100,7 +100,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(async (instance) => {
     await authRoutes(instance, config);
   });
-  await app.register(organizationRoutes);
+  await app.register(async (instance) => organizationRoutes(instance, config));
   await app.register(policyRoutes);
   await app.register(async (instance) => {
     await pullRequestRoutes(instance, jobs);
