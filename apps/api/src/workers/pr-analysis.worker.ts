@@ -11,7 +11,10 @@ export function createPrAnalysisWorker(
 ): Worker<PrAnalysisJob> {
   return new Worker<PrAnalysisJob>(
     PR_ANALYSIS_QUEUE,
-    (job) => processPrAnalysis(config, job.data),
+    (job) =>
+      processPrAnalysis(config, job.data, {
+        last: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
+      }),
     { connection, concurrency: 5 },
   );
 }

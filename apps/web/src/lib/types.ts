@@ -142,6 +142,20 @@ export interface Dependency {
   reason: string | null;
 }
 
+export interface EngineReport {
+  status: "ok" | "skipped" | "failed";
+  detail?: string;
+}
+
+/** How the last analysis of a PR went (from its audit trail). */
+export interface LastAnalysis {
+  outcome: "analyzed" | "analysis_unavailable" | "analysis_failed";
+  at: string;
+  /** One entry per engine id (see ENGINE_IDS in @codegate/shared). */
+  engines: Record<string, EngineReport>;
+  reason?: string;
+}
+
 export interface PullRequestDetail {
   id: string;
   number: number;
@@ -415,6 +429,91 @@ export interface ScanSummary {
   riskyDependencies: number;
   bySeverity: Record<string, number>;
   engine: string;
+  fragility?: { score: number; grade: FragilityGrade } | null;
+}
+
+// ─── Architecture (graph, fragility, blast radius) ─────────────────────────
+
+export type ArchRole = "entry" | "ui" | "service" | "data" | "auth" | "config";
+export type FragilityGrade = "solide" | "correcte" | "fragile" | "très fragile";
+export type SensitiveKind = "data" | "auth" | "config";
+
+export interface ArchModule {
+  id: string;
+  label: string;
+  role: ArchRole;
+  files: number;
+  loc: number;
+  fanIn: number;
+  fanOut: number;
+  instability: number;
+  inCycle: boolean;
+  sensitive: SensitiveKind[];
+  issues: { critical: number; high: number; medium: number; low: number };
+}
+
+export interface ArchEdge {
+  from: string;
+  to: string;
+  weight: number;
+  cycle: boolean;
+  mutual: boolean;
+  violation: boolean;
+}
+
+export interface BlastRadius {
+  key: string;
+  kind: "finding" | "secret";
+  title: string;
+  severity: Severity;
+  location: string;
+  module: string | null;
+  impactScore: number;
+  level: "critique" | "élevé" | "modéré" | "limité";
+  dependents: number;
+  reachPercent: number;
+  entryPoints: string[];
+  assets: { file: string; kind: SensitiveKind }[];
+  impactedModules: string[];
+  exposedModules: string[];
+  assetModules: string[];
+  narrative: string;
+}
+
+export interface ArchitectureReport {
+  version: 1;
+  stats: {
+    sourceFiles: number;
+    imports: number;
+    externalPackages: number;
+    entryPoints: number;
+    filesInCycles: number;
+    cycles: number;
+    layerViolations: number;
+    orphanFiles: number;
+    languages: string[];
+  };
+  fragility: {
+    score: number;
+    grade: FragilityGrade;
+    factors: { id: string; label: string; points: number; max: number; detail: string }[];
+    summary: string;
+    projectedScore: number;
+  };
+  modules: ArchModule[];
+  edges: ArchEdge[];
+  blast: BlastRadius[];
+  proposals: {
+    id: string;
+    priority: 1 | 2 | 3;
+    title: string;
+    problem: string;
+    actions: string[];
+    advantage: string;
+    effort: "faible" | "moyen" | "élevé";
+    gain: number;
+    targets: string[];
+  }[];
 }
 
 export interface ScanRow {
@@ -438,7 +537,18 @@ export interface ScanDetail extends ScanRow {
   result: {
     secrets: { secretType: string; location: string; maskedPreview: string; severity: Severity }[];
     findings: { type: string; severity: Severity; title: string; description: string; filePath?: string; line?: number; remediation?: string }[];
-    dependencies: { ecosystem: string; name: string; version: string; trustScore: number; riskLevel: string; reason?: string }[];
+    dependencies: {
+      ecosystem: string;
+      name: string;
+      version: string;
+      /** Installed version from a lockfile; `version` is the declared range. */
+      resolvedVersion?: string;
+      trustScore: number;
+      riskLevel: string;
+      reason?: string;
+    }[];
     suppressed: number;
+    /** Absent on scans made before the architecture analysis existed. */
+    architecture?: ArchitectureReport | null;
   } | null;
 }

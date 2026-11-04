@@ -10,6 +10,7 @@ import { ReportButton } from "@/components/report-button";
 import { Card, SeverityBadge } from "@/components/ui";
 import { RiskBadge } from "@/components/risk-badge";
 import { ScanProgress } from "@/components/scan-progress";
+import { ArchitecturePanel } from "@/components/architecture-panel";
 import type { ScanDetail } from "@/lib/types";
 
 export default function ScanDetailPage() {
@@ -24,6 +25,7 @@ function ScanView() {
   const { id } = useParams<{ id: string }>();
   const [scan, setScan] = useState<ScanDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"issues" | "architecture">("issues");
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -78,6 +80,43 @@ function ScanView() {
 
       {result ? (
         <>
+          <div role="tablist" aria-label="Vue de l'analyse" className="flex gap-1 border-b border-border">
+            {(
+              [
+                ["issues", "Failles & dépendances"],
+                ["architecture", "Architecture & impact"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={tab === key}
+                onClick={() => setTab(key)}
+                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
+                  tab === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {label}
+                {key === "architecture" && result.architecture ? (
+                  <span className="ml-2 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                    {result.architecture.fragility.score}/100
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+
+          {tab === "architecture" ? (
+            result.architecture ? (
+              <ArchitecturePanel report={result.architecture} />
+            ) : (
+              <Card className="p-4 text-sm text-muted-foreground">
+                Cette analyse date d&apos;avant la cartographie d&apos;architecture : relancez une analyse du dépôt pour obtenir le graphe.
+              </Card>
+            )
+          ) : (
+          <>
           {scan.summary?.truncated ? (
             <Card className="p-4 text-sm text-warning">
               Dépôt volumineux : seuls les {scan.filesScanned} premiers fichiers ont été analysés.
@@ -109,7 +148,11 @@ function ScanView() {
                   <li key={i} className="px-4 py-3 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-mono">
-                        {d.name}@{d.version} <span className="text-xs text-muted-foreground">({d.ecosystem})</span>
+                        {d.name}@{d.resolvedVersion ?? d.version}{" "}
+                        <span className="text-xs text-muted-foreground">
+                          ({d.ecosystem}
+                          {d.resolvedVersion ? `, déclaré ${d.version}` : ""})
+                        </span>
                       </span>
                       <span className="text-xs font-medium">{d.riskLevel} · confiance {d.trustScore}/100</span>
                     </div>
@@ -166,6 +209,8 @@ function ScanView() {
               </ul>
             </details>
           ) : null}
+          </>
+          )}
         </>
       ) : null}
     </div>

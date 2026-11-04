@@ -563,7 +563,13 @@ export default function Landing() {
         </div>
         <div className="mx-auto mt-14 flex max-w-[1280px] items-center justify-between border-t border-[#232527] px-6 pt-6 text-[13px] text-white/60">
           <Link href="/security" className="flex items-center gap-2 hover:text-white"><Users className="size-4" aria-hidden /> Hébergement UE</Link>
-          <span>© 2026 CodeGate</span>
+          <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <Link href="/legal" className="hover:text-white">Mentions légales</Link>
+            <Link href="/terms" className="hover:text-white">CGU / CGV</Link>
+            <Link href="/privacy" className="hover:text-white">Confidentialité</Link>
+            <Link href="/dpa" className="hover:text-white">DPA</Link>
+            <span>© 2026 CodeGate</span>
+          </span>
         </div>
         <p className="font-display mx-auto mt-6 max-w-[1280px] select-none whitespace-nowrap px-6 text-[22vw] leading-[0.8] text-[#1d1f20] lg:text-[260px]" aria-hidden>
           CodeGate

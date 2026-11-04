@@ -12,7 +12,9 @@ import {
  * for request shapes — the API validates every input against them (cahier §13.4).
  */
 
-export const emailSchema = z.string().email().max(320);
+// Normalized: "Zlat@CodeGate.dev " and "zlat@codegate.dev" are one account —
+// otherwise a capital letter at login reads as "no such user".
+export const emailSchema = z.string().trim().toLowerCase().email().max(320);
 
 /**
  * Password policy: min 12 chars. We do not cap length aggressively (argon2
@@ -28,6 +30,10 @@ export const signupSchema = z.object({
   password: passwordSchema,
   name: z.string().min(1).max(120),
   organizationName: z.string().min(1).max(120),
+  /** The terms (CGU/CGV, privacy policy, DPA) must be accepted to sign up. */
+  acceptTerms: z.literal(true, { message: "Acceptez les conditions générales pour créer un compte" }),
+  /** Version of the legal texts shown to the user (LEGAL_VERSION on the web). */
+  termsVersion: z.string().trim().min(1).max(40).optional(),
 });
 export type SignupInput = z.infer<typeof signupSchema>;
 
@@ -46,6 +52,29 @@ export const mfaVerifySchema = z.object({
   totp: z.string().regex(/^\d{6}$/, "Code à 6 chiffres attendu"),
 });
 export type MfaVerifyInput = z.infer<typeof mfaVerifySchema>;
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(256),
+    newPassword: passwordSchema,
+  })
+  .refine((v) => v.currentPassword !== v.newPassword, {
+    message: "Le nouveau mot de passe doit être différent de l'actuel",
+    path: ["newPassword"],
+  });
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+/** One-time token from an email link (base64url, 256 bits). */
+const emailTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{20,100}$/, "Lien invalide");
+
+export const forgotPasswordSchema = z.object({ email: emailSchema });
+export const resetPasswordSchema = z.object({ token: emailTokenSchema, password: passwordSchema });
+export const verifyEmailSchema = z.object({ token: emailTokenSchema });
+export const acceptInviteSchema = z.object({
+  token: emailTokenSchema,
+  password: passwordSchema,
+  name: z.string().trim().min(1).max(120).optional(),
+});
 
 export const inviteMemberSchema = z.object({
   email: emailSchema,
@@ -106,8 +135,20 @@ export const connectLinearSchema = z.object({
 });
 export type ConnectLinearInput = z.infer<typeof connectLinearSchema>;
 
+/**
+ * The server POSTs to these URLs, so they are pinned to the real providers
+ * over HTTPS — an arbitrary URL would let a user aim the API at internal
+ * services (SSRF).
+ */
 export const connectSlackSchema = z.object({
-  webhookUrl: z.string().url().max(500),
+  webhookUrl: z
+    .string()
+    .url()
+    .max(500)
+    .refine(
+      (u) => u.startsWith("https://hooks.slack.com/"),
+      "URL de webhook Slack attendue (https://hooks.slack.com/…)",
+    ),
 });
 export type ConnectSlackInput = z.infer<typeof connectSlackSchema>;
 
@@ -131,7 +172,14 @@ export const connectGitlabApiSchema = z.object({
 });
 
 export const connectJiraSchema = z.object({
-  baseUrl: z.string().url().max(300),
+  baseUrl: z
+    .string()
+    .url()
+    .max(300)
+    .refine(
+      (u) => /^https:\/\/[a-z0-9-]+\.atlassian\.net(\/.*)?$/i.test(u),
+      "URL Jira Cloud attendue (https://<site>.atlassian.net)",
+    ),
   email: emailSchema,
   apiToken: z.string().min(10).max(500),
   projectKey: z.string().min(1).max(50),
@@ -185,6 +233,11 @@ export const githubManifestCompleteSchema = z.object({
 export const linkGithubSchema = z.object({
   installationId: z.coerce.number().int().positive(),
   state: z.string().min(20).max(2000),
+  /**
+   * One-time OAuth code GitHub adds when the App requests user authorization
+   * during installation: proves the user can access the installation.
+   */
+  code: z.string().min(1).max(200).optional(),
 });
 
 // ─── Infra Shield (extension §3) ──────────────────────────

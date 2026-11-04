@@ -11,6 +11,7 @@ import { organizationRoutes } from "./routes/organizations.js";
 import { policyRoutes } from "./routes/policies.js";
 import { pullRequestRoutes } from "./routes/pull-requests.js";
 import { integrationRoutes } from "./routes/integrations.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { auditRoutes } from "./routes/audit.js";
 import { agentGuardRoutes } from "./routes/agent-guard.js";
 import { scimRoutes } from "./routes/scim.js";
@@ -99,7 +100,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   await app.register(async (instance) => {
     await authRoutes(instance, config);
   });
-  await app.register(organizationRoutes);
+  await app.register(async (instance) => organizationRoutes(instance, config));
   await app.register(policyRoutes);
   await app.register(async (instance) => {
     await pullRequestRoutes(instance, jobs);
@@ -108,6 +109,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     await integrationRoutes(instance, config);
   });
   await app.register(findingRoutes);
+  await app.register(settingsRoutes);
   await app.register(privacyRoutes);
   await app.register(approvalRoutes);
   await app.register(async (instance) => {

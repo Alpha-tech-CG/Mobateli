@@ -157,10 +157,10 @@ export function expertBlocks(input: ExpertInput): Block[] {
   } else {
     const posture =
       crit > 0
-        ? `La posture de sécurité de ${input.subject} est insuffisante : ${crit} risque(s) critique(s) peuvent être exploités sans action de votre part.`
+        ? `La posture de sécurité ${ofSubject(input.subject)} est insuffisante : ${crit} risque(s) critique(s) peuvent être exploités sans action de votre part.`
         : high > 0
-          ? `La posture de sécurité de ${input.subject} est à renforcer : ${high} risque(s) élevé(s) restent ouverts, sans risque critique.`
-          : `La posture de sécurité de ${input.subject} est correcte : seuls des points de durcissement restent ouverts.`;
+          ? `La posture de sécurité ${ofSubject(input.subject)} est à renforcer : ${high} risque(s) élevé(s) restent ouverts, sans risque critique.`
+          : `La posture de sécurité ${ofSubject(input.subject)} est correcte : seuls des points de durcissement restent ouverts.`;
     bullets.push(posture);
     const chained = [...new Set(open.flatMap((i) => i.chains ?? []))];
     if (chained.length) {
@@ -177,9 +177,12 @@ export function expertBlocks(input: ExpertInput): Block[] {
       bullets.push(`Risque ${RISK_FR[i.severity]} — ${i.impact} (${i.title}).`);
     }
     const quick = plan.filter((p) => p.effort === "faible" && p.priority <= 2);
-    if (quick.length) {
-      const keys = new Set(quick.map((q) => q.key));
-      const after = input.rescore(input.items.filter((i) => !keys.has(i.key)));
+    const quickAfter = quick.length
+      ? input.rescore(input.items.filter((i) => !new Set(quick.map((q) => q.key)).has(i.key)))
+      : current;
+    // Only announce quick wins that actually move the score.
+    if (quick.length && quickAfter !== current) {
+      const after = quickAfter;
       bullets.push(
         input.scale === "security"
           ? `${quick.length} action(s) rapide(s), à effort faible, font passer le ${scoreWord} de ${current} à ${after}${unit}.`
@@ -276,3 +279,10 @@ export function expertBlocks(input: ExpertInput): Block[] {
 }
 
 const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+
+/** French contraction: "de le dépôt" → "du dépôt", "de les …" → "des …". */
+export function ofSubject(subject: string): string {
+  if (/^le /i.test(subject)) return `du ${subject.slice(3)}`;
+  if (/^les /i.test(subject)) return `des ${subject.slice(4)}`;
+  return `de ${subject}`;
+}

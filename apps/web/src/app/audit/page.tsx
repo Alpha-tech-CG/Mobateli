@@ -115,6 +115,7 @@ function Audit() {
       ) : null}
 
       <Card>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -144,6 +145,7 @@ function Audit() {
             ) : null}
           </tbody>
         </table>
+        </div>
       </Card>
     </div>
   );

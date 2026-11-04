@@ -1,83 +1,79 @@
-import { parseUnifiedDiff, type ParsedDiff } from "./diff.js";
-import { scanSecrets } from "./secret-scanner.js";
-import { scanDependencies } from "./dependency-scanner.js";
-import { runSastRules } from "./sast.js";
-import { analyzeConfig } from "./config-rules.js";
-import { detectPromptInjection } from "./prompt-injection.js";
-import { scanWithEngine } from "./engine/index.js";
-import { decide } from "./risk.js";
-import type { AnalysisResult, FindingResult } from "./types.js";
+import type { AnalysisSettings } from "@codegate/shared";
+import type { ParsedDiff, NewSideLine } from "./diff.js";
+import type { EngineRuntimeOptions } from "./engines/engine.js";
+import { runAnalysis, runCoreAnalysis, type PipelineResult } from "./engines/pipeline.js";
 
 /**
- * Stable identity of a finding across commits: rule + file, not the line
- * (lines move). Used to carry a human "false positive" verdict forward.
+ * Analysis entry points. The pipeline itself — engines, merge order, status
+ * reporting, parameters, human false-positive verdicts — lives in ./engines
+ * (see engines/engine.ts to add an engine, and @codegate/shared
+ * analysis-settings.ts for parameters; docs/ARCHITECTURE-ANALYSE.md).
  */
-export function findingFingerprint(f: Pick<FindingResult, "ruleId" | "title" | "filePath">): string {
-  return `${f.ruleId ?? f.title}|${f.filePath ?? ""}`;
-}
+
+export { findingFingerprint } from "./fingerprint.js";
+export type { PipelineResult } from "./engines/pipeline.js";
+
+/** Runtime options for the network/binary engines. Historical name. */
+export type IntelOptions = EngineRuntimeOptions;
 
 /**
- * Analysis pipeline entry point. Deterministic and pure: given a unified
- * diff, produce findings, secrets, dependencies, a risk score and a decision.
- * This is what the worker runs at its `TODO(étape 3)` point.
+ * Offline, synchronous analysis of a diff: the core engines only (Rust
+ * WebAssembly engine + TypeScript rules, dependency trust, configuration,
+ * prompt injection) — deterministic, no network.
+ * `suppressed`: fingerprints a human marked as false positives.
  */
 export function analyzeDiff(
   diff: string,
   suppressed: ReadonlySet<string> = new Set(),
-): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
-  return analyzeParsed(parseUnifiedDiff(diff), suppressed);
+  settings?: AnalysisSettings,
+): PipelineResult {
+  return runCoreAnalysis(diff, settings, suppressed);
 }
 
 /** Whole files of a repository snapshot, analysed as if every line were added. */
 export function analyzeFiles(
   files: { path: string; content: string }[],
   suppressed: ReadonlySet<string> = new Set(),
-): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
-  const parsed: ParsedDiff = { files: [], addedLines: [], addedByFile: new Map() };
+  settings?: AnalysisSettings,
+): PipelineResult {
+  const parsed: ParsedDiff = {
+    snapshot: true,
+    files: [],
+    addedLines: [],
+    addedByFile: new Map(),
+    newSideByFile: new Map(),
+  };
   for (const f of files) {
     parsed.files.push(f.path);
     parsed.addedByFile.set(f.path, f.content);
-    f.content.split("\n").forEach((content, i) => {
-      parsed.addedLines.push({ file: f.path, line: i + 1, content: content.replace(/\r$/, "") });
+    const side: NewSideLine[] = [];
+    f.content.split("\n").forEach((raw, i) => {
+      const content = raw.replace(/\r$/, "");
+      parsed.addedLines.push({ file: f.path, line: i + 1, content });
+      side.push({ content, added: true, hunkStart: i === 0 });
     });
+    parsed.newSideByFile.set(f.path, side);
   }
-  return analyzeParsed(parsed, suppressed);
+  return runCoreAnalysis(parsed, settings, suppressed);
 }
 
-function analyzeParsed(
-  parsed: ParsedDiff,
-  suppressed: ReadonlySet<string>,
-): AnalysisResult & { suppressed: FindingResult[]; engine: string } {
-
-  // Rust engine (WebAssembly) first: secrets + syntax-tree rules for JS/TS.
-  // Files it could not parse, other languages, or no engine ⇒ line rules.
-  const engine = scanWithEngine(parsed.addedLines);
-  const astFiles = new Set(engine?.astFiles ?? []);
-  const secrets = engine?.secrets ?? scanSecrets(parsed.addedLines);
-  const dependencies = scanDependencies(parsed);
-  const all = [
-    ...(engine?.findings ?? []),
-    ...runSastRules(parsed.addedLines.filter((l) => !astFiles.has(l.file))),
-    ...analyzeConfig(parsed.addedLines, parsed.files),
-    ...detectPromptInjection(parsed.addedLines, parsed.files),
-  ];
-  // False positives marked by a human are kept for the record but no longer
-  // weigh on the score or the decision (US02).
-  const findings = all.filter((f) => !suppressed.has(findingFingerprint(f)));
-  const suppressedFindings = all.filter((f) => suppressed.has(findingFingerprint(f)));
-
-  const { riskScore, decision, status } = decide({ findings, secrets, dependencies });
-
-  return {
-    findings,
-    secrets,
-    dependencies,
-    riskScore,
-    decision,
-    status,
-    suppressed: suppressedFindings,
-    engine: engine ? `rust-wasm ${engine.version}` : "typescript",
-  };
+/**
+ * Full analysis: core engines, then every enabled network/binary engine
+ * (dependency intelligence, Trivy/Grype, Semgrep, native taint engine), which
+ * fail open and report their status. Binary engines need a worker
+ * (`opts.worker === false` in serverless mode reports them as skipped).
+ */
+export async function analyzeDiffWithIntel(
+  diff: string,
+  opts: IntelOptions = {},
+  settings?: AnalysisSettings,
+  suppressed?: ReadonlySet<string>,
+): Promise<PipelineResult> {
+  return runAnalysis(diff, {
+    runtime: opts,
+    ...(settings ? { settings } : {}),
+    ...(suppressed ? { suppressed } : {}),
+  });
 }
 
 export * from "./types.js";

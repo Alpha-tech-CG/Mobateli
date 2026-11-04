@@ -86,6 +86,17 @@ interface PypiDoc {
 /** Go module paths escape capitals as "!x" on the module proxy. */
 const goEscape = (path: string) => path.replace(/[A-Z]/g, (c) => `!${c.toLowerCase()}`);
 
+/**
+ * An install script that runs nothing: `echo '…'`, `true`, `exit 0`, `:`,
+ * or a chain of those (e.g. @google/genai's "echo 'preinstall: no-op'").
+ */
+export function isNoOpScript(script: string): boolean {
+  return script
+    .split(/&&|;|\|\|/)
+    .map((part) => part.trim())
+    .every((part) => part === "" || /^(echo(\s.*)?|true|:|exit\s+0|node\s+-e\s+(['"])\s*\3)$/.test(part));
+}
+
 async function registryFacts(fetchImpl: typeof fetch, dep: DependencyResult): Promise<RegistryFacts> {
   if (dep.ecosystem === "npm") {
     const [doc, downloads] = await Promise.all([
@@ -95,14 +106,19 @@ async function registryFacts(fetchImpl: typeof fetch, dep: DependencyResult): Pr
     if (doc.status === 404) return { missing: true, installHooks: [] };
     const body = doc.body;
     const license = body ? (typeof body.license === "string" ? body.license : body.license?.type) ?? null : undefined;
+    // The installed version's scripts when the lockfile told us, else latest.
     const latest = body?.["dist-tags"]?.latest;
-    const scripts = latest ? body?.versions?.[latest]?.scripts : undefined;
+    const version = dep.resolvedVersion && body?.versions?.[dep.resolvedVersion] ? dep.resolvedVersion : latest;
+    const scripts = version ? body?.versions?.[version]?.scripts : undefined;
     return {
       missing: false,
       ...(body?.time?.created ? { created: new Date(body.time.created) } : {}),
       ...(body ? { maintainers: body.maintainers?.length ?? 0 } : {}),
       ...(license !== undefined ? { license } : {}),
-      installHooks: ["preinstall", "install", "postinstall"].filter((h) => scripts?.[h]),
+      installHooks: ["preinstall", "install", "postinstall"].filter((h) => {
+        const script = scripts?.[h];
+        return typeof script === "string" && !isNoOpScript(script);
+      }),
       ...(downloads.body?.downloads !== undefined ? { weeklyDownloads: downloads.body.downloads } : {}),
     };
   }
@@ -145,7 +161,8 @@ export async function enrichDependencies(
   if (!npm.length) return deps;
 
   // One OSV batch call for all packages.
-  const versions = npm.map((d) => baseVersion(d.version));
+  // The installed version when a lockfile told us, else the range's floor.
+  const versions = npm.map((d) => d.resolvedVersion ?? baseVersion(d.version));
   const osv = await getJson<{ results: { vulns?: { id: string }[] }[] }>(
     fetchImpl,
     "https://api.osv.dev/v1/querybatch",

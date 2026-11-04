@@ -13,6 +13,14 @@ import type { AppConfig } from "../config.js";
  *   POST /saml/:orgId/acs       — assertion consumer → issues a CodeGate JWT
  */
 export async function samlRoutes(app: FastifyInstance, config: AppConfig) {
+  // IdPs deliver the assertion with the HTTP-POST binding, i.e. an
+  // application/x-www-form-urlencoded body. Scoped to this plugin.
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string", bodyLimit: 1024 * 1024 },
+    (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body as string))),
+  );
+
   async function loadConn(orgId: string) {
     return prisma.samlConnection.findUnique({ where: { organizationId: orgId } });
   }

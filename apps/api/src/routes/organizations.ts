@@ -4,8 +4,12 @@ import { inviteMemberSchema, updateMemberSchema } from "@codegate/shared";
 import { hashPassword } from "../lib/password.js";
 import { recordAudit } from "../lib/audit.js";
 import { randomBytes } from "node:crypto";
+import type { AppConfig } from "../config.js";
+import { issueToken } from "../lib/auth-tokens.js";
+import { mailConfigured, sendEmail } from "../lib/mailer.js";
+import { inviteMessage } from "../lib/email-templates.js";
 
-export async function organizationRoutes(app: FastifyInstance) {
+export async function organizationRoutes(app: FastifyInstance, config: AppConfig) {
   /** Current organization (scoped to the principal's org). */
   app.get(
     "/api/v1/organization",
@@ -110,6 +114,10 @@ export async function organizationRoutes(app: FastifyInstance) {
     { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
     async (req, reply) => {
       const body = inviteMemberSchema.parse(req.body);
+      // Only an owner may grant owner — otherwise an admin could escalate.
+      if (body.role === "owner" && req.principal.role !== "owner") {
+        return reply.code(403).send({ error: "forbidden" });
+      }
 
       const existing = await prisma.user.findUnique({ where: { email: body.email } });
       if (existing) {
@@ -138,9 +146,23 @@ export async function organizationRoutes(app: FastifyInstance) {
         metadata: { role: body.role },
       });
 
-      // tempPassword is returned once so the inviter can relay it out-of-band;
-      // it is never persisted in clear text. Replace with an email flow.
-      return reply.code(201).send({ user, tempPassword });
+      // With email configured, the invitee gets a one-time activation link
+      // and chooses their own password; the random one above is never shown.
+      if (mailConfigured(config)) {
+        const [inviter, org] = await Promise.all([
+          prisma.user.findUniqueOrThrow({ where: { id: req.principal.userId }, select: { name: true } }),
+          prisma.organization.findUniqueOrThrow({ where: { id: req.principal.organizationId }, select: { name: true } }),
+        ]);
+        const token = await issueToken(user.id, "invite");
+        const mail = await sendEmail(
+          config,
+          inviteMessage(user.email, inviter.name, org.name, body.role, `${config.WEB_ORIGIN}/invite#token=${token}`),
+        );
+        if (mail.sent) return reply.code(201).send({ user, inviteSent: true });
+      }
+      // No email provider (or it failed): tempPassword is returned once so the
+      // inviter can relay it out-of-band; it is never persisted in clear text.
+      return reply.code(201).send({ user, inviteSent: false, tempPassword });
     },
   );
 
@@ -184,6 +206,42 @@ export async function organizationRoutes(app: FastifyInstance) {
         metadata: { from: member.role, to: updated.role, active: updated.active },
       });
       return { member: updated };
+    },
+  );
+
+  /**
+   * Reset a member's password (lost password, no email flow yet). Returns a
+   * one-time temporary password to relay out-of-band. Owner/admin only; only
+   * an owner may reset an owner.
+   */
+  app.post(
+    "/api/v1/organization/members/:id/reset-password",
+    { preHandler: [app.authenticate, app.requireRole("owner", "admin")] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const member = await prisma.user.findFirst({
+        where: { id, organizationId: req.principal.organizationId },
+        select: { id: true, role: true },
+      });
+      if (!member) return reply.code(404).send({ error: "not_found" });
+      if (member.role === "owner" && req.principal.role !== "owner") {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+
+      const tempPassword = randomBytes(24).toString("base64url");
+      await prisma.user.update({
+        where: { id: member.id },
+        data: { passwordHash: await hashPassword(tempPassword) },
+      });
+      await recordAudit({
+        organizationId: req.principal.organizationId,
+        actorType: "user",
+        actorId: req.principal.userId,
+        action: "member.password_reset",
+        resourceType: "user",
+        resourceId: member.id,
+      });
+      return { tempPassword };
     },
   );
 }

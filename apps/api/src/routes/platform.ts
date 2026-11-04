@@ -53,6 +53,11 @@ export async function platformRoutes(app: FastifyInstance, config: AppConfig) {
         redirect_url: `${web}/settings/github-app`,
         setup_url: `${web}/integrations/github/callback`,
         setup_on_update: true,
+        // Ask the installing user to authorize the App too: GitHub then returns
+        // a one-time code, with which "Connecter GitHub" verifies that this
+        // user really has access to the installation (not just an id).
+        request_oauth_on_install: true,
+        callback_urls: [`${web}/integrations/github/callback`],
         public: true,
         // Least privilege (US01): read code, report a check and a comment.
         default_permissions: {

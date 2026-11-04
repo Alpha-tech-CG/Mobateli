@@ -12,7 +12,9 @@
     "worker:start": "node --env-file=../../.env dist/worker.js",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "test:db:setup": "node ../../scripts/setup-test-db.mjs",
-    "test:integration": "node --import tsx --test \"src/**/*.itest.ts\"",
+    "corpus": "node --import tsx src/analysis/fixtures/corpus-cli.ts",
+    "measure": "node --import tsx scripts/measure-project.ts",
+    "test:integration": "node --import tsx --test --test-force-exit \"src/**/*.itest.ts\"",
     "build:vercel": "node scripts/build-vercel.mjs",
     "lint": "eslint src --ext .ts"
   },

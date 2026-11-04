@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseUnifiedDiff } from "./diff.js";
+import { parseUnifiedDiff, isCommentLine, isTestOrExampleFile } from "./diff.js";
 import { scanSecrets, shannonEntropy } from "./secret-scanner.js";
 import { scanDependencies, levenshtein, nearestPopular } from "./dependency-scanner.js";
 import { runSastRules } from "./sast.js";
@@ -37,9 +37,9 @@ test("secret scanner detects provider keys", () => {
   const d = diffFor("config.ts", [
     // Split so the fixture isn't a contiguous literal (secret scanners flag it).
     'const stripe = "sk_live_' + 'abcdefABCDEF0123456789xyz";',
-    'const aws = "AKIA' + 'IOSFODNN7EXAMPLE";',
+    'const aws = "AKIA' + 'Q3ZR7TPLM2XN4VWB";',
     "-----BEGIN RSA PRIVATE" + " KEY-----",
-    'const db = "postgres' + '://user:secretpw@host:5432/db";',
+    'const db = "postgres' + '://app:secretpw@db.prod.internal:5432/db";',
   ]);
   const secrets = scanSecrets(parseUnifiedDiff(d).addedLines);
   const types = secrets.map((s) => s.secretType);
@@ -49,6 +49,31 @@ test("secret scanner detects provider keys", () => {
   assert.ok(types.includes("postgres_url"));
   // Masked, never the raw value.
   assert.ok(secrets.every((s) => !s.maskedPreview.includes("secretpw")));
+});
+
+test("secret scanner: templates, doc examples and local dev DBs don't block", () => {
+  const scan = (line: string) => scanSecrets(parseUnifiedDiff(diffFor("ci.yml", [line])).addedLines);
+  // Not secrets at all → not reported.
+  assert.equal(scan("return `postgresql://${u}:${pw}@${host}:5432/postgres`;").length, 0);
+  assert.equal(scan("url: postgresql://user:<MOT_DE_PASSE>@db.example.com/x").length, 0);
+  assert.equal(scan("'postgres://user:pw@host'").length, 0);
+  assert.equal(scan('aws = "AKIAIOSFODNN7EXAMPLE"').length, 0);
+  // Supabase config.toml: a reference to an env var, not a value.
+  assert.equal(scan('secret = "env(SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET)"').length, 0);
+  // The machine itself / a reserved test domain → not a secret at all.
+  assert.equal(scan("DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci").length, 0);
+  // A docker-compose service name (no dot) → reported at low confidence only.
+  const service = scan("DATABASE_URL: postgresql://app:app@postgres:5432/app");
+  assert.equal(service.length, 1);
+  assert.equal(service[0]!.confidence, "low");
+  // A remote database password stays high.
+  assert.equal(scan("postgresql://app:Zr8tq2Lm@db.abc.supabase.co:5432/postgres")[0]!.confidence, "high");
+  const decision = decide({
+    findings: [],
+    dependencies: [],
+    secrets: service,
+  });
+  assert.notEqual(decision.decision, "block");
 });
 
 test("secret scanner: generic high-entropy flagged, low-entropy ignored", () => {
@@ -67,6 +92,71 @@ test("levenshtein + typosquat detection", () => {
   assert.equal(nearestPopular("react"), null); // exact popular ⇒ not a squat
   const squat = nearestPopular("react-router-domm");
   assert.ok(squat && squat.target === "react-router-dom");
+});
+
+test("dependency scanner: legitimate near-miss packages are not typosquats", () => {
+  // Real, popular packages that sit a short edit distance from the curated
+  // list — previously flagged as critical typosquats (the false positives).
+  const legit = ["preact", "knex", "yup", "joi", "got", "jose", "redux", "chai", "bootstrap", "vite"];
+  for (const name of legit) {
+    assert.equal(nearestPopular(name), null, `${name} should not be a typosquat`);
+    const [dep] = scanDependencies(
+      parseUnifiedDiff(diffFor("package.json", [`    "${name}": "1.0.0",`])),
+    );
+    assert.equal(dep!.riskLevel, "low", `${name} should score low risk`);
+  }
+});
+
+test("dependency scanner: scripts/engines are not dependencies (section-aware)", () => {
+  const names = (diff: string) => scanDependencies(parseUnifiedDiff(diff)).map((d) => d.name);
+  // A whole new package.json: only the dependency sections count.
+  const whole = diffFor("package.json", [
+    "{",
+    '  "name": "app",',
+    '  "scripts": {',
+    '    "test": "jest",',
+    '    "dev": "next dev",',
+    '    "build": "vitest run"',
+    "  },",
+    '  "engines": {',
+    '    "node": ">=22"',
+    "  },",
+    '  "dependencies": {',
+    '    "express": "^4.18.0"',
+    "  },",
+    '  "devDependencies": {',
+    '    "vitest": "^1.6.0"',
+    "  }",
+    "}",
+  ]);
+  assert.deepEqual(names(whole), ["express", "vitest"]);
+
+  // A partial edit whose section header is in the hunk's context lines.
+  const ctx = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -10,4 +10,6 @@",
+    '   "scripts": {',
+    '+    "test": "jest",',
+    '     "lint": "eslint ."',
+    "   },",
+    '   "dependencies": {',
+    '+    "zod": "^3.23.0",',
+    '     "express": "^4.18.0"',
+  ].join("\n");
+  assert.deepEqual(names(ctx), ["zod"]);
+
+  // Section out of view: fall back to "does the value look like a version?".
+  const blind = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -20,2 +20,4 @@",
+    '+    "test": "jest --maxWorkers=4",',
+    '+    "left-pad": "1.3.0",',
+  ].join("\n");
+  assert.deepEqual(names(blind), ["left-pad"]);
 });
 
 test("dependency scanner scores a typosquat as critical", () => {
@@ -91,6 +181,98 @@ test("sast rules catch common issues", () => {
   assert.ok(ids.includes("XSS_INNERHTML"));
   assert.ok(ids.includes("WEAK_HASH"));
   assert.ok(ids.includes("TLS_VERIFICATION_DISABLED"));
+});
+
+test("SSRF only when the URL host can come from input, not from config", () => {
+  const ids = (line: string) =>
+    runSastRules(parseUnifiedDiff(diffFor("a.ts", [line])).addedLines).map((f) => f.ruleId);
+  // Flagged: request input or a variable host.
+  assert.ok(ids("await fetch(req.query.url);").includes("SSRF_REQUEST"));
+  assert.ok(ids("await fetch(`${target}/status`);").includes("SSRF_REQUEST"));
+  assert.ok(ids("axios.get(`${body.callbackUrl}`);").includes("SSRF_REQUEST"));
+  // Not flagged: constant base URL or fixed origin.
+  assert.ok(!ids("await fetch(`${API_URL}/api/flashcards?limit=20`);").includes("SSRF_REQUEST"));
+  assert.ok(!ids("await fetch(`${process.env.API_URL}/x`);").includes("SSRF_REQUEST"));
+  assert.ok(!ids("await fetch(`${config.BASE_URL}/x`);").includes("SSRF_REQUEST"));
+  assert.ok(!ids("await fetch(`https://api.github.com/users/${name}`);").includes("SSRF_REQUEST"));
+});
+
+test("innerHTML with a plain literal is not XSS; with data it is", () => {
+  const ids = (line: string) =>
+    runSastRules(parseUnifiedDiff(diffFor("a.js", [line])).addedLines).map((f) => f.ruleId);
+  assert.ok(!ids("el.innerHTML = '';").includes("XSS_INNERHTML"));
+  assert.ok(!ids("d.innerHTML = 'NO FEES<em>✦</em>';").includes("XSS_INNERHTML"));
+  assert.ok(!ids("d.innerHTML = `<b>static</b>`;").includes("XSS_INNERHTML"));
+  assert.ok(!ids("ref.current.innerHTML = HTML;").includes("XSS_INNERHTML"));
+  assert.ok(!ids("<div dangerouslySetInnerHTML={{ __html: HTML }} />").includes("XSS_INNERHTML"));
+  assert.ok(ids("<div dangerouslySetInnerHTML={{ __html: post.body }} />").includes("XSS_INNERHTML"));
+  assert.ok(ids("el.innerHTML = userInput;").includes("XSS_INNERHTML"));
+  assert.ok(ids("el.innerHTML = `<b>${name}</b>`;").includes("XSS_INNERHTML"));
+  assert.ok(ids("el.innerHTML = 'x' + name;").includes("XSS_INNERHTML"));
+});
+
+test("sast rules carry CWE / OWASP / confidence references", () => {
+  const findings = runSastRules(
+    parseUnifiedDiff(diffFor("db.ts", ['const q = "SELECT * FROM t WHERE id = " + id;'])).addedLines,
+  );
+  const sql = findings.find((f) => f.ruleId === "SQL_STRING_CONCAT");
+  assert.ok(sql);
+  assert.equal(sql!.cwe, "CWE-89");
+  assert.match(sql!.owasp!, /Injection/);
+  assert.ok(sql!.confidence);
+});
+
+test("sast ignores vulnerable-looking code inside comments", () => {
+  assert.equal(isCommentLine("  // eval(userInput) is dangerous"), true);
+  const findings = runSastRules(
+    parseUnifiedDiff(diffFor("h.ts", ["// never do eval(userInput);", "const ok = 1;"])).addedLines,
+  );
+  assert.equal(findings.length, 0);
+});
+
+test("secret scanner: placeholders and sample files do not block", () => {
+  // Obvious placeholder value → not flagged.
+  const placeholder = scanSecrets(
+    parseUnifiedDiff(diffFor("a.ts", ['const apiKey = "your-api-key-here";'])).addedLines,
+  );
+  assert.equal(placeholder.length, 0);
+
+  // A provider-shaped key in a sample file → flagged but only low confidence.
+  assert.equal(isTestOrExampleFile(".env.example"), true);
+  const sample = scanSecrets(
+    parseUnifiedDiff(diffFor(".env.example", ["AWS=AKIA" + "Q3ZR7TPLM2XN4VWB"])).addedLines,
+  );
+  assert.equal(sample.length, 1);
+  assert.equal(sample[0]!.confidence, "low");
+  // Low-confidence secret warns but never blocks on its own.
+  const d = decide({ findings: [], secrets: sample, dependencies: [] });
+  assert.notEqual(d.decision, "block");
+});
+
+test("score: repeats of one rule have diminishing weight; distinct rules add up", () => {
+  const f = (ruleId: string) => ({
+    type: "sast" as const,
+    severity: "medium" as const,
+    title: ruleId,
+    description: "",
+    ruleId,
+  });
+  // 8 × the same medium hygiene rule: one fix, not a block.
+  const repeated = decide({
+    findings: Array.from({ length: 8 }, () => f("github-actions-mutable-action-tag")),
+    secrets: [],
+    dependencies: [],
+  });
+  assert.equal(repeated.riskScore, 16); // 8 × min(1 + 0.25·7, 2)
+  assert.notEqual(repeated.decision, "block");
+  // Distinct medium rules still accumulate.
+  const distinct = decide({
+    findings: ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map(f),
+    secrets: [],
+    dependencies: [],
+  });
+  assert.equal(distinct.riskScore, 72);
+  assert.equal(distinct.decision, "block");
 });
 
 test("decision: secret ⇒ blocked, high ⇒ warning, clean ⇒ passed", () => {

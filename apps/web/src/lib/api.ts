@@ -92,6 +92,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error */
     }
+    // The session itself was refused (token expired, account deactivated):
+    // drop it and go back to the login page instead of leaving every page
+    // stuck on a load error. Other 401s (a wrong current password…) are
+    // ordinary errors for the caller to show.
+    if (res.status === 401 && code === "unauthorized" && token && typeof window !== "undefined") {
+      clearToken();
+      window.location.assign("/login");
+    }
     throw new ApiError(res.status, code);
   }
   if (res.status === 204) return undefined as T;

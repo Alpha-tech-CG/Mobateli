@@ -4,6 +4,7 @@ import { linkGithubSchema } from "@codegate/shared";
 import type { AppConfig } from "../config.js";
 import { recordAudit } from "../lib/audit.js";
 import { getGithubApp, getGithubSettings, getInstallationOctokit } from "../lib/github.js";
+import { exchangeOAuthCode, findUserInstallation } from "../lib/github-connect.js";
 import { createScan } from "../lib/repo-scan.js";
 import { launchScan } from "./scans.js";
 
@@ -65,6 +66,43 @@ export async function githubRoutes(app: FastifyInstance, config: AppConfig) {
       }
       const gh = await getGithubApp(config);
       if (!gh) return reply.code(503).send({ error: "github_not_configured" });
+
+      // The state proves this org started the flow, not that the user controls
+      // the installation id they send back (anyone can type one). When the
+      // App has OAuth credentials, GitHub must confirm that this GitHub user
+      // can access the installation. An installation already linked to this
+      // org (a replayed return link, whose code is spent) needs no new proof;
+      // one linked elsewhere is never moved.
+      const alreadyLinked = await prisma.githubInstallation.findUnique({
+        where: { installationId: BigInt(body.installationId) },
+        select: { organizationId: true },
+      });
+      if (alreadyLinked && alreadyLinked.organizationId !== req.principal.organizationId) {
+        return reply.code(409).send({ error: "installation_linked_elsewhere" });
+      }
+      const settings = await getGithubSettings(config);
+      if (!alreadyLinked && settings?.clientId && settings.clientSecret) {
+        if (!body.code) return reply.code(400).send({ error: "oauth_code_required" });
+        let verified: { accountLogin: string } | null = null;
+        try {
+          const token = await exchangeOAuthCode(settings.clientId, settings.clientSecret, body.code);
+          if (token) verified = await findUserInstallation(token, body.installationId);
+        } catch {
+          return reply.code(502).send({ error: "github_unreachable" });
+        }
+        if (!verified) {
+          await recordAudit({
+            organizationId: req.principal.organizationId,
+            actorType: "user",
+            actorId: req.principal.userId,
+            action: "integration.github_link_refused",
+            resourceType: "organization",
+            resourceId: req.principal.organizationId,
+            metadata: { installationId: body.installationId, reason: "user_cannot_access_installation" },
+          });
+          return reply.code(403).send({ error: "installation_not_authorized" });
+        }
+      }
 
       // The installation must really exist for this App.
       let accountLogin: string;

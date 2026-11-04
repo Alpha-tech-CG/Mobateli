@@ -1,0 +1,5 @@
+{
+  "$comment": "Known, accepted gaps of the analyser on the labelled corpus (keys: case|rule|file:line). The CI fails on any NEW false positive or miss, and on entries that no longer occur (remove them: the ratchet only tightens). Regenerate with: pnpm --filter @codegate/api corpus --update-baseline",
+  "knownFalsePositives": [],
+  "knownMisses": []
+}

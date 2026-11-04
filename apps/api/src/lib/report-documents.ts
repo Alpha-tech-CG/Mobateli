@@ -92,7 +92,15 @@ function verdictFor(status: string, score: number | null): NonNullable<ReportDoc
 function codeBlocks(
   secrets: { secretType: string; location: string; maskedPreview: string; severity: string; status?: string; revokedAt?: Date | null }[],
   findings: { type: string; severity: string; title: string; description: string; filePath?: string | null; line?: number | null; remediation?: string | null; status?: string }[],
-  dependencies: { ecosystem: string; name: string; version: string; trustScore: number | null; riskLevel: string; reason?: string | null }[],
+  dependencies: {
+    ecosystem: string;
+    name: string;
+    version: string;
+    resolvedVersion?: string;
+    trustScore: number | null;
+    riskLevel: string;
+    reason?: string | null;
+  }[],
   dependencyNote: string,
 ): Block[] {
   return [
@@ -144,7 +152,8 @@ function codeBlocks(
         { label: "Motif", width: 0.37 },
       ],
       rows: dependencies.map((d) => [
-        `${d.name}@${d.version}`,
+        // Installed version (lockfile) when known, with the declared range.
+        d.resolvedVersion ? `${d.name}@${d.resolvedVersion} (déclaré ${d.version})` : `${d.name}@${d.version}`,
         d.ecosystem,
         RISK_FR[d.riskLevel] ?? d.riskLevel,
         d.trustScore === null ? "—" : `${d.trustScore}/100`,

@@ -92,6 +92,11 @@ export default function LoginPage() {
             />
           </AuthField>
         ) : null}
+        <p className="-mt-1 text-right text-[13px]">
+          <Link href="/forgot-password" className="text-[#9aa3a8] underline-offset-4 hover:text-white hover:underline">
+            Mot de passe oublié ?
+          </Link>
+        </p>
         {error ? <p className="text-[13px] text-[#e8836f]">{error}</p> : null}
         <AuthSubmit busy={busy}>{busy ? "Connexion…" : "Se connecter"}</AuthSubmit>
       </form>

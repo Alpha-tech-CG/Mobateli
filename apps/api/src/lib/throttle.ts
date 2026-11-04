@@ -22,6 +22,11 @@ export const RULES = {
   loginIp: { maxAttempts: 20, windowSeconds: 600, lockoutSeconds: 300, maxLockoutSeconds: 3600 },
   totpAccount: { maxAttempts: 3, windowSeconds: 300, lockoutSeconds: 300, maxLockoutSeconds: 3600 },
   signupIp: { maxAttempts: 5, windowSeconds: 3600, lockoutSeconds: 3600, maxLockoutSeconds: 3600 },
+  // Email-sending endpoints: bounded per address (no mailbox flooding) and per IP.
+  emailAccount: { maxAttempts: 3, windowSeconds: 3600, lockoutSeconds: 3600, maxLockoutSeconds: 3600 },
+  emailIp: { maxAttempts: 10, windowSeconds: 3600, lockoutSeconds: 3600, maxLockoutSeconds: 3600 },
+  // Token submissions (reset / verify / invite) per IP.
+  tokenIp: { maxAttempts: 20, windowSeconds: 600, lockoutSeconds: 600, maxLockoutSeconds: 3600 },
 } satisfies Record<string, ThrottleRule>;
 
 export interface ThrottleState {

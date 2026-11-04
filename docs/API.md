@@ -17,6 +17,15 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 | POST | `/api/v1/auth/login` | — | `{ email, password, totp? }` → JWT (TOTP requis si MFA activé) |
 | POST | `/api/v1/auth/mfa/setup` | ✅ | Génère un secret TOTP, renvoie l'`otpauth://` |
 | POST | `/api/v1/auth/mfa/verify` | ✅ | Confirme le premier code et active la MFA |
+| POST | `/api/v1/auth/password` | ✅ | `{ currentPassword, newPassword }` — change son propre mot de passe (l'actuel est exigé) |
+| GET | `/api/v1/me` | ✅ | Profil de l'utilisateur connecté (`emailVerified`, `mfaEnabled`, rôle) |
+| POST | `/api/v1/auth/verify-email` | — | `{ token }` — confirme l'adresse (lien reçu à l'inscription, 48 h, usage unique) |
+| POST | `/api/v1/auth/verify-email/resend` | ✅ | Renvoie le lien de vérification (3/heure) |
+| POST | `/api/v1/auth/forgot-password` | — | `{ email }` → toujours `202` (pas d'énumération) ; envoie un lien valable 1 h |
+| POST | `/api/v1/auth/reset-password` | — | `{ token, password }` — nouveau mot de passe, **déconnecte toutes les sessions** |
+| POST | `/api/v1/auth/accept-invite` | — | `{ token, password, name? }` — active un compte invité, renvoie un JWT |
+
+Les liens envoyés par email portent le jeton dans le fragment d'URL (`#token=…`) : jamais transmis au serveur web, ni dans les logs, ni dans l'en-tête Referer. Seul son SHA-256 est stocké (`auth_tokens`).
 
 ## Organisation & dépôts
 
@@ -24,15 +33,27 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 |---|---|---|---|
 | GET | `/api/v1/organization` | tous | Organisation courante |
 | GET | `/api/v1/organization/members` | tous | Membres |
-| POST | `/api/v1/organization/members` | owner/admin | Invite un membre (mot de passe temporaire renvoyé une fois) |
+| POST | `/api/v1/organization/members` | owner/admin | Invite un membre : lien d'activation par email (7 jours) si l'envoi d'emails est configuré, sinon mot de passe temporaire renvoyé une fois ; seul un owner peut créer un owner |
+| POST | `/api/v1/organization/members/:id/reset-password` | owner/admin | Réinitialise le mot de passe d'un membre (temporaire renvoyé une fois ; seul un owner réinitialise un owner) |
 | GET | `/api/v1/repositories` | tous | Dépôts connectés |
+
+## Paramètres d'analyse
+
+Voir [ARCHITECTURE-ANALYSE.md](ARCHITECTURE-ANALYSE.md). Chaque réponse contient `effective` (ce que la prochaine analyse utilisera : défauts ← organisation ← dépôt).
+
+| Méthode | Route | Rôle | Description |
+|---|---|---|---|
+| GET | `/api/v1/settings/analysis` | tous | Paramètres de l'organisation, effectifs, défauts et catalogue des moteurs |
+| PUT | `/api/v1/settings/analysis` | owner/admin/security_manager | `{ engines?: { <id>: bool }, ignorePaths?: string[], minSeverity? }` |
+| GET | `/api/v1/repositories/:id/settings` | tous | Niveau de protection + surcharges du dépôt + effectif |
+| PUT | `/api/v1/repositories/:id/settings` | owner/admin/security_manager | `{ protectionLevel?: observe\|warn\|block, analysisSettings?: {…} \| null }` (`null` = revenir aux réglages de l'organisation) |
 
 ## Pull requests
 
 | Méthode | Route | Rôle | Description |
 |---|---|---|---|
 | GET | `/api/v1/pull-requests` | tous | Liste des PR analysées (+ compteurs) |
-| GET | `/api/v1/pull-requests/:id` | tous | Détail : findings, secrets, dépendances |
+| GET | `/api/v1/pull-requests/:id` | tous | Détail : findings, secrets, dépendances + `lastAnalysis` (moteurs exécutés / sautés / en échec, ou PR non analysable) |
 | POST | `/api/v1/pull-requests/:id/rescan` | tous | Relance l'analyse (enqueue) |
 
 ## Politiques
@@ -110,7 +131,7 @@ L'opérateur est l'owner de `PLATFORM_ORG_ID`, ou à défaut de la première org
 | GET | `/api/v1/findings` | tous | `?repositoryId&status&severity&limit` — problèmes de code de l'organisation |
 | PATCH | `/api/v1/findings/:id` | dev+ (faux positif : owner/admin/security_manager) | `{ status: open\|acknowledged\|resolved\|false_positive, reason? }` — un faux positif est mémorisé (règle + fichier) pour les analyses suivantes et sort du score ; la PR est re-notée |
 | GET | `/api/v1/github/install-url` | gestion | Lien d'installation de la GitHub App avec un `state` signé (15 min) |
-| POST | `/api/v1/github/link` | gestion | `{ installationId, state }` (retour de GitHub) → lie l'installation à l'organisation et importe les dépôts choisis |
+| POST | `/api/v1/github/link` | gestion | `{ installationId, state, code? }` (retour de GitHub) → lie l'installation à l'organisation et importe les dépôts choisis. Si l'App a ses identifiants OAuth, `code` est exigé et GitHub doit confirmer que **ce compte GitHub a accès à l'installation** (sinon 403 `installation_not_authorized`, journalisé) ; une installation déjà liée ailleurs est refusée (409). |
 | GET | `/api/v1/github/installations` | tous | Installations liées et nombre de dépôts |
 | DELETE | `/api/v1/github/installations/:id` | gestion | Révoque : désinstalle l'App côté GitHub et délie |
 
@@ -220,4 +241,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`, `server.connected`/`_token_rotated`/`_removed`/`_scanned`, `auth.lockout`, `bruteforce.policy_saved`/`target_added`/`target_verified`/`test_run`, `finding.<statut>`, `integration.github_connected`/`_disconnected`, `security.prompt_injection_detected`, `platform.github_app_created`, `approval.requested`/`approved`/`denied`, `member.role_changed`/`deactivated`/`reactivated`, `secret.revoked`, `integration.gitlab_api_configured`, `org.data_exported`, `user.erased`, `backup.missing`, `server.agent_silent`, `remediation.done`/`canceled`, `integration.linear_webhook_configured`, `backup.job_created`/`_removed`/`token_rotated`/`run_reported`/`integrity_ok`/`integrity_mismatch`/`restore_success`/`restore_failed`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `auth.password_changed`, `member.invited`, `member.password_reset`, `policy.created`, `pr.opened`, `pr.analyzed` (métadonnées `engines`), `pr.analysis_unavailable`, `pr.analysis_failed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{github,linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `integration.github_link_refused`, `settings.analysis_updated`, `repository.settings_updated`, `audit.exported`.

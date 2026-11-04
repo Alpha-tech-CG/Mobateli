@@ -42,6 +42,7 @@ function Members() {
   const [error, setError] = useState<string | null>(null);
   const [invite, setInvite] = useState({ email: "", role: "developer" as Role });
   const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [invitedEmail, setInvitedEmail] = useState<string | null>(null);
   const session = getSession();
   const canManage = session?.role === "owner" || session?.role === "admin";
 
@@ -66,11 +67,12 @@ function Members() {
     e.preventDefault();
     setError(null);
     try {
-      const r = await api<{ tempPassword: string }>("/api/v1/organization/members", {
+      const r = await api<{ inviteSent: boolean; tempPassword?: string }>("/api/v1/organization/members", {
         method: "POST",
         body: JSON.stringify(invite),
       });
-      setTempPassword(r.tempPassword);
+      if (r.inviteSent) setInvitedEmail(invite.email);
+      else setTempPassword(r.tempPassword ?? null);
       setInvite({ email: "", role: "developer" });
       load();
     } catch (err) {
@@ -93,7 +95,21 @@ function Members() {
       {canManage ? (
         <Card className="p-4">
           <h2 className="mb-3 text-sm font-semibold">Inviter un membre</h2>
-          {tempPassword ? (
+          {invitedEmail ? (
+            <div className="space-y-2 text-sm" role="status">
+              <p>
+                Invitation envoyée à <span className="font-medium">{invitedEmail}</span>. Le lien d&apos;activation est
+                valable 7 jours ; la personne choisira elle-même son mot de passe.
+              </p>
+              <button
+                type="button"
+                onClick={() => setInvitedEmail(null)}
+                className="cursor-pointer rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+              >
+                Inviter quelqu&apos;un d&apos;autre
+              </button>
+            </div>
+          ) : tempPassword ? (
             <div className="space-y-2 text-sm">
               <p>
                 Compte créé. Transmettez ce mot de passe temporaire par un canal sûr ; il ne sera
