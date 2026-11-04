@@ -88,6 +88,20 @@ export async function githubConnectRoutes(app: FastifyInstance, config: AppConfi
       return backToDashboard(reply, "invalid_state");
     }
 
+    // Already ours: a replayed return link (back button, reload, the tunnel's
+    // interstitial) carries a spent OAuth code that GitHub rejects — it must
+    // not read as "access refused". Safe: the state proves it's our user, and
+    // the installation already belongs to their org (nothing to gain).
+    // Owned by another org: refuse before even asking GitHub.
+    const existing = await prisma.githubInstallation.findUnique({
+      where: { installationId: BigInt(installationId) },
+      select: { organizationId: true },
+    });
+    if (existing?.organizationId === state.organizationId) {
+      return backToDashboard(reply, "connected");
+    }
+    if (existing) return backToDashboard(reply, "already_linked");
+
     // Proof 2: GitHub confirms this GitHub user can access the installation.
     let found: { accountLogin: string } | null = null;
     try {
@@ -114,15 +128,9 @@ export async function githubConnectRoutes(app: FastifyInstance, config: AppConfi
       return backToDashboard(reply, "not_authorized");
     }
 
-    // Never move an installation that already belongs to another org.
-    const existing = await prisma.githubInstallation.findUnique({
-      where: { installationId: BigInt(installationId) },
-      select: { organizationId: true },
-    });
-    if (existing && existing.organizationId !== state.organizationId) {
-      return backToDashboard(reply, "already_linked");
-    }
-    if (!existing) {
+    // Unique on installationId: if another org linked it in the meantime,
+    // the insert fails instead of moving it.
+    try {
       await prisma.githubInstallation.create({
         data: {
           organizationId: state.organizationId,
@@ -130,6 +138,8 @@ export async function githubConnectRoutes(app: FastifyInstance, config: AppConfi
           accountLogin: found.accountLogin,
         },
       });
+    } catch {
+      return backToDashboard(reply, "already_linked");
     }
 
     // Import the repositories the App can see (best effort: the

@@ -490,6 +490,9 @@ test("github connect: only a verified GitHub user can link an installation", asy
 
     // Valid state + GitHub confirms access → linked.
     assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state })), "connected");
+    // The same return link replayed (back button, reload): GitHub rejects the
+    // spent code, but the installation is already ours → still "connected".
+    assert.equal(outcome(await callback({ code: "code-spent", installation_id: "5001", state })), "connected");
     const after = await linked();
     assert.equal(after.configured, true);
     assert.deepEqual(
