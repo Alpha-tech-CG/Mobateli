@@ -1,4 +1,5 @@
 import type { AddedLine } from "./diff.js";
+import { htmlSinkIsSafe } from "./html-sink.js";
 import type { Confidence, FindingResult } from "./types.js";
 import type { Severity } from "@codegate/shared";
 
@@ -268,14 +269,16 @@ export function blankStrings(line: string): string {
   );
 }
 
-export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
+export function runSastRules(addedLines: AddedLine[], completeFiles = false): FindingResult[] {
   const findings: FindingResult[] = [];
+  const fileText = textByFile(addedLines);
 
   for (const { file, line, content } of addedLines) {
     if (!CODE_FILE.test(file) || isCommentLine(file, content)) continue;
     const code = blankStrings(content);
     for (const rule of RULES) {
       if (rule.test(content, code)) {
+        if (rule.id === "XSS_INNERHTML" && htmlSinkIsSafe(content, fileText.get(file) ?? "", file, completeFiles)) continue;
         findings.push({
           type: "sast",
           severity: rule.severity,
@@ -302,11 +305,31 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
  * second look as the line rules: a comment, a literal or an UPPER_CASE
  * constant written to innerHTML carries no attacker input.
  */
-export function refutedByContext(finding: { ruleId?: string; filePath?: string }, line: string | undefined): boolean {
+export function refutedByContext(
+  finding: { ruleId?: string; filePath?: string },
+  line: string | undefined,
+  fileText = "",
+  completeFile = false,
+): boolean {
   if (line === undefined || !finding.filePath) return false;
   if (isCommentLine(finding.filePath, line)) return true;
   if (finding.ruleId === "XSS_INNERHTML") {
-    return (/\.innerHTML\s*=/.test(line) && assignsLiteralOnly(line)) || dangerousHtmlFromConstant(line);
+    return (
+      (/\.innerHTML\s*=/.test(line) && assignsLiteralOnly(line)) ||
+      dangerousHtmlFromConstant(line) ||
+      htmlSinkIsSafe(line, fileText, finding.filePath, completeFile)
+    );
   }
   return false;
+}
+
+/** The analysed text of each file (whole file in a repository scan). */
+export function textByFile(addedLines: AddedLine[]): Map<string, string> {
+  const parts = new Map<string, string[]>();
+  for (const l of addedLines) {
+    let list = parts.get(l.file);
+    if (!list) parts.set(l.file, (list = []));
+    list.push(l.content);
+  }
+  return new Map([...parts].map(([f, lines]) => [f, lines.join("\n")]));
 }

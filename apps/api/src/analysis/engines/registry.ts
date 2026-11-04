@@ -1,7 +1,7 @@
 import type { EngineId } from "@codegate/shared";
 import { refineSecrets, scanSecrets } from "../secret-scanner.js";
 import { scanDependencies } from "../dependency-scanner.js";
-import { refutedByContext, runSastRules } from "../sast.js";
+import { refutedByContext, runSastRules, textByFile } from "../sast.js";
 import { analyzeConfig } from "../config-rules.js";
 import { detectPromptInjection } from "../prompt-injection.js";
 import { enrichDependencies } from "../dependency-intel.js";
@@ -76,10 +76,15 @@ const sast: AnalysisEngine = {
     const ast = ctx.ast();
     const astFiles = new Set(ast?.astFiles ?? []);
     const byLine = new Map(ctx.parsed.addedLines.map((l) => [`${l.file}:${l.line}`, l.content]));
+    const texts = textByFile(ctx.parsed.addedLines);
+    const complete = ctx.parsed.snapshot === true;
     const found = [
-      // Same exclusions as the line rules (comments, literals, constants).
-      ...(ast?.findings ?? []).filter((f) => !refutedByContext(f, byLine.get(`${f.filePath}:${f.line}`))),
-      ...runSastRules(ctx.parsed.addedLines.filter((l) => !astFiles.has(l.file))),
+      // Same exclusions as the line rules (comments, literals, constants,
+      // provenance of the HTML written to innerHTML).
+      ...(ast?.findings ?? []).filter(
+        (f) => !refutedByContext(f, byLine.get(`${f.filePath}:${f.line}`), texts.get(f.filePath ?? "") ?? "", complete),
+      ),
+      ...runSastRules(ctx.parsed.addedLines.filter((l) => !astFiles.has(l.file)), complete),
     ];
     return (t) => ({ ...t, findings: [...t.findings, ...found] });
   },
@@ -99,7 +104,7 @@ const promptInjection: AnalysisEngine = {
   id: "prompt_injection",
   phase: "core",
   run: (ctx) => {
-    const found = detectPromptInjection(ctx.parsed.addedLines, ctx.parsed.files);
+    const found = detectPromptInjection(ctx.parsed.addedLines, ctx.parsed.files, ctx.parsed.snapshot === true);
     return (t) => ({ ...t, findings: [...t.findings, ...found] });
   },
 };

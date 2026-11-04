@@ -12,6 +12,8 @@ export interface AddedLine {
 
 export interface ParsedDiff {
   files: string[];
+  /** Whole files (repository scan), not a diff: context rules may look at the full file. */
+  snapshot?: boolean;
   addedLines: AddedLine[];
   /** Added content per file, joined — convenient for structured parsing. */
   addedByFile: Map<string, string>;

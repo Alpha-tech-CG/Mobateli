@@ -37,6 +37,7 @@ export function analyzeFiles(
   settings?: AnalysisSettings,
 ): PipelineResult {
   const parsed: ParsedDiff = {
+    snapshot: true,
     files: [],
     addedLines: [],
     addedByFile: new Map(),
