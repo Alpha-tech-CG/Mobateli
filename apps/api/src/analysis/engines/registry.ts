@@ -1,7 +1,7 @@
 import type { EngineId } from "@codegate/shared";
 import { refineSecrets, scanSecrets } from "../secret-scanner.js";
 import { scanDependencies } from "../dependency-scanner.js";
-import { runSastRules } from "../sast.js";
+import { refutedByContext, runSastRules } from "../sast.js";
 import { analyzeConfig } from "../config-rules.js";
 import { detectPromptInjection } from "../prompt-injection.js";
 import { enrichDependencies } from "../dependency-intel.js";
@@ -75,8 +75,10 @@ const sast: AnalysisEngine = {
   run: (ctx) => {
     const ast = ctx.ast();
     const astFiles = new Set(ast?.astFiles ?? []);
+    const byLine = new Map(ctx.parsed.addedLines.map((l) => [`${l.file}:${l.line}`, l.content]));
     const found = [
-      ...(ast?.findings ?? []),
+      // Same exclusions as the line rules (comments, literals, constants).
+      ...(ast?.findings ?? []).filter((f) => !refutedByContext(f, byLine.get(`${f.filePath}:${f.line}`))),
       ...runSastRules(ctx.parsed.addedLines.filter((l) => !astFiles.has(l.file))),
     ];
     return (t) => ({ ...t, findings: [...t.findings, ...found] });

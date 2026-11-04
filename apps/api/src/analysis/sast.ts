@@ -295,3 +295,18 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
 
   return findings;
 }
+
+/**
+ * Context exclusions shared by every code engine. The Rust engine reads the
+ * syntax tree but not these proofs of safety, so its findings get the same
+ * second look as the line rules: a comment, a literal or an UPPER_CASE
+ * constant written to innerHTML carries no attacker input.
+ */
+export function refutedByContext(finding: { ruleId?: string; filePath?: string }, line: string | undefined): boolean {
+  if (line === undefined || !finding.filePath) return false;
+  if (isCommentLine(finding.filePath, line)) return true;
+  if (finding.ruleId === "XSS_INNERHTML") {
+    return (/\.innerHTML\s*=/.test(line) && assignsLiteralOnly(line)) || dangerousHtmlFromConstant(line);
+  }
+  return false;
+}
