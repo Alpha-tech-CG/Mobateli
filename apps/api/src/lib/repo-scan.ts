@@ -3,6 +3,7 @@ import type { AppConfig } from "../config.js";
 import { analyzeFiles } from "../analysis/analyzer.js";
 import { enrichDependencies } from "../analysis/dependency-intel.js";
 import { decide } from "../analysis/risk.js";
+import { analyzeArchitecture, type ArchitectureReport } from "../analysis/architecture.js";
 import { recordAudit } from "./audit.js";
 import { notifySlack } from "./notify.js";
 import { getInstallationOctokit } from "./github.js";
@@ -110,6 +111,13 @@ export async function runScan(config: AppConfig, scanId: string): Promise<void> 
     const dependencies = await enrichDependencies(base.dependencies);
     const verdict = decide({ findings: base.findings, secrets: base.secrets, dependencies });
 
+    // Architecture graph, fragility and blast radius — never blocks the scan.
+    let architecture: ArchitectureReport | null = null;
+    try {
+      architecture = analyzeArchitecture(files, { findings: base.findings, secrets: base.secrets });
+    } catch {
+      architecture = null;
+    }
     const bySeverity: Record<string, number> = {};
     for (const f of base.findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
     const summary = {
@@ -122,6 +130,7 @@ export async function runScan(config: AppConfig, scanId: string): Promise<void> 
       riskyDependencies: dependencies.filter((d) => d.riskLevel !== "low").length,
       bySeverity,
       engine: base.engine,
+      fragility: architecture ? { score: architecture.fragility.score, grade: architecture.fragility.grade } : null,
     };
     const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 } as const;
     const findings = [...base.findings].sort((a, b) => order[a.severity] - order[b.severity]);
@@ -139,6 +148,7 @@ export async function runScan(config: AppConfig, scanId: string): Promise<void> 
           findings: findings.slice(0, MAX_FINDINGS_STORED),
           dependencies: dependencies.filter((d) => d.riskLevel !== "low"),
           suppressed: base.suppressed.length,
+          architecture,
         } as unknown as Prisma.InputJsonValue,
         finishedAt: new Date(),
       },

@@ -107,3 +107,23 @@ Règles pour un moteur « intel » :
 | `ignorePaths` | org, dépôt (s'accumulent) | Motifs de chemins jamais analysés (`vendor/**`, `*.min.js`…). |
 | `minSeverity` | org, dépôt | Sévérité en dessous de laquelle rien n'est signalé ni compté. |
 | `protectionLevel` | dépôt | `observe` (jamais bloquant), `warn`, `block` (check en échec sur un risque bloquant). |
+
+## Cartographie d'architecture, fragilité et rayon d'impact
+
+Chaque analyse de dépôt (`lib/repo-scan.ts`) produit aussi un rapport d'architecture
+(`analysis/architecture.ts`, stocké dans `repository_scans.result.architecture`, jamais le code) :
+
+- **Graphe** : imports internes JS/TS (relatifs, alias `@/`, paquets du monorepo) et Python,
+  regroupés en ≤ 36 modules, chacun classé par rôle (point d'entrée, interface, service,
+  données, authentification, configuration).
+- **Fragilité 0–100** expliquée par facteur : cycles d'imports, hubs instables, couches à
+  contre-sens (le cœur qui importe une route ou une page), modules mutuellement dépendants,
+  propagation des failles, fichiers surdimensionnés. Note : solide < 20 ≤ correcte < 40 ≤ fragile < 60 ≤ très fragile.
+- **Rayon d'impact** de chaque faille : fichiers qui dépendent du code vulnérable, points
+  d'entrée par lesquels un attaquant l'atteint, actifs sensibles (données, auth, config)
+  accessibles depuis ce code → score d'impact et récit lisible.
+- **Plan structuré** : actions priorisées, effort, gain de fragilité attendu et avantage de
+  chaque étape ; score projeté (prudent : 80 % des gains, fragilité résiduelle ≥ 20 % du score).
+
+Analyse statique, déterministe, sans exécution (~60 ms pour 150 fichiers, < 1 s pour 1 500).
+Côté web : onglet « Architecture & impact » de `/scans/[id]` (`components/architecture-panel.tsx`).
