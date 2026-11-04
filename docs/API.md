@@ -17,6 +17,7 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 | POST | `/api/v1/auth/login` | — | `{ email, password, totp? }` → JWT (TOTP requis si MFA activé) |
 | POST | `/api/v1/auth/mfa/setup` | ✅ | Génère un secret TOTP, renvoie l'`otpauth://` |
 | POST | `/api/v1/auth/mfa/verify` | ✅ | Confirme le premier code et active la MFA |
+| POST | `/api/v1/auth/password` | ✅ | `{ currentPassword, newPassword }` — change son propre mot de passe (l'actuel est exigé) |
 
 ## Organisation & dépôts
 
@@ -24,7 +25,8 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 |---|---|---|---|
 | GET | `/api/v1/organization` | tous | Organisation courante |
 | GET | `/api/v1/organization/members` | tous | Membres |
-| POST | `/api/v1/organization/members` | owner/admin | Invite un membre (mot de passe temporaire renvoyé une fois) |
+| POST | `/api/v1/organization/members` | owner/admin | Invite un membre (mot de passe temporaire renvoyé une fois ; seul un owner peut créer un owner) |
+| POST | `/api/v1/organization/members/:id/reset-password` | owner/admin | Réinitialise le mot de passe d'un membre (temporaire renvoyé une fois ; seul un owner réinitialise un owner) |
 | GET | `/api/v1/repositories` | tous | Dépôts connectés |
 
 ## Pull requests
@@ -32,7 +34,7 @@ Base : `http://localhost:4000`. Toutes les routes `/api/v1/*` privées exigent u
 | Méthode | Route | Rôle | Description |
 |---|---|---|---|
 | GET | `/api/v1/pull-requests` | tous | Liste des PR analysées (+ compteurs) |
-| GET | `/api/v1/pull-requests/:id` | tous | Détail : findings, secrets, dépendances |
+| GET | `/api/v1/pull-requests/:id` | tous | Détail : findings, secrets, dépendances + `lastAnalysis` (moteurs exécutés / sautés / en échec, ou PR non analysable) |
 | POST | `/api/v1/pull-requests/:id/rescan` | tous | Relance l'analyse (enqueue) |
 
 ## Politiques
@@ -56,6 +58,10 @@ Permissions : `read_repo`, `modify_file`, `install_dependency`, `run_shell`, `ne
 
 | Méthode | Route | Rôle | Description |
 |---|---|---|---|
+| GET | `/api/v1/integrations/github` | tous | `{ configured, installations[] }` |
+| POST | `/api/v1/integrations/github/connect` | owner/admin | URL d'installation de la GitHub App, avec un `state` signé (15 min) |
+| GET | `/api/v1/integrations/github/callback` | — (redirection GitHub) | Vérifie le `state` et, par OAuth, que le compte GitHub a accès à l'installation ; lie l'installation, importe les dépôts, redirige vers `/integrations?github=…` |
+| DELETE | `/api/v1/integrations/github/:installationId` | owner/admin | Délie l'installation (les dépôts restent, sans analyse) |
 | GET/POST/DELETE | `/api/v1/integrations/linear` | POST/DELETE : owner/admin(/security_manager) | Connexion Linear `{ apiKey, teamId }` (clé chiffrée, jamais renvoyée) |
 | GET/POST/DELETE | `/api/v1/integrations/slack` | idem | Connexion Slack `{ webhookUrl }` (URL chiffrée) |
 | POST | `/api/v1/integrations/slack/test` | tous | Envoie une alerte de test |
@@ -105,4 +111,4 @@ Les deux webhooks vérifient la signature, sont **idempotents** (le verrou de li
 
 ## Événements d'audit (actions)
 
-`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `member.invited`, `policy.created`, `pr.opened`, `pr.analyzed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `audit.exported`.
+`org.created`, `auth.login`, `auth.saml_login`, `auth.mfa_enabled`, `auth.password_changed`, `member.invited`, `member.password_reset`, `policy.created`, `pr.opened`, `pr.analyzed` (métadonnées `engines`), `pr.analysis_unavailable`, `pr.analysis_failed`, `pr.feedback_posted`/`_failed`, `pr.rescan_requested`, `remediation.created`/`_failed`, `agent_policy.updated`, `agent.action_allow`/`_deny`/`_require_approval`, `deploy.authorized`/`warning`/`blocked`/`requires_approval`, `scim.user_provisioned`/`_deactivated`/`_reactivated`, `integration.{github,linear,slack,gitlab,jira,scim,saml}_connected`/`_disconnected`, `integration.github_link_refused`, `audit.exported`.

@@ -19,6 +19,10 @@ process.env.JWT_SECRET = "integration_test_jwt_secret_0123456789abcd";
 process.env.ENCRYPTION_KEY = Buffer.from("0123456789abcdef0123456789abcdef").toString("base64");
 process.env.GITHUB_WEBHOOK_SECRET = "it_gh_secret";
 process.env.VERCEL_WEBHOOK_SECRET = "it_vercel_secret";
+process.env.GITHUB_APP_SLUG = "codegate-it";
+process.env.GITHUB_CLIENT_ID = "Iv1.it_client";
+process.env.GITHUB_CLIENT_SECRET = "it_client_secret";
+process.env.WEB_ORIGIN = "http://localhost:3000";
 
 const { buildApp } = await import("../app.js");
 const { loadConfig } = await import("../config.js");
@@ -418,6 +422,115 @@ test("passwords: self-service change, admin reset, owner protected", async () =>
     headers: freshAdmin,
   });
   assert.equal(denied.statusCode, 403);
+});
+
+test("github connect: only a verified GitHub user can link an installation", async () => {
+  const { signConnectState } = await import("../lib/github-connect.js");
+
+  // Fake GitHub: OAuth code → user token → installations that user can see.
+  const users: Record<string, { token: string; installations: number[] }> = {
+    "code-alice": { token: "tok-alice", installations: [5001] },
+    "code-mallory": { token: "tok-mallory", installations: [9999] },
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u === "https://github.com/login/oauth/access_token") {
+      const { code } = JSON.parse(String(init?.body));
+      const user = users[code];
+      return new Response(JSON.stringify(user ? { access_token: user.token } : { error: "bad_verification_code" }));
+    }
+    if (u.startsWith("https://api.github.com/user/installations")) {
+      const tok = String((init?.headers as Record<string, string>).authorization).replace("Bearer ", "");
+      const user = Object.values(users).find((x) => x.token === tok);
+      return new Response(
+        JSON.stringify({ installations: (user?.installations ?? []).map((id) => ({ id, account: { login: "acme-gh" } })) }),
+      );
+    }
+    return realFetch(url, init);
+  }) as typeof fetch;
+
+  try {
+    const org = await app.inject({ method: "GET", url: "/api/v1/organization", headers: auth() });
+    const orgId: string = org.json().id;
+    const callback = (q: Record<string, string>) =>
+      app.inject({ method: "GET", url: `/api/v1/integrations/github/callback?${new URLSearchParams(q)}` });
+    const outcome = (res: { headers: Record<string, unknown> }) =>
+      new URL(String(res.headers.location)).searchParams.get("github");
+
+    // Owner gets an install URL carrying a signed state.
+    const connect = await app.inject({ method: "POST", url: "/api/v1/integrations/github/connect", headers: auth() });
+    assert.equal(connect.statusCode, 200);
+    const install = new URL(connect.json().url);
+    assert.equal(install.origin + install.pathname, "https://github.com/apps/codegate-it/installations/new");
+    const state = install.searchParams.get("state")!;
+
+    // Forged / tampered state → refused.
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state: state.slice(0, -2) + "xx" })), "invalid_state");
+    // Expired state → refused.
+    const members = await app.inject({ method: "GET", url: "/api/v1/organization/members", headers: auth() });
+    const ownerId = members.json().members.find((m: { role: string }) => m.role === "owner").id;
+    const expired = signConnectState(process.env.JWT_SECRET!, orgId, ownerId, Date.now() - 60 * 60 * 1000);
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state: expired })), "invalid_state");
+    // Valid state, but the GitHub user can't access that installation → refused.
+    assert.equal(outcome(await callback({ code: "code-mallory", installation_id: "5001", state })), "not_authorized");
+
+    const linked = async () =>
+      (await app.inject({ method: "GET", url: "/api/v1/integrations/github", headers: auth() })).json();
+    assert.ok(!(await linked()).installations.some((i: { installationId: number }) => i.installationId === 5001));
+
+    // Valid state + GitHub confirms access → linked.
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state })), "connected");
+    const after = await linked();
+    assert.equal(after.configured, true);
+    assert.deepEqual(
+      after.installations
+        .filter((i: { installationId: number }) => i.installationId === 5001)
+        .map((i: { installationId: number; accountLogin: string }) => [i.installationId, i.accountLogin]),
+      [[5001, "acme-gh"]],
+    );
+
+    // Another org can't take it over, even with its own valid state and a
+    // GitHub user who can see it.
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/signup",
+      payload: { email: "gh-other@other.test", password: "other-password-1234", name: "O", organizationName: "Other GH" },
+    });
+    const otherConnect = await app.inject({
+      method: "POST",
+      url: "/api/v1/integrations/github/connect",
+      headers: { authorization: `Bearer ${other.json().token}` },
+    });
+    const otherState = new URL(otherConnect.json().url).searchParams.get("state")!;
+    assert.equal(outcome(await callback({ code: "code-alice", installation_id: "5001", state: otherState })), "already_linked");
+
+    // A developer cannot start the flow.
+    const dev = await app.inject({
+      method: "POST",
+      url: "/api/v1/organization/members",
+      headers: auth(),
+      payload: { email: "gh-dev@acme.test", role: "developer" },
+    });
+    const devLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "gh-dev@acme.test", password: dev.json().tempPassword },
+    });
+    const devConnect = await app.inject({
+      method: "POST",
+      url: "/api/v1/integrations/github/connect",
+      headers: { authorization: `Bearer ${devLogin.json().token}` },
+    });
+    assert.equal(devConnect.statusCode, 403);
+
+    // Disconnect.
+    const del = await app.inject({ method: "DELETE", url: "/api/v1/integrations/github/5001", headers: auth() });
+    assert.equal(del.statusCode, 200);
+    assert.ok(!(await linked()).installations.some((i: { installationId: number }) => i.installationId === 5001));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("integrations: Slack webhook URL must point at Slack (no SSRF)", async () => {

@@ -20,6 +20,9 @@ GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App*
 
 - **Nom** : CodeGate (Dev) — unique sur GitHub
 - **Homepage URL** : `TUNNEL`
+- **Callback URL** : `TUNNEL/api/v1/integrations/github/callback`
+  - coche **Request user authorization (OAuth) during installation**
+    (CodeGate vérifie ainsi que ton compte GitHub a bien accès à l’installation)
 - **Webhook → Active** : coché
   - **Webhook URL** : `TUNNEL/webhooks/github`
   - **Webhook secret** : choisis une valeur (ex. générée ci-dessous) → ce sera `GITHUB_WEBHOOK_SECRET`
@@ -31,7 +34,8 @@ GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App*
 - **Subscribe to events** : **Pull request**, **Installation target** (optionnel)
 - **Where can this app be installed?** : Only on this account
 - Crée l'app, puis :
-  - Note l'**App ID**
+  - Note l'**App ID**, le **slug** (l'URL publique `github.com/apps/<slug>`) et le **Client ID**
+  - **Generate a new client secret** → `GITHUB_CLIENT_SECRET`
   - **Generate a private key** → télécharge le `.pem`
 
 Secret webhook (si besoin) :
@@ -48,6 +52,10 @@ Dans `D:\codegate\.env` :
 GITHUB_APP_ID=<ton App ID>
 GITHUB_WEBHOOK_SECRET=<le secret saisi dans l'app>
 GITHUB_APP_PRIVATE_KEY=<clé PEM sur une seule ligne, voir ci-dessous>
+GITHUB_APP_SLUG=<slug de l'app>
+GITHUB_CLIENT_ID=<Client ID>
+GITHUB_CLIENT_SECRET=<client secret>
+PUBLIC_API_URL=TUNNEL
 ```
 
 La clé privée PEM est multi-lignes ; convertis-la en une seule ligne (avec des
@@ -77,12 +85,19 @@ curl -s -X POST http://127.0.0.1:4000/api/v1/auth/signup -H "content-type: appli
 > dev). En production, un flux de connexion explicite remplacerait ce
 > raccourci.
 
-## 5. Installer l'app sur un repo + ouvrir une PR
+## 5. Connecter GitHub depuis CodeGate + ouvrir une PR
 
-- Dans la GitHub App → **Install App** → choisis un repo de test.
-- L'installation déclenche un webhook `installation.created` → CodeGate
-  crée l'association installation → organisation (log « github app installed »).
-- Ouvre/mets à jour une **pull request** sur ce repo.
+- Dashboard → **Intégrations → Connecter GitHub** (owner ou admin).
+- GitHub demande d'installer l'app sur un ou plusieurs repos, puis d'autoriser
+  CodeGate à vérifier ton identité. Tu reviens sur **Intégrations** avec
+  « GitHub connecté » et tes repos sont importés.
+- CodeGate n'accepte la liaison que si **ton compte GitHub a accès à
+  l'installation** (vérifié auprès de GitHub) ; une installation déjà liée à une
+  autre organisation n'est jamais déplacée.
+- Ouvre/mets à jour une **pull request** sur un des repos.
+
+> En développement, tant qu'il n'existe **qu'une seule** organisation, une
+> installation reçue par webhook lui est encore liée automatiquement.
 
 ## 6. Observer
 
@@ -100,7 +115,8 @@ curl -s -X POST http://127.0.0.1:4000/api/v1/auth/signup -H "content-type: appli
 - **PR analysée mais pas de commentaire/check** : permissions Pull requests/Checks
   manquantes, ou `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` absents (le diff et le
   retour GitHub nécessitent un token d'installation).
-- **« unknown installation — skipped »** : plus d'une organisation existe →
-  l'auto-association est désactivée ; crée l'association manuellement.
+- **« unknown installation — skipped »** : l’installation n’est liée à aucune organisation → utilise **Intégrations → Connecter GitHub**.
+- **Retour « Lien expiré ou invalide »** : le lien de connexion dure 15 min ; relance le bouton.
+- **Retour « n’a pas accès à cette installation »** : le compte GitHub connecté ne voit pas l’installation (autre compte, ou OAuth non coché dans l’app).
 - **L'URL ngrok change** à chaque redémarrage du tunnel → mets à jour la Webhook
   URL de l'app en conséquence (ou garde le tunnel ouvert).

@@ -46,9 +46,9 @@ async function resolveOrg(
   return null;
 }
 
-type GithubRepo = { id: number; full_name: string; default_branch?: string };
+export type GithubRepo = { id: number; full_name: string; default_branch?: string };
 
-async function upsertRepository(
+export async function upsertRepository(
   organizationId: string,
   installationId: number,
   repo: GithubRepo,

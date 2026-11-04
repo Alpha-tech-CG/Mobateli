@@ -22,6 +22,12 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v?.replace(/\\n/g, "\n")),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  // Secure "connect GitHub" flow (installation → organization). The App's
+  // public slug (github.com/apps/<slug>) and its OAuth client credentials,
+  // used to prove the user really has access to the installation.
+  GITHUB_APP_SLUG: z.string().optional(),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
 
   // ─── Vercel ───────────────────────────────────────────
   VERCEL_WEBHOOK_SECRET: z.string().optional(),
