@@ -43,7 +43,9 @@ export interface RustEngineOptions {
   enabled?: boolean;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+// Measured: a 1 900-file / 20 MB PR takes ~7 s with the release binary (25 s
+// in debug). 5 s silently dropped the engine on every large PR.
+const DEFAULT_TIMEOUT_MS = 60_000;
 const VALID_SEVERITIES: ReadonlySet<string> = new Set([
   "info",
   "low",

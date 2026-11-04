@@ -37,9 +37,9 @@ test("secret scanner detects provider keys", () => {
   const d = diffFor("config.ts", [
     // Split so the fixture isn't a contiguous literal (secret scanners flag it).
     'const stripe = "sk_live_' + 'abcdefABCDEF0123456789xyz";',
-    'const aws = "AKIAIOSFODNN7EXAMPLE";',
+    'const aws = "AKIA' + 'Q3ZR7TPLM2XN4VWB";',
     "-----BEGIN RSA PRIVATE KEY-----",
-    'const db = "postgres://user:secretpw@host:5432/db";',
+    'const db = "postgres://app:secretpw@db.prod.internal:5432/db";',
   ]);
   const secrets = scanSecrets(parseUnifiedDiff(d).addedLines);
   const types = secrets.map((s) => s.secretType);
@@ -49,6 +49,32 @@ test("secret scanner detects provider keys", () => {
   assert.ok(types.includes("postgres_url"));
   // Masked, never the raw value.
   assert.ok(secrets.every((s) => !s.maskedPreview.includes("secretpw")));
+});
+
+test("secret scanner: templates, doc examples and local dev DBs don't block", () => {
+  const scan = (line: string) => scanSecrets(parseUnifiedDiff(diffFor("ci.yml", [line])).addedLines);
+  // Not secrets at all → not reported.
+  assert.equal(scan("return `postgresql://${u}:${pw}@${host}:5432/postgres`;").length, 0);
+  assert.equal(scan("url: postgresql://user:<MOT_DE_PASSE>@db.example.com/x").length, 0);
+  assert.equal(scan("'postgres://user:pw@host'").length, 0);
+  assert.equal(scan('aws = "AKIAIOSFODNN7EXAMPLE"').length, 0);
+  // Local-only database → reported at low confidence (does not block).
+  for (const line of [
+    "DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci",
+    "DATABASE_URL: postgresql://app:app@postgres:5432/app",
+  ]) {
+    const s = scan(line);
+    assert.equal(s.length, 1, line);
+    assert.equal(s[0]!.confidence, "low", line);
+  }
+  // A remote database password stays high.
+  assert.equal(scan("postgresql://app:Zr8tq2Lm@db.abc.supabase.co:5432/postgres")[0]!.confidence, "high");
+  const decision = decide({
+    findings: [],
+    dependencies: [],
+    secrets: scan("DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci"),
+  });
+  assert.notEqual(decision.decision, "block");
 });
 
 test("secret scanner: generic high-entropy flagged, low-entropy ignored", () => {
@@ -106,6 +132,34 @@ test("sast rules catch common issues", () => {
   assert.ok(ids.includes("TLS_VERIFICATION_DISABLED"));
 });
 
+test("SSRF only when the URL host can come from input, not from config", () => {
+  const ids = (line: string) =>
+    runSastRules(parseUnifiedDiff(diffFor("a.ts", [line])).addedLines).map((f) => f.ruleId);
+  // Flagged: request input or a variable host.
+  assert.ok(ids("await fetch(req.query.url);").includes("SSRF_REQUEST"));
+  assert.ok(ids("await fetch(`${target}/status`);").includes("SSRF_REQUEST"));
+  assert.ok(ids("axios.get(`${body.callbackUrl}`);").includes("SSRF_REQUEST"));
+  // Not flagged: constant base URL or fixed origin.
+  assert.ok(!ids("await fetch(`${API_URL}/api/flashcards?limit=20`);").includes("SSRF_REQUEST"));
+  assert.ok(!ids("await fetch(`${process.env.API_URL}/x`);").includes("SSRF_REQUEST"));
+  assert.ok(!ids("await fetch(`${config.BASE_URL}/x`);").includes("SSRF_REQUEST"));
+  assert.ok(!ids("await fetch(`https://api.github.com/users/${name}`);").includes("SSRF_REQUEST"));
+});
+
+test("innerHTML with a plain literal is not XSS; with data it is", () => {
+  const ids = (line: string) =>
+    runSastRules(parseUnifiedDiff(diffFor("a.js", [line])).addedLines).map((f) => f.ruleId);
+  assert.ok(!ids("el.innerHTML = '';").includes("XSS_INNERHTML"));
+  assert.ok(!ids("d.innerHTML = 'NO FEES<em>✦</em>';").includes("XSS_INNERHTML"));
+  assert.ok(!ids("d.innerHTML = `<b>static</b>`;").includes("XSS_INNERHTML"));
+  assert.ok(!ids("ref.current.innerHTML = HTML;").includes("XSS_INNERHTML"));
+  assert.ok(!ids("<div dangerouslySetInnerHTML={{ __html: HTML }} />").includes("XSS_INNERHTML"));
+  assert.ok(ids("<div dangerouslySetInnerHTML={{ __html: post.body }} />").includes("XSS_INNERHTML"));
+  assert.ok(ids("el.innerHTML = userInput;").includes("XSS_INNERHTML"));
+  assert.ok(ids("el.innerHTML = `<b>${name}</b>`;").includes("XSS_INNERHTML"));
+  assert.ok(ids("el.innerHTML = 'x' + name;").includes("XSS_INNERHTML"));
+});
+
 test("sast rules carry CWE / OWASP / confidence references", () => {
   const findings = runSastRules(
     parseUnifiedDiff(diffFor("db.ts", ['const q = "SELECT * FROM t WHERE id = " + id;'])).addedLines,
@@ -135,7 +189,7 @@ test("secret scanner: placeholders and sample files do not block", () => {
   // A provider-shaped key in a sample file → flagged but only low confidence.
   assert.equal(isTestOrExampleFile(".env.example"), true);
   const sample = scanSecrets(
-    parseUnifiedDiff(diffFor(".env.example", ["AWS=AKIAIOSFODNN7EXAMPLE"])).addedLines,
+    parseUnifiedDiff(diffFor(".env.example", ["AWS=AKIA" + "Q3ZR7TPLM2XN4VWB"])).addedLines,
   );
   assert.equal(sample.length, 1);
   assert.equal(sample[0]!.confidence, "low");

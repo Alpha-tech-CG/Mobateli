@@ -23,6 +23,38 @@ interface Rule {
   test: (line: string) => boolean;
 }
 
+/**
+ * `x.innerHTML = '…'` / `= ""` with no interpolation writes fixed markup the
+ * author controls (or clears the element) — nothing to inject.
+ */
+function assignsLiteralOnly(line: string): boolean {
+  const rhs = line.split(/\.innerHTML\s*=/)[1]?.trim().replace(/;\s*$/, "") ?? "";
+  return (
+    /^(['"])(?:(?!\1)[^\\]|\\.)*\1$/.test(rhs) ||
+    /^`[^`$]*`$/.test(rhs) ||
+    // An UPPER_CASE constant is markup fixed at build time (`= HTML`).
+    /^[A-Z][A-Z0-9_]*$/.test(rhs)
+  );
+}
+
+/** `dangerouslySetInnerHTML={{ __html: SOME_CONSTANT }}` — same reasoning. */
+function dangerousHtmlFromConstant(line: string): boolean {
+  return /__html\s*:\s*[A-Z][A-Z0-9_]*\s*\}/.test(line);
+}
+
+/**
+ * SSRF needs the request's *host* to be attacker-influenced. A template URL
+ * whose first segment is a config constant (`${API_URL}/…`,
+ * `${process.env.X}/…`) or a fixed origin (`https://api.x.com/${id}`) can't
+ * be redirected elsewhere — that was the bulk of this rule's noise.
+ */
+function hasDynamicHost(line: string): boolean {
+  const m = line.match(/\(\s*`\$\{\s*([^}]+?)\s*\}/);
+  if (!m) return false;
+  const expr = m[1]!;
+  return !/^(process\.env\.\w+|import\.meta\.env\.\w+|(?:[\w$]+\.)*[A-Z][A-Z0-9_]*)$/.test(expr);
+}
+
 const RULES: Rule[] = [
   {
     id: "SQL_STRING_CONCAT",
@@ -96,7 +128,9 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (l) => /\.innerHTML\s*=/.test(l) || /dangerouslySetInnerHTML/.test(l),
+    test: (l) =>
+      (/\.innerHTML\s*=/.test(l) && !assignsLiteralOnly(l)) ||
+      (/dangerouslySetInnerHTML/.test(l) && !dangerousHtmlFromConstant(l)),
   },
   {
     id: "PATH_TRAVERSAL",
@@ -124,7 +158,7 @@ const RULES: Rule[] = [
     remediation: "Validez l'URL contre une liste blanche de domaines ; bloquez les IP privées et les métadonnées cloud.",
     test: (l) =>
       /\b(fetch|axios(\.get|\.post)?|got|request|http\.get|https\.get)\s*\(/.test(l) &&
-      /(req\.(params|query|body)|request\.|`.*\$\{)/.test(l),
+      (/(req\.(params|query|body)|request\.)/.test(l) || hasDynamicHost(l)),
   },
   {
     id: "WEAK_HASH",

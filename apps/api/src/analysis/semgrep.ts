@@ -17,7 +17,9 @@ import type { Severity } from "@codegate/shared";
 
 /** Ruleset pinné : jeu de règles « CI » de Semgrep (curaté, peu de bruit). */
 const DEFAULT_CONFIG = "p/ci";
-const DEFAULT_TIMEOUT_MS = 20000;
+// Le téléchargement du ruleset seul prend ~12 s ; 20 s faisaient perdre des
+// résultats dès ~250 fichiers (mesuré), sans aucun signal.
+const DEFAULT_TIMEOUT_MS = 120_000;
 /** Semgrep peut produire un gros JSON ; on laisse de la marge au tampon. */
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
@@ -163,7 +165,7 @@ function toFinding(result: SemgrepResult): FindingResult {
 
   // Semgrep rend des chemins natifs (`app\views.py` sous Windows) : on les
   // normalise comme ceux du diff pour que la déduplication fonctionne.
-  if (result.path) finding.filePath = result.path.replace(/\\/g, "/");
+  if (result.path) finding.filePath = result.path.replace(/\\/g, "/").replace(/^\.\//, "");
   if (typeof result.start?.line === "number") finding.line = result.start.line;
 
   const cwe = normalizeCwe(firstString(metadata.cwe));

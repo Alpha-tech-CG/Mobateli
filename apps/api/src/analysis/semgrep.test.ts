@@ -207,7 +207,10 @@ test("analyzeDiffWithIntel hands Semgrep the PR's added code on disk, never outs
   await analyzeDiffWithIntel(diff, { semgrep: { runner }, rust: { enabled: false } });
 
   assert.ok(seenCwd, "Semgrep must run inside a scratch directory");
-  assert.deepEqual(seenFiles, ["app/api.py"]);
+  // The scratch dir is scanned as a whole (no per-file argv to overflow), and
+  // the traversal path was never written into it.
+  assert.deepEqual(seenFiles, ["."]);
+  await assert.rejects(access(join(seenCwd, "..", "escape.py")));
   assert.equal(content, "import os\nos.system(cmd)");
   // The scratch directory is cleaned up afterwards.
   await assert.rejects(access(seenCwd));

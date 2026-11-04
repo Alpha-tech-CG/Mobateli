@@ -128,13 +128,24 @@ export async function analyzeDiffWithIntel(
       enrichDependenciesWithOsv(base.dependencies, opts),
       runSca(opts.sca ?? {}),
       scanSemgrep(
-        engineFiles.map((f) => f.path).filter((p) => isSafeRelativePath(p)),
+        // The scratch dir holds exactly the PR's files, so scan it as a whole:
+        // listing thousands of paths overflows the OS command-line limit
+        // (32 767 chars on Windows) and Semgrep would silently not run.
+        scratch
+          ? ["."]
+          : engineFiles.map((f) => f.path).filter((p) => isSafeRelativePath(p)),
         semgrepOpts,
       ),
       runRustEngine(engineFiles, opts.rust ?? {}),
     ]);
   } finally {
-    if (scratch) await rm(scratch, { recursive: true, force: true });
+    // Best effort: a file still locked (Windows, a timed-out Semgrep child)
+    // must never turn a finished analysis into a failure.
+    if (scratch) {
+      await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+        () => undefined,
+      );
+    }
   }
 
   const dependencies = mergeScaIntoDependencies(osvEnriched, scaDeps);
