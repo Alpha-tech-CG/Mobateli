@@ -13,6 +13,7 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "test:db:setup": "node ../../scripts/setup-test-db.mjs",
     "test:integration": "node --import tsx --test \"src/**/*.itest.ts\"",
+    "bench": "node --import tsx bench/run.ts",
     "build:vercel": "node scripts/build-vercel.mjs",
     "lint": "eslint src --ext .ts"
   },

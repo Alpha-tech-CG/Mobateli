@@ -87,6 +87,22 @@ pnpm --filter @codegate/api test:integration     # intégration bout en bout (ap
 - **Unitaires** (`src/**/*.test.ts`) : parseur de diff, Secret Scanner, Dependency Trust, SAST, moteur de décision, Policy Engine, Agent Guard, builders Linear/Slack/deploy-gate.
 - **Intégration** (`src/**/*.itest.ts`) : montent la vraie app contre `codegate_test` et couvrent les parcours HTTP réels. Nécessitent Postgres + Redis up et `test:db:setup` lancé au moins une fois.
 
+### Benchmark de justesse (précision / rappel)
+
+`apps/api/bench/golden/` est un jeu de cas dont chaque faille est annotée à
+l'avance (`VULN:` / `SAFE:`, voir son README). Le benchmark compte vrais/faux
+positifs et faux négatifs par catégorie :
+
+```bash
+pnpm --filter @codegate/api bench -- --verbose                      # moteur déterministe
+pnpm --filter @codegate/api bench -- --engines core,rust --verbose  # + moteur Rust (cargo build --release)
+pnpm --filter @codegate/api bench -- --engines core,rust --check    # échoue si régression
+```
+
+`bench/baseline.json` fige les résultats actuels : `--check` échoue si une
+catégorie perd un vrai positif ou gagne un faux positif. Après une
+amélioration, relancer avec `--update-baseline` et committer la baseline.
+
 ## 8. Moteur IA (optionnel)
 
 ```bash
