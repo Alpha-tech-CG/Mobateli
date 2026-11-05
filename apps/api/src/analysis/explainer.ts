@@ -78,9 +78,17 @@ export function buildPrComment(result: {
     }
     lines.push("");
   }
-  if (result.findings.length) {
-    lines.push(`### 🔎 Problèmes de code (${result.findings.length})`);
-    for (const f of result.findings) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+  const firm = result.findings.filter((f) => f.confidence !== "low");
+  const toReview = result.findings.filter((f) => f.confidence === "low");
+  if (firm.length) {
+    lines.push(`### 🔎 Problèmes de code (${firm.length})`);
+    for (const f of firm) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+    lines.push("");
+  }
+  if (toReview.length) {
+    // Weak signals: listed for a human look, they do not drive the verdict.
+    lines.push(`### 🔍 À vérifier — confiance basse (${toReview.length})`);
+    for (const f of toReview) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
     lines.push("");
   }
   if (!result.secrets.length && !result.findings.length &&

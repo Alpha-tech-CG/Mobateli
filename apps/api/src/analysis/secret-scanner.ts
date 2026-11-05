@@ -54,6 +54,10 @@ function looksLikePlaceholder(value: string): boolean {
   // An identifier-like word sequence (`password_confirmation_input`,
   // `user-api-token`) is a field name or label, not a credential.
   if (/^[a-z]+(?:[_.-][a-z]+)+$/i.test(value)) return true;
+  // A password HASH in a standard format is not a usable credential
+  // (bcrypt $2b$…, argon2, scrypt, Django pbkdf2_sha256$…).
+  if (/^\$(2[aby]?|argon2(id|i|d)?|scrypt|s0|pbkdf2[-\w]*)\$/.test(value)) return true;
+  if (/^(pbkdf2_sha(1|256)|bcrypt(_sha256)?|argon2|scrypt)\$/.test(value)) return true;
   // A code fragment caught between two string literals (`'KEY=' + read(…)`).
   if (/\s/.test(value) && /[()+;=]/.test(value)) return true;
   return false;

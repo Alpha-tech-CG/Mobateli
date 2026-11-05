@@ -461,7 +461,8 @@ static PY_RULES: LangRules = LangRules {
                 "Une donnée issue d'une requête HTTP (request.args/form/json) atteint cursor.execute(...) via une chaîne formatée (f-string, %, +) au lieu d'un paramètre lié. Injection SQL exploitable (analyse de taint).",
             remediation:
                 "Utilisez des requêtes paramétrées : cursor.execute(sql, params) avec des placeholders, jamais une chaîne formatée avec l'entrée utilisateur.",
-            callee_ends_with: &[".execute", ".executemany", ".raw"],
+            // `.exec` is SQLModel's Session.exec(text(...)).
+            callee_ends_with: &[".execute", ".executemany", ".raw", ".exec"],
             callee_equals: &[],
             require_contains: None,
             ..SINK

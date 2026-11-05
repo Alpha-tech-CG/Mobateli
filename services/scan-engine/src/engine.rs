@@ -288,6 +288,181 @@ fn callee_matches(callee: &str, rule: &SinkRule) -> bool {
         || rule.callee_ends_with.iter().any(|e| callee.ends_with(e))
 }
 
+// ---------------------------------------------------------------------------
+// Framework request parameters
+// ---------------------------------------------------------------------------
+
+/// HTTP verbs / routing methods a handler is registered with.
+const ROUTE_METHODS: &[&str] = &[
+    "get", "post", "put", "patch", "delete", "head", "options", "all", "route", "api_route",
+    "websocket",
+];
+
+/// Parameter names that are framework plumbing, never request input.
+const PLUMBING_PARAMS: &[&str] = &[
+    "self", "cls", "request", "req", "res", "response", "next", "reply", "ctx", "session",
+    "db", "background_tasks", "current_user", "user",
+];
+
+/// Python annotation / default that marks a request-borne value.
+fn python_param_is_input(annotation: Option<&str>, default: Option<&str>) -> bool {
+    if let Some(d) = default {
+        if d.contains("Depends(") || d.contains("Security(") {
+            return false;
+        }
+        if ["Query(", "Path(", "Body(", "Form(", "Header(", "Cookie(", "File("]
+            .iter()
+            .any(|k| d.trim_start().starts_with(k))
+        {
+            return true;
+        }
+    }
+    match annotation {
+        // Flask/Django-style untyped route arguments are URL parts.
+        None => true,
+        Some(a) => {
+            if a.contains("Depends") || a.contains("Security") {
+                return false;
+            }
+            // `str`, `str | None`, `Optional[str]`, `list[str]`,
+            // `Annotated[str, Query()]`; or a request-body model by naming
+            // convention (`ItemCreate`, `UserUpdate`, `LoginPayload`…).
+            let is_str = a
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w == "str" || w == "Any");
+            let last = a
+                .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+                .find(|w| !w.is_empty())
+                .unwrap_or("");
+            let body_model = ["Create", "Update", "In", "Body", "Payload", "Input", "Form", "Params"]
+                .iter()
+                .any(|s| last.len() > s.len() && last.ends_with(s));
+            is_str || body_model || a.contains("Query(") || a.contains("Body(") || a.contains("Form(")
+        }
+    }
+}
+
+/// Request parameters of route handlers, as (function node, identifier).
+///
+/// * Python: parameters of functions decorated with `@app.get(...)`,
+///   `@router.post(...)`, `@bp.route(...)`… (FastAPI, Flask) — typed `str`,
+///   untyped (URL parts), `Query/Path/Body/Form(...)` defaults or a body model;
+///   not `int`/`UUID` (validated by the framework) nor `Depends(...)`.
+/// * JS/TS: a handler registered with `router.get(...)`-style calls whose
+///   first parameter destructures `{ query, body, params, headers, cookies }`.
+/// * NestJS: method parameters decorated `@Query`, `@Body`, `@Param`,
+///   `@Headers`.
+fn route_parameters<'a>(nodes: &[Node<'a>], source: &str) -> Vec<(Node<'a>, Node<'a>)> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node.kind() {
+            "decorated_definition" => {
+                let mut cursor = node.walk();
+                let is_route = node.children(&mut cursor).any(|d| {
+                    d.kind() == "decorator" && {
+                        let t = text(d, source);
+                        ROUTE_METHODS.iter().any(|m| t.contains(&format!(".{m}(")))
+                    }
+                });
+                let Some(func) = node.child_by_field_name("definition") else { continue };
+                if !is_route || func.kind() != "function_definition" {
+                    continue;
+                }
+                let Some(params) = func.child_by_field_name("parameters") else { continue };
+                let mut pc = params.walk();
+                for p in params.named_children(&mut pc) {
+                    let (name, annotation, default) = match p.kind() {
+                        "identifier" => (Some(p), None, None),
+                        "typed_parameter" => (
+                            p.named_child(0).filter(|c| c.kind() == "identifier"),
+                            p.child_by_field_name("type"),
+                            None,
+                        ),
+                        "default_parameter" => (p.child_by_field_name("name"), None, p.child_by_field_name("value")),
+                        "typed_default_parameter" => (
+                            p.child_by_field_name("name"),
+                            p.child_by_field_name("type"),
+                            p.child_by_field_name("value"),
+                        ),
+                        _ => (None, None, None),
+                    };
+                    let Some(name) = name.filter(|n| n.kind() == "identifier") else { continue };
+                    if PLUMBING_PARAMS.contains(&text(name, source)) {
+                        continue;
+                    }
+                    if python_param_is_input(annotation.map(|a| text(a, source)), default.map(|d| text(d, source))) {
+                        out.push((func, name));
+                    }
+                }
+            }
+            // router.get("/x", ({ query, body }: Request, res) => …)
+            "call_expression" => {
+                let Some(callee) = node.child_by_field_name("function") else { continue };
+                let callee = text(callee, source);
+                let Some((_, method)) = callee.rsplit_once('.') else { continue };
+                if !ROUTE_METHODS.contains(&method) && method != "use" {
+                    continue;
+                }
+                let Some(args) = node.child_by_field_name("arguments") else { continue };
+                let mut ac = args.walk();
+                for handler in args.named_children(&mut ac) {
+                    if !matches!(handler.kind(), "arrow_function" | "function_expression" | "function") {
+                        continue;
+                    }
+                    let Some(params) = handler.child_by_field_name("parameters") else { continue };
+                    let Some(first) = params.named_child(0) else { continue };
+                    // TS wraps the pattern in required_parameter.
+                    let pattern = first.child_by_field_name("pattern").unwrap_or(first);
+                    if pattern.kind() != "object_pattern" {
+                        continue;
+                    }
+                    let mut stack = vec![pattern];
+                    while let Some(n) = stack.pop() {
+                        match n.kind() {
+                            "shorthand_property_identifier_pattern" => {
+                                if ["query", "body", "params", "headers", "cookies"].contains(&text(n, source)) {
+                                    out.push((handler, n));
+                                }
+                            }
+                            "pair_pattern" => {
+                                let key = n.child_by_field_name("key").map(|k| text(k, source));
+                                if let (Some(k), Some(v)) = (key, n.child_by_field_name("value")) {
+                                    if ["query", "body", "params", "headers", "cookies"].contains(&k) && v.kind() == "identifier" {
+                                        out.push((handler, v));
+                                    }
+                                }
+                            }
+                            _ => push_children(n, &mut stack),
+                        }
+                    }
+                }
+            }
+            // NestJS: @Query() q: string, @Body() dto, @Param('id') id
+            "required_parameter" | "optional_parameter" => {
+                let mut cursor = node.walk();
+                let decorated = node.children(&mut cursor).any(|c| {
+                    c.kind() == "decorator" && {
+                        let t = text(c, source);
+                        ["@Query", "@Body", "@Param", "@Headers"].iter().any(|d| t.starts_with(d))
+                    }
+                });
+                if !decorated {
+                    continue;
+                }
+                let Some(pattern) = node.child_by_field_name("pattern").filter(|p| p.kind() == "identifier") else {
+                    continue;
+                };
+                // The enclosing method: parameters → formal_parameters → method.
+                if let Some(method) = node.parent().and_then(|p| p.parent()) {
+                    out.push((method, pattern));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Function scopes of a tree: the scope of every node, and each scope's
 /// enclosing scope. The root (module/program) is the outermost scope.
 struct Scopes {
@@ -405,6 +580,9 @@ struct Assign<'t> {
     scope: usize,
     target: String,
     rhs: Node<'t>,
+    /// A framework-bound request parameter (route handler argument): an
+    /// input by definition, whatever `rhs` says.
+    forced: bool,
 }
 
 /// Tainted `(scope, variable)` bindings under `profile`.
@@ -426,7 +604,7 @@ fn propagate(
     let mut readers: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, a) in assigns.iter().enumerate() {
         let d = digest(a.rhs, source, call_kinds, profile);
-        if d.has_source {
+        if a.forced || d.has_source {
             let key = (a.scope, a.target.clone());
             if tainted.insert(key.clone()) {
                 work.push(key);
@@ -601,9 +779,16 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
                         scope,
                         target: text(t, source).to_string(),
                         rhs: rhs?,
+                        forced: false,
                     })
                 })
         })
+        .chain(route_parameters(&nodes, source).into_iter().map(|(func, param)| Assign {
+            scope: scopes.of(func),
+            target: text(param, source).to_string(),
+            rhs: param,
+            forced: true,
+        }))
         .collect();
 
     // One propagation per profile the sinks actually use.

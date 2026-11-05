@@ -414,3 +414,55 @@ fn pillow_imagemath_eval_is_code_injection() {
     let src = "expression = request.form.get('expr')\nImageMath.eval(expression, a=img)";
     assert!(rule_ids("a.py", src).contains(&"RUST-PY-CODE-INJECTION-TAINT".to_string()));
 }
+
+#[test]
+fn route_handler_parameters_are_request_input() {
+    let fastapi = r#"
+@router.get("/items")
+def search(session: SessionDep, q: str = Query(...), item_id: int = 0, user: CurrentUser = Depends(get_user)):
+    return session.exec(text(f"SELECT * FROM item WHERE t = '{q}' AND id = {item_id}")).all()
+
+@router.get("/ping/{host}")
+def ping(host: str):
+    return subprocess.run(f"ping {host}", shell=True)
+"#;
+    let ids = rule_ids("a.py", fastapi);
+    assert!(ids.contains(&"RUST-PY-SQLI-TAINT".to_string()), "{ids:?}");
+    assert!(ids.contains(&"RUST-PY-CMDI-SUBPROCESS-TAINT".to_string()), "{ids:?}");
+    // int / Depends(...) parameters are not input; a non-route function's are not either.
+    let safe = r#"
+@router.get("/n/{item_id}")
+def n(item_id: int, user: CurrentUser = Depends(get_user)):
+    return session.exec(text(f"SELECT * FROM item WHERE id = {item_id} AND o = {user.id}"))
+
+def helper(q: str):
+    return session.exec(text(f"SELECT * FROM t WHERE q = '{q}'"))
+"#;
+    assert!(rule_ids("a.py", safe).is_empty(), "{:?}", rule_ids("a.py", safe));
+    let express = r#"router.get("/u", async ({ query }: Request, res: Response) => {
+  await db.query(`SELECT * FROM users WHERE name = '${query.name}'`);
+});"#;
+    assert!(rule_ids("a.ts", express).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    let nest = r#"class C { @Get() find(@Query('q') q: string) { return this.db.query(`SELECT * FROM t WHERE q = '${q}'`); } }"#;
+    assert!(rule_ids("a.ts", nest).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+}
+
+#[test]
+fn results_do_not_depend_on_file_order() {
+    use codegate_scan_engine::{analyze_inputs, FileInput};
+    let files = vec![
+        FileInput { path: "a.js".into(), content: "db.query('SELECT ' + req.query.a);".into() },
+        FileInput { path: "b.py".into(), content: "cursor.execute('SELECT ' + request.args['b'])".into() },
+        FileInput { path: "c.ts".into(), content: "res.redirect(req.query.next);".into() },
+    ];
+    let key = |v: Vec<codegate_scan_engine::Finding>| {
+        let mut s: Vec<String> = v.iter().map(|f| serde_json::to_string(f).unwrap()).collect();
+        s.sort();
+        s
+    };
+    let forward = key(analyze_inputs(&files));
+    let mut rev = files.clone();
+    rev.reverse();
+    assert_eq!(forward, key(analyze_inputs(&rev)));
+    assert_eq!(forward, key(analyze_inputs(&files)), "deterministic");
+}

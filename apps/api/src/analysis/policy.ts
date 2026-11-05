@@ -30,14 +30,18 @@ const SEVERITY_RANK: Record<Severity, number> = {
   critical: 4,
 };
 
-/** Highest severity present across all finding kinds. */
+/**
+ * Highest severity among FIRM signals. A low-confidence finding or secret is
+ * shown "to review" but must not trip a severity-threshold policy on its own
+ * (a downgraded regex hit would otherwise block a PR the engine cleared).
+ */
 function worstSeverity(result: AnalysisResult): Severity {
   let worst: Severity = "info";
   const consider = (s: Severity) => {
     if (SEVERITY_RANK[s] > SEVERITY_RANK[worst]) worst = s;
   };
-  for (const f of result.findings) consider(f.severity);
-  for (const s of result.secrets) consider(s.severity);
+  for (const f of result.findings) if (f.confidence !== "low") consider(f.severity);
+  for (const s of result.secrets) if (s.confidence !== "low") consider(s.severity);
   for (const d of result.dependencies) {
     if (d.riskLevel === "critical") consider("critical");
     else if (d.riskLevel === "high") consider("high");
@@ -53,8 +57,8 @@ export function resolveEnforcement(
 ): Enforcement {
   const worst = worstSeverity(result);
   const hasFindings =
-    result.findings.length > 0 ||
-    result.secrets.length > 0 ||
+    result.findings.some((f) => f.confidence !== "low") ||
+    result.secrets.some((s) => s.confidence !== "low") ||
     result.dependencies.some((d) => d.riskLevel !== "low");
 
   // A policy demands blocking when its action is block/require_approval and the

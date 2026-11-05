@@ -63,7 +63,7 @@ function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) return SKIP_DIRS.has(name) ? [] : walk(full);
-    return /\.(ts|js|py)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) && !/^test_.*\.py$/.test(name) ? [full] : [];
+    return /\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) && !/^test_.*\.py$/.test(name) ? [full] : [];
   });
 }
 
@@ -100,23 +100,43 @@ async function main(): Promise<void> {
   }
   const diff = parts.join("\n");
 
-  const t0 = Date.now();
   const exe = process.platform === "win32" ? "codegate-scan.exe" : "codegate-scan";
-  const result = useRust
-    ? await analyzeDiffWithIntel(diff, {
-        fetchImpl: () => Promise.reject(new Error("offline")),
-        semgrep: { runner: async () => "{}" },
-        rust: {
-          binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/scan-engine/target/release", exe),
-          timeoutMs: 120_000,
-        },
-      })
-    : analyzeDiff(diff);
+  const analyze = (d: string) =>
+    useRust
+      ? analyzeDiffWithIntel(d, {
+          fetchImpl: () => Promise.reject(new Error("offline")),
+          semgrep: { runner: async () => "{}" },
+          rust: {
+            binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/scan-engine/target/release", exe),
+            timeoutMs: 120_000,
+          },
+        })
+      : Promise.resolve(analyzeDiff(d));
+  const t0 = Date.now();
+  const result = await analyze(diff);
   const ms = Date.now() - t0;
   const alerts = alertsFrom(result).filter((a) => a.category !== "CONFIG");
 
   console.log(`# Juice Shop — moteurs : ${useRust ? "core,rust" : "core"}`);
-  console.log(`${files.length} fichiers, ${totalLines} lignes, ${alerts.length} alertes, ${ms} ms\n`);
+  console.log(`${files.length} fichiers, ${totalLines} lignes, ${alerts.length} alertes, ${ms} ms`);
+  console.log(`Tout le dépôt comme une seule PR : score ${result.riskScore}, décision ${result.decision} (${result.status})`);
+
+  // One PR per file — how the bot actually judges: how many would be
+  // warned or blocked, and what drives each verdict.
+  if (args.includes("--per-file")) {
+    const verdicts = new Map<string, string[]>();
+    for (const part of parts) {
+      const r = await analyze(part);
+      const file = /^\+\+\+ b\/(.+)$/m.exec(part)?.[1] ?? "?";
+      verdicts.set(r.status, [...(verdicts.get(r.status) ?? []), `${file} (score ${r.riskScore})`]);
+    }
+    console.log("Une PR par fichier :");
+    for (const [status, list] of verdicts) {
+      console.log(`  ${status.padEnd(9)} ${list.length}`);
+      if (status !== "passed") for (const f of list) console.log(`      ${f}`);
+    }
+  }
+  console.log("");
 
   // ---- Ground truth: annotated vulnerable lines --------------------------------
   const byChallenge = new Map<string, VulnLine[]>();

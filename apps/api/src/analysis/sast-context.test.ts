@@ -32,3 +32,13 @@ test("sast: vendored and minified files are skipped", () => {
   }
   for (const f of ["src/admin.js", "src/minify.js", "src/vendors-api.ts"]) assert.ok(!isMinified(f), f);
 });
+
+test("secrets: standard password-hash formats are not credentials", async () => {
+  const { scanSecrets } = await import("./secret-scanner.js");
+  const lines = [
+    '"password" : "$2a$10$8Zo/1e8KM8QzqOKqbDlYlONBOzukWXrM.IiyzqHRYDXqwB3gzDsba",',
+    "password = 'pbkdf2_sha256$600000$abcdefgh$Zm9vYmFyYmF6cXV4'",
+    'password = "S3cure!Pass#2024xyz"',
+  ].map((content, i) => ({ file: "seed.js", line: i + 1, content }));
+  assert.deepEqual(scanSecrets(lines).map((s) => s.location), ["seed.js:3"]);
+});
