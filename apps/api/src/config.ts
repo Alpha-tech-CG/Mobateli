@@ -9,8 +9,8 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   API_PORT: z.coerce.number().int().positive().default(4000),
 
-  DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url().default("redis://127.0.0.1:6380"),
+  DATABASE_URL: z.url(),
+  REDIS_URL: z.url().default("redis://127.0.0.1:6380"),
 
   // ─── GitHub App ───────────────────────────────────────
   // Optional so the API boots in dev without a configured App. The webhook
@@ -35,9 +35,9 @@ const envSchema = z.object({
       "ENCRYPTION_KEY doit être 32 octets encodés en base64",
     ),
 
-  WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  WEB_ORIGIN: z.url().default("http://localhost:3000"),
   // Public base URL of this API — used to build SAML SP entityId/ACS URLs.
-  PUBLIC_API_URL: z.string().url().default("http://localhost:4000"),
+  PUBLIC_API_URL: z.url().default("http://localhost:4000"),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
