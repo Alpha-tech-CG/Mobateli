@@ -86,6 +86,8 @@ jobs:
         run: pnpm --filter @codegate/api bench -- --engines core --check --verbose
       - name: Règles + moteur Rust
         run: pnpm --filter @codegate/api bench -- --engines core,rust --check --verbose
+      - name: Jeu de contrôle (holdout), règles + moteur Rust
+        run: pnpm --filter @codegate/api bench -- --dataset holdout --engines core,rust --check --verbose
 
   audit:
     name: Audit de CodeGate lui-même (dépendances + Semgrep)
@@ -131,7 +133,7 @@ jobs:
       - name: Corpus de départ (jeu de cas du benchmark)
         run: |
           mkdir -p fuzz/corpus/analyze
-          find ../../apps/api/bench/golden -type f \( -name '*.ts' -o -name '*.py' -o -name '*.js' \) \
+          find ../../apps/api/bench/golden ../../apps/api/bench/holdout -type f \( -name '*.ts' -o -name '*.py' -o -name '*.js' \) \
             -exec cp {} fuzz/corpus/analyze/ \;
       # -timeout : une entrée lente est un échec (contournement par dépassement
       # du délai de l'adaptateur TS), pas seulement un plantage.

@@ -1,0 +1,22 @@
+{
+  "name": "holdout-deps",
+  "version": "1.0.0",
+  "dependencies": {
+    "axois": "1.7.0", // VULN: DEP
+    "expres": "4.19.2", // VULN: DEP
+    "mongose": "8.0.0", // VULN: DEP
+    "node-fetchh": "3.3.2", // VULN: DEP
+    "electorn": "31.0.0", // VULN: DEP
+    "dotnev": "16.4.5", // VULN: DEP
+    "axios": "1.7.2", // SAFE: DEP
+    "pino": "9.2.0", // SAFE: DEP
+    "nock": "13.5.4", // SAFE: DEP
+    "morgan": "1.10.0", // SAFE: DEP
+    "react-dom": "18.3.1", // SAFE: DEP
+    "chalk": "5.3.0", // SAFE: DEP
+    "commander": "12.1.0", // SAFE: DEP
+    "ky": "1.4.0", // SAFE: DEP
+    "nodemailer": "6.9.14", // SAFE: DEP
+    "dotenv-expand": "11.0.6" // SAFE: DEP
+  }
+}

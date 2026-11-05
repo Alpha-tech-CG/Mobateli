@@ -6,6 +6,7 @@
  *   pnpm --filter @codegate/api bench -- --check           # échoue si régression vs baseline
  *   pnpm --filter @codegate/api bench -- --update-baseline # réécrit la baseline
  *   pnpm --filter @codegate/api bench -- --verbose         # liste chaque FP / FN
+ *   pnpm --filter @codegate/api bench -- --dataset holdout # autre jeu de cas (bench/<nom>)
  *
  * Chaque ligne annotée `VULN: <CAT>` doit être signalée (sinon FN) ; toute
  * alerte ailleurs est un FP. Voir bench/golden/README.md.
@@ -18,7 +19,7 @@ import { analyzeDiff, analyzeDiffWithIntel } from "../src/analysis/analyzer.js";
 import type { AnalysisResult } from "../src/analysis/types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const GOLDEN = join(HERE, "golden");
+const DATASETS = ["golden", "holdout"];
 const BASELINE = join(HERE, "baseline.json");
 const REPO = resolve(HERE, "../../..");
 
@@ -51,7 +52,7 @@ function walk(dir: string): string[] {
   });
 }
 
-export function loadGolden(root = GOLDEN): { files: GoldenFile[]; expectations: Expectation[] } {
+export function loadGolden(root = join(HERE, "golden")): { files: GoldenFile[]; expectations: Expectation[] } {
   const files: GoldenFile[] = [];
   const expectations: Expectation[] = [];
   const also: { file: string; line: number; category: string }[] = [];
@@ -319,11 +320,16 @@ async function main(): Promise<void> {
   const flag = (n: string) => args.includes(n);
   const enginesArg = args[args.indexOf("--engines") + 1];
   const engines = new Set((args.includes("--engines") && enginesArg ? enginesArg : "core").split(","));
-  const engineKey = [...engines].sort().join(",");
+  const datasetArg = args[args.indexOf("--dataset") + 1];
+  const dataset = args.includes("--dataset") && datasetArg ? datasetArg : "golden";
+  if (!DATASETS.includes(dataset)) throw new Error(`jeu de cas inconnu : ${dataset} (${DATASETS.join(", ")})`);
+  const sortedEngines = [...engines].sort().join(",");
+  // Baselines are per dataset; the golden one keeps its historical key.
+  const engineKey = dataset === "golden" ? sortedEngines : `${dataset}:${sortedEngines}`;
 
-  const { files, expectations } = loadGolden();
+  const { files, expectations } = loadGolden(join(HERE, dataset));
   const vulns = expectations.filter((e) => e.kind === "VULN").length;
-  console.log(`# CodeGate benchmark — moteurs : ${engineKey}`);
+  console.log(`# CodeGate benchmark — jeu « ${dataset} », moteurs : ${sortedEngines}`);
   console.log(`${files.length} fichiers, ${vulns} failles connues, ${expectations.length - vulns} lignes sûres piégeuses`);
 
   const result = await analyze(files, engines);
@@ -336,7 +342,7 @@ async function main(): Promise<void> {
   if (all.unscored.length) console.log(`\n(${all.unscored.length} alerte(s) « fichier sensible » sans ligne, non comptées)`);
 
   if (flag("--json")) {
-    writeFileSync(join(HERE, `report.${engineKey.replace(/,/g, "+")}.json`), JSON.stringify({ engines: engineKey, all, confident }, null, 2));
+    writeFileSync(join(HERE, `report.${engineKey.replace(/[,:]/g, "+")}.json`), JSON.stringify({ engines: engineKey, all, confident }, null, 2));
   }
 
   const baselines: Record<string, Baseline> = (() => {

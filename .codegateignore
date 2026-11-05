@@ -2,5 +2,6 @@
 # Lu sur la branche par défaut : une PR ne peut pas s'exclure elle-même.
 # Les secrets restent détectés partout, même dans ces chemins.
 
-# Jeu de cas volontairement vulnérable du benchmark de justesse.
+# Jeux de cas volontairement vulnérables du benchmark de justesse.
 apps/api/bench/golden/
+apps/api/bench/holdout/
