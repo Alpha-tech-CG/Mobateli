@@ -17,9 +17,12 @@ pour **JavaScript / TypeScript** et **Python** :
 
 | Règle | CWE | OWASP | Description |
 |------|-----|-------|-------------|
-| `RUST-*-SQLI-TAINT` | CWE-89 | A03:2021-Injection | Entrée utilisateur atteignant une requête SQL non paramétrée |
+| `RUST-*-SQLI-TAINT` | CWE-89 | A03:2021-Injection | Entrée utilisateur atteignant une requête SQL non paramétrée (dont `$queryRawUnsafe`) |
 | `RUST-*-CMDI-*-TAINT` | CWE-78 | A03:2021-Injection | Entrée utilisateur atteignant `exec`/`os.system`/`subprocess(shell=True)` |
-| `RUST-*-CODE-INJECTION-TAINT` | CWE-94 | A03:2021-Injection | Entrée utilisateur atteignant `eval`/`new Function`/`exec` |
+| `RUST-*-CODE-INJECTION-TAINT` | CWE-94 | A03:2021-Injection | Entrée utilisateur atteignant `eval`/`new Function`/`vm.run*`/`exec` |
+| `RUST-*-PATH-TRAVERSAL-TAINT` | CWE-22 | A01:2021-Broken Access Control | Entrée de requête atteignant `fs.*`/`sendFile`/`open()` sans contrôle `startsWith` |
+| `RUST-*-SSRF-TAINT` | CWE-918 | A10:2021-SSRF | Entrée de requête déterminant l'hôte d'un appel sortant (`fetch`, `axios`, `requests`…) |
+| `RUST-JS-XSS-TAINT` | CWE-79 | A03:2021-Injection | Entrée écrite telle quelle dans `res.send/write` ou `document.write` |
 
 Faible taux de faux positifs par construction :
 
@@ -29,7 +32,15 @@ Faible taux de faux positifs par construction :
   **paramétrée** (`execute(sql, params)`) n'est pas signalée ;
 - prise en compte des **assainisseurs** (`parseInt`, `shlex.quote`…) qui coupent
   le taint ;
-- `subprocess` n'est signalé qu'avec `shell=True`.
+- `subprocess` n'est signalé qu'avec `shell=True` ;
+- le taint est suivi **par portée de fonction** (avec capture lexicale) : une
+  variable `name` contaminée dans un handler ne contamine pas un `name` d'un
+  autre handler ;
+- un assainisseur **imbriqué** ne neutralise que ce qu'il entoure
+  (`path.join(D, path.basename(req.query.f))` est sûr, `"a" + req.query.q` non) ;
+- PATH/SSRF/XSS n'utilisent que les sources **web** (pas `process.argv`,
+  `sys.argv`, `input()` : un CLI qui ouvre le chemin qu'on lui donne fait son
+  travail) ; SSRF ignore une URL dont le schéma et l'hôte sont fixés.
 
 La confiance (`confidence`) est `high` quand la source atteint le sink en
 ligne, `medium` quand elle y arrive via une variable.

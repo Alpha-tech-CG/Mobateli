@@ -97,19 +97,61 @@ fn is_property_identifier(node: Node) -> bool {
     false
 }
 
-/// Identifiers referenced in a subtree, excluding `.property` positions.
+fn contains_source(text: &str, sources: &[&str]) -> bool {
+    sources.iter().any(|s| text.contains(s))
+}
+
+/// A call to a sanitizer (`parseInt(x)`, `path.basename(x)`, `shlex.quote(x)`).
+fn is_sanitizer_call(node: Node, source: &str, call_kinds: &[&str], sanitizers: &[&str]) -> bool {
+    if !call_kinds.contains(&node.kind()) {
+        return false;
+    }
+    let Some(callee) = node
+        .child_by_field_name("function")
+        .or_else(|| node.child_by_field_name("constructor"))
+    else {
+        return false;
+    };
+    let callee = text(callee, source).trim();
+    sanitizers.iter().any(|s| {
+        callee == *s
+            || callee
+                .strip_suffix(s)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
+}
+
+/// What an expression carries once its sanitized sub-expressions are set
+/// aside: whether an untrusted source appears in it, and which variables it
+/// reads. A sanitizer anywhere inside neutralizes only what it wraps —
+/// `path.join(DIR, path.basename(req.query.f))` and
+/// `` `<p>${escapeHtml(req.query.q)}</p>` `` are clean, `"a" + req.query.q` is not.
+struct Digest {
+    has_source: bool,
+    refs: HashSet<String>,
+}
+
 ///
 /// Linear in the subtree size: property positions are recorded while visiting
 /// their member/attribute parent (pre-order), instead of calling
 /// `Node::parent()` per identifier — tree-sitter's `parent()` walks down from
 /// the root, which made a deeply nested expression (`a + b + c + …`) quadratic
 /// and let a ~130 KiB file push the engine past the adapter's timeout.
-fn referenced_idents(node: Node, source: &str) -> HashSet<String> {
-    let mut out = HashSet::new();
+fn digest(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> Digest {
+    let start = node.start_byte();
+    let mut masked: Vec<u8> = text(node, source).as_bytes().to_vec();
+    let mut refs = HashSet::new();
     let mut property_ids: HashSet<usize> = HashSet::new();
     let root_is_property = node.kind() == "identifier" && is_property_identifier(node);
     let mut stack = vec![node];
     while let Some(n) = stack.pop() {
+        if is_sanitizer_call(n, source, call_kinds, &profile.sanitizers) {
+            let (a, b) = (n.start_byte() - start, n.end_byte() - start);
+            if b <= masked.len() {
+                masked[a..b].fill(b' ');
+            }
+            continue; // nothing inside a sanitizer call reaches the outside
+        }
         if matches!(n.kind(), "member_expression" | "attribute") {
             for field in ["property", "attribute"] {
                 if let Some(prop) = n.child_by_field_name(field) {
@@ -121,37 +163,15 @@ fn referenced_idents(node: Node, source: &str) -> HashSet<String> {
             && !property_ids.contains(&n.id())
             && !(n.id() == node.id() && root_is_property)
         {
-            out.insert(text(n, source).to_string());
+            refs.insert(text(n, source).to_string());
         }
         push_children(n, &mut stack);
     }
-    out
-}
-
-fn contains_source(text: &str, sources: &[&str]) -> bool {
-    sources.iter().any(|s| text.contains(s))
-}
-
-/// The whole expression is a sanitizer call (`parseInt(x)`, `shlex.quote(x)`…).
-fn is_sanitized(text: &str, sanitizers: &[&str]) -> bool {
-    let t = text.trim_start();
-    sanitizers
-        .iter()
-        .any(|s| t.starts_with(s) && t[s.len()..].trim_start().starts_with('('))
-}
-
-/// Is this expression tainted, given the current set of tainted variables?
-fn expr_tainted(node: Node, source: &str, tainted: &HashSet<String>, rules: &LangRules) -> bool {
-    let txt = text(node, source);
-    if is_sanitized(txt, rules.sanitizers) {
-        return false;
+    let masked = String::from_utf8_lossy(&masked);
+    Digest {
+        has_source: contains_source(&masked, &profile.sources),
+        refs,
     }
-    if contains_source(txt, rules.sources) {
-        return true;
-    }
-    referenced_idents(node, source)
-        .iter()
-        .any(|id| tainted.contains(id))
 }
 
 /// Left-hand side variable name of an assignment node, if it is a plain
@@ -184,59 +204,258 @@ fn callee_matches(callee: &str, rule: &SinkRule) -> bool {
         || rule.callee_ends_with.iter().any(|e| callee.ends_with(e))
 }
 
-fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> {
-    let nodes = descendants(root);
+/// Function scopes of a tree: the scope of every node, and each scope's
+/// enclosing scope. The root (module/program) is the outermost scope.
+struct Scopes {
+    of_node: HashMap<usize, usize>,
+    parent: HashMap<usize, usize>,
+}
 
-    // --- Pass 1: compute tainted variables to a fixpoint. ---
-    //
-    // Worklist propagation, linear in the number of assignments: each
-    // right-hand side is examined once (sanitizer / inline source / the
-    // identifiers it references), then taint flows along the "variable →
-    // assignments that read it" edges. Same result as re-scanning every
-    // assignment until nothing changes, without the O(n²) passes a long chain
-    // written in reverse order (`b = a;` before `a = source;`) used to cost.
-    struct Assign {
-        target: String,
-        refs: HashSet<String>,
-    }
-    let mut assigns: Vec<Assign> = Vec::new();
-    let mut tainted: HashSet<String> = HashSet::new();
-    let mut work: Vec<String> = Vec::new();
-    for n in nodes.iter().filter(|n| rules.assign_kinds.contains(&n.kind())) {
-        let (Some(target), Some(rhs)) = (assign_target(*n), assign_rhs(*n)) else {
-            continue;
-        };
-        let target = text(target, source).to_string();
-        let rhs_text = text(rhs, source);
-        if is_sanitized(rhs_text, rules.sanitizers) {
-            continue; // a sanitized value never carries taint
+impl Scopes {
+    fn build(root: Node, kinds: &[&str]) -> Scopes {
+        let mut of_node = HashMap::new();
+        let mut parent = HashMap::new();
+        let mut stack = vec![(root, root.id())];
+        while let Some((node, scope)) = stack.pop() {
+            let own = if node.id() != root.id() && kinds.contains(&node.kind()) {
+                parent.insert(node.id(), scope);
+                node.id()
+            } else {
+                scope
+            };
+            of_node.insert(node.id(), own);
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                stack.push((child, own));
+            }
         }
-        if contains_source(rhs_text, rules.sources) {
-            if tainted.insert(target.clone()) {
-                work.push(target);
+        Scopes { of_node, parent }
+    }
+
+    fn of(&self, node: Node) -> usize {
+        self.of_node.get(&node.id()).copied().unwrap_or(0)
+    }
+
+    /// A binding made in `def` is visible from `user` when `def` is `user` or
+    /// encloses it (lexical scoping, closures included).
+    fn visible(&self, def: usize, mut user: usize) -> bool {
+        loop {
+            if user == def {
+                return true;
+            }
+            match self.parent.get(&user) {
+                Some(&p) => user = p,
+                None => return false,
+            }
+        }
+    }
+}
+
+/// A taint profile: which strings mark untrusted input and which calls
+/// neutralize it. `Injection` uses every source; `Web` only request-borne ones.
+struct Profile<'r> {
+    sources: Vec<&'r str>,
+    sanitizers: Vec<&'r str>,
+}
+
+impl<'r> Profile<'r> {
+    fn injection(rules: &'r LangRules) -> Self {
+        Profile {
+            sources: rules.sources.to_vec(),
+            sanitizers: rules.sanitizers.to_vec(),
+        }
+    }
+
+    fn web(rules: &'r LangRules) -> Self {
+        Profile {
+            sources: rules
+                .sources
+                .iter()
+                .copied()
+                .filter(|s| !rules.cli_sources.contains(s))
+                .collect(),
+            sanitizers: rules
+                .sanitizers
+                .iter()
+                .chain(rules.web_sanitizers)
+                .copied()
+                .collect(),
+        }
+    }
+}
+
+/// One `name = rhs` binding.
+struct Assign<'t> {
+    scope: usize,
+    target: String,
+    rhs: Node<'t>,
+}
+
+/// Tainted `(scope, variable)` bindings under `profile`.
+///
+/// Worklist propagation, linear in the number of assignments: each right-hand
+/// side was examined once (sanitizer / inline source / identifiers it reads),
+/// then taint flows along "variable → assignments that read it" edges. Same
+/// result as re-scanning every assignment until nothing changes, without the
+/// O(n²) passes a long chain written in reverse order used to cost.
+fn propagate(
+    assigns: &[Assign],
+    scopes: &Scopes,
+    profile: &Profile,
+    source: &str,
+    call_kinds: &[&str],
+) -> HashSet<(usize, String)> {
+    let mut tainted: HashSet<(usize, String)> = HashSet::new();
+    let mut work: Vec<(usize, String)> = Vec::new();
+    let mut readers: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, a) in assigns.iter().enumerate() {
+        let d = digest(a.rhs, source, call_kinds, profile);
+        if d.has_source {
+            let key = (a.scope, a.target.clone());
+            if tainted.insert(key.clone()) {
+                work.push(key);
             }
             continue;
         }
-        assigns.push(Assign {
-            target,
-            refs: referenced_idents(rhs, source),
-        });
-    }
-    let mut readers: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (i, a) in assigns.iter().enumerate() {
-        for r in &a.refs {
-            readers.entry(r.as_str()).or_default().push(i);
+        for r in d.refs {
+            readers.entry(r).or_default().push(i);
         }
     }
-    while let Some(var) = work.pop() {
+    while let Some((def_scope, var)) = work.pop() {
         let Some(idxs) = readers.get(var.as_str()) else {
             continue;
         };
         for &i in idxs {
-            let target = &assigns[i].target;
-            if tainted.insert(target.clone()) {
-                work.push(target.clone());
+            let a = &assigns[i];
+            if scopes.visible(def_scope, a.scope) {
+                let key = (a.scope, a.target.clone());
+                if tainted.insert(key.clone()) {
+                    work.push(key);
+                }
             }
+        }
+    }
+    tainted
+}
+
+/// Tainted bindings indexed by variable name → defining scopes.
+type Tainted = HashMap<String, Vec<usize>>;
+
+fn index_by_name(set: HashSet<(usize, String)>) -> Tainted {
+    let mut out: Tainted = HashMap::new();
+    for (scope, name) in set {
+        out.entry(name).or_default().push(scope);
+    }
+    out
+}
+
+/// Is `name`, read from `scope`, bound to a tainted value?
+fn var_tainted(tainted: &Tainted, scopes: &Scopes, scope: usize, name: &str) -> bool {
+    tainted
+        .get(name)
+        .is_some_and(|defs| defs.iter().any(|def| scopes.visible(*def, scope)))
+}
+
+/// Is this expression (read from `scope`) tainted under `profile`?
+/// Returns `Some(inline)` when tainted — `inline` if a source appears in the
+/// expression itself rather than through a variable.
+fn expr_taint(
+    d: &Digest,
+    scope: usize,
+    tainted: &Tainted,
+    scopes: &Scopes,
+) -> Option<bool> {
+    if d.has_source {
+        return Some(true);
+    }
+    d.refs
+        .iter()
+        .any(|id| var_tainted(tainted, scopes, scope, id))
+        .then_some(false)
+}
+
+/// The argument is a string/template literal whose literal prefix fixes the
+/// scheme and host: `"https://api.example.com/v1?q=" + q`, or a template
+/// `https://api.example.com/${path}` (host ends before the first `${`).
+fn has_fixed_origin(arg_text: &str) -> bool {
+    let t = arg_text.trim_start();
+    let Some(rest) = t
+        .strip_prefix('`')
+        .or_else(|| t.strip_prefix('"'))
+        .or_else(|| t.strip_prefix('\''))
+        .or_else(|| t.strip_prefix("f\""))
+        .or_else(|| t.strip_prefix("f'"))
+    else {
+        return false;
+    };
+    let Some(after_scheme) = rest
+        .strip_prefix("https://")
+        .or_else(|| rest.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    // The host must be fully literal and terminated by a path/query/fragment
+    // delimiter before any interpolation or the end of the literal.
+    for (i, c) in after_scheme.char_indices() {
+        match c {
+            '/' | '?' | '#' => return i > 0,
+            '$' | '{' | '`' | '"' | '\'' | '+' | '%' => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_call_kind(kind: &str) -> bool {
+    matches!(kind, "call_expression" | "call" | "new_expression")
+}
+
+/// `x.startsWith(...)` / `x.startswith(...)`: (receiver identifier, method).
+fn guard_call<'s>(node: Node, source: &'s str) -> Option<(&'s str, &'s str)> {
+    let callee = node.child_by_field_name("function")?;
+    if !matches!(callee.kind(), "member_expression" | "attribute") {
+        return None;
+    }
+    let object = callee.child_by_field_name("object")?;
+    let method = callee
+        .child_by_field_name("property")
+        .or_else(|| callee.child_by_field_name("attribute"))?;
+    (object.kind() == "identifier").then(|| (text(object, source), text(method, source)))
+}
+
+fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> {
+    let nodes = descendants(root);
+    let scopes = Scopes::build(root, rules.scope_kinds);
+
+    // --- Pass 1: bindings, then tainted variables per profile. ---
+    let assigns: Vec<Assign> = nodes
+        .iter()
+        .filter(|n| rules.assign_kinds.contains(&n.kind()))
+        .filter_map(|n| {
+            let target = assign_target(*n)?;
+            let rhs = assign_rhs(*n)?;
+            Some(Assign {
+                scope: scopes.of(*n),
+                target: text(target, source).to_string(),
+                rhs,
+            })
+        })
+        .collect();
+
+    let injection = Profile::injection(rules);
+    let web = Profile::web(rules);
+    let tainted_injection = index_by_name(propagate(&assigns, &scopes, &injection, source, rules.call_kinds));
+    let tainted_web = if rules.sinks.iter().any(|r| r.web_only) {
+        index_by_name(propagate(&assigns, &scopes, &web, source, rules.call_kinds))
+    } else {
+        HashMap::new()
+    };
+
+    // Validation calls (`target.startsWith(ROOT)`), by scope.
+    let mut guarded: Vec<(usize, &str, &str)> = Vec::new();
+    for node in nodes.iter().filter(|n| rules.call_kinds.contains(&n.kind())) {
+        if let Some((var, method)) = guard_call(*node, source) {
+            guarded.push((scopes.of(*node), var, method));
         }
     }
 
@@ -261,6 +480,7 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
         let Some(arg0) = first_positional(args) else {
             continue;
         };
+        let scope = scopes.of(*node);
         // Built lazily: copying every call's text up front was quadratic for
         // deeply nested calls (`f(f(f(…)))`).
         let mut call_text_nospace: Option<String> = None;
@@ -281,15 +501,43 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
                 }
             }
             let arg_text = text(arg0, source);
-            if !expr_tainted(arg0, source, &tainted, rules) {
+            if rule.skip_call_arg && is_call_kind(arg0.kind()) {
                 continue;
+            }
+            if rule.skip_call_arg
+                && arg0.kind() == "await_expression"
+                && arg0.named_child(0).is_some_and(|c| is_call_kind(c.kind()))
+            {
+                continue;
+            }
+            if rule.skip_fixed_origin && has_fixed_origin(arg_text) {
+                continue;
+            }
+            let (profile, tainted) = if rule.web_only {
+                (&web, &tainted_web)
+            } else {
+                (&injection, &tainted_injection)
+            };
+            let d = digest(arg0, source, rules.call_kinds, profile);
+            let Some(inline) = expr_taint(&d, scope, tainted, &scopes) else {
+                continue;
+            };
+            if !rule.guards.is_empty() {
+                let is_guarded = guarded.iter().any(|(g_scope, var, method)| {
+                    rule.guards.contains(method)
+                        && d.refs.contains(*var)
+                        && (scopes.visible(*g_scope, scope) || scopes.visible(scope, *g_scope))
+                });
+                if is_guarded {
+                    continue;
+                }
             }
             let line = node.start_position().row + 1;
             if !seen.insert((rule.id, line)) {
                 continue;
             }
             // Inline source → High; reached through a variable binding → Medium.
-            let confidence = if contains_source(arg_text, rules.sources) {
+            let confidence = if inline {
                 Confidence::High
             } else {
                 Confidence::Medium
