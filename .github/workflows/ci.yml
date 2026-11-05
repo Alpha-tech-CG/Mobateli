@@ -82,3 +82,30 @@ jobs:
         run: pnpm --filter @codegate/api bench -- --engines core --check --verbose
       - name: Règles + moteur Rust
         run: pnpm --filter @codegate/api bench -- --engines core,rust --check --verbose
+
+  fuzz:
+    name: Fuzzing du moteur Rust (libFuzzer, 2 min)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/scan-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/scan-engine/fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Corpus de départ (jeu de cas du benchmark)
+        run: |
+          mkdir -p fuzz/corpus/analyze
+          find ../../apps/api/bench/golden -type f \( -name '*.ts' -o -name '*.py' -o -name '*.js' \) \
+            -exec cp {} fuzz/corpus/analyze/ \;
+      # -timeout : une entrée lente est un échec (contournement par dépassement
+      # du délai de l'adaptateur TS), pas seulement un plantage.
+      - run: cargo fuzz run analyze -- -max_total_time=120 -timeout=2 -rss_limit_mb=2048
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: services/scan-engine/fuzz/artifacts
