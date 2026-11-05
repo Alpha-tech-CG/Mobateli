@@ -1,0 +1,152 @@
+/**
+ * External benchmark: run CodeGate over OWASP Juice Shop's source and compare
+ * with the project's own ground truth — the `// vuln-code-snippet vuln-line
+ * <challengeKey>` annotations its maintainers put on vulnerable lines.
+ *
+ *   git clone --depth 1 https://github.com/juice-shop/juice-shop.git /tmp/js
+ *   pnpm --filter @codegate/api exec node --import tsx bench/juiceshop.ts /tmp/js [--rust] [--json out.json]
+ *
+ * Nothing in the clone is executed; files are only read. The annotation
+ * comments are stripped before analysis so they cannot influence a rule.
+ * Not part of CI (needs the network); run it by hand when the engines change.
+ */
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { analyzeDiff, analyzeDiffWithIntel } from "../src/analysis/analyzer.js";
+import { alertsFrom, type Alert } from "./run.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = resolve(HERE, "../../..");
+
+/**
+ * Juice Shop challenge → CodeGate category, or null when the weakness is
+ * outside what CodeGate looks for (access control, business logic, NoSQL,
+ * open redirect, LLM prompt injection…). Unknown keys are reported as such.
+ */
+const CHALLENGE_CATEGORY: Record<string, string | null> = {
+  loginAdminChallenge: "SQLI",
+  loginBenderChallenge: "SQLI",
+  loginJimChallenge: "SQLI",
+  unionSqlInjectionChallenge: "SQLI",
+  dbSchemaChallenge: "SQLI",
+  localXssChallenge: "XSS",
+  xssBonusChallenge: "XSS",
+  restfulXssChallenge: "XSS",
+  noSqlReviewsChallenge: null,
+  forgedReviewChallenge: null,
+  redirectChallenge: null,
+  redirectCryptoCurrencyChallenge: null,
+  directoryListingChallenge: null,
+  accessLogDisclosureChallenge: null,
+  exposedMetricsChallenge: null,
+  adminSectionChallenge: null,
+  scoreBoardChallenge: null,
+  web3SandboxChallenge: null,
+  tokenSaleChallenge: null,
+  changeProductChallenge: null,
+  registerAdminChallenge: null,
+  resetPasswordMortyChallenge: null,
+  weakPasswordChallenge: null,
+  chatbotPromptInjectionChallenge: null,
+  chatbotGreedyInjectionChallenge: null,
+};
+
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "codefixes", "test", "cypress", "coverage"]);
+const ANNOTATION = /\s*\/\/\s*vuln-code-snippet\b.*$/;
+
+function walk(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) return SKIP_DIRS.has(name) ? [] : walk(full);
+    return /\.(ts|js)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) ? [full] : [];
+  });
+}
+
+interface VulnLine {
+  file: string;
+  line: number;
+  challenges: string[];
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const root = args.find((a) => !a.startsWith("--") && a !== args[args.indexOf("--json") + 1]);
+  if (!root) throw new Error("usage: juiceshop.ts <juice-shop checkout> [--rust] [--json out.json]");
+  const useRust = args.includes("--rust");
+  const jsonOut = args.includes("--json") ? args[args.indexOf("--json") + 1] : undefined;
+
+  const vulnLines: VulnLine[] = [];
+  const parts: string[] = [];
+  let totalLines = 0;
+  const files = walk(root);
+  for (const full of files) {
+    const path = relative(root, full).split("\\").join("/");
+    const lines = readFileSync(full, "utf8").replace(/\r\n/g, "\n").split("\n");
+    totalLines += lines.length;
+    const clean = lines.map((l, i) => {
+      const m = l.match(/vuln-code-snippet vuln-line ([\w ]+)/);
+      if (m) vulnLines.push({ file: path, line: i + 1, challenges: m[1]!.trim().split(/\s+/) });
+      return l.replace(ANNOTATION, "");
+    });
+    parts.push(
+      [`diff --git a/${path} b/${path}`, "--- /dev/null", `+++ b/${path}`, `@@ -0,0 +1,${clean.length} @@`, ...clean.map((l) => `+${l}`)].join("\n"),
+    );
+  }
+  const diff = parts.join("\n");
+
+  const t0 = Date.now();
+  const exe = process.platform === "win32" ? "codegate-scan.exe" : "codegate-scan";
+  const result = useRust
+    ? await analyzeDiffWithIntel(diff, {
+        fetchImpl: () => Promise.reject(new Error("offline")),
+        semgrep: { runner: async () => "{}" },
+        rust: {
+          binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/scan-engine/target/release", exe),
+          timeoutMs: 120_000,
+        },
+      })
+    : analyzeDiff(diff);
+  const ms = Date.now() - t0;
+  const alerts = alertsFrom(result).filter((a) => a.category !== "CONFIG");
+
+  console.log(`# Juice Shop — moteurs : ${useRust ? "core,rust" : "core"}`);
+  console.log(`${files.length} fichiers, ${totalLines} lignes, ${alerts.length} alertes, ${ms} ms\n`);
+
+  // ---- Ground truth: annotated vulnerable lines --------------------------------
+  const byChallenge = new Map<string, VulnLine[]>();
+  for (const v of vulnLines) for (const c of v.challenges) byChallenge.set(c, [...(byChallenge.get(c) ?? []), v]);
+  const at = (v: VulnLine) => alerts.filter((a) => a.file === v.file && a.line === v.line);
+
+  let inScope = 0;
+  let detected = 0;
+  console.log("défi                              catégorie   détecté   alertes sur la ligne");
+  for (const [challenge, lines] of [...byChallenge].sort()) {
+    const cat = challenge in CHALLENGE_CATEGORY ? CHALLENGE_CATEGORY[challenge] : undefined;
+    const hits = lines.flatMap(at);
+    const ok = cat ? hits.some((h) => h.category === cat) : false;
+    if (cat) {
+      inScope++;
+      if (ok) detected++;
+    }
+    const label = cat === undefined ? "inconnu" : cat === null ? "hors champ" : cat;
+    console.log(
+      `${challenge.padEnd(34)}${label.padEnd(12)}${(cat ? (ok ? "oui" : "NON") : "—").padEnd(10)}${hits.map((h) => `${h.category}:${h.source}`).join(", ")}`,
+    );
+  }
+  console.log(`\nDéfis dans le périmètre de CodeGate détectés : ${detected}/${inScope} (${byChallenge.size} défis annotés au total)\n`);
+
+  // ---- Everything else CodeGate reports, for manual triage ---------------------
+  const byRule = new Map<string, Alert[]>();
+  for (const a of alerts) byRule.set(`${a.category} ${a.source}`, [...(byRule.get(`${a.category} ${a.source}`) ?? []), a]);
+  console.log("Toutes les alertes, par règle :");
+  for (const [rule, list] of [...byRule].sort((x, y) => y[1].length - x[1].length)) {
+    console.log(`  ${String(list.length).padStart(4)}  ${rule}`);
+  }
+  if (jsonOut) writeFileSync(jsonOut, JSON.stringify({ alerts, vulnLines }, null, 2));
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

@@ -12,7 +12,7 @@ app.get("/users/:id", async (req, res) => {
 
 app.get("/search", async (req, res) => {
   const name = req.query.name;
-  const sql = `SELECT * FROM products WHERE name = '${name}'`;
+  const sql = `SELECT * FROM products WHERE name = '${name}'`; // ALSO: SQLI
   const rows = await db.query(sql); // VULN: SQLI
   res.json(rows);
 });
