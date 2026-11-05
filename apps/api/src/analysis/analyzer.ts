@@ -3,6 +3,7 @@ import { scanSecrets } from "./secret-scanner.js";
 import { scanDependencies } from "./dependency-scanner.js";
 import { runSastRules, flagSensitiveFiles } from "./sast.js";
 import { decide } from "./risk.js";
+import { withoutIgnored } from "./ignore.js";
 import { enrichDependenciesWithOsv, type OsvOptions } from "./osv.js";
 import { scanSemgrep, type SemgrepOptions } from "./semgrep.js";
 import { runSca, mergeScaIntoDependencies, type ScaOptions } from "./sca.js";
@@ -21,7 +22,16 @@ import type { AnalysisResult, FindingResult } from "./types.js";
  * the Rust taint engine are opt-in and only run when their inputs/tools are
  * available.
  */
-export interface IntelOptions extends OsvOptions {
+export interface AnalyzeOptions {
+  /**
+   * Paths excluded by the repository's `.codegateignore` (see ignore.ts):
+   * skipped by SAST, dependency and Semgrep/Rust passes — but NOT by the
+   * secret scanner, nor by the sensitive-file notice.
+   */
+  isIgnored?: (path: string) => boolean;
+}
+
+export interface IntelOptions extends OsvOptions, AnalyzeOptions {
   semgrep?: SemgrepOptions;
   sca?: ScaOptions;
   rust?: RustEngineOptions;
@@ -48,13 +58,14 @@ function isDuplicateFinding(candidate: FindingResult, existing: FindingResult[])
  * diff, produce findings, secrets, dependencies, a risk score and a decision.
  * This is the offline, synchronous core — fully testable without network.
  */
-export function analyzeDiff(diff: string): AnalysisResult {
+export function analyzeDiff(diff: string, opts: AnalyzeOptions = {}): AnalysisResult {
   const parsed = parseUnifiedDiff(diff);
+  const scoped = opts.isIgnored ? withoutIgnored(parsed, opts.isIgnored) : parsed;
 
   const secrets = scanSecrets(parsed.addedLines);
-  const dependencies = scanDependencies(parsed);
+  const dependencies = scanDependencies(scoped);
   const findings = [
-    ...runSastRules(parsed.addedLines),
+    ...runSastRules(scoped.addedLines),
     ...flagSensitiveFiles(parsed.files),
   ];
 
@@ -82,8 +93,9 @@ export async function analyzeDiffWithIntel(
   diff: string,
   opts: IntelOptions = {},
 ): Promise<AnalysisResult> {
-  const base = analyzeDiff(diff);
-  const parsed = parseUnifiedDiff(diff);
+  const base = analyzeDiff(diff, opts);
+  const full = parseUnifiedDiff(diff);
+  const parsed = opts.isIgnored ? withoutIgnored(full, opts.isIgnored) : full;
 
   const [osvEnriched, scaDeps, semgrepFindings, rustFindings] = await Promise.all([
     enrichDependenciesWithOsv(base.dependencies, opts),

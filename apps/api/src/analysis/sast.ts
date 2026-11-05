@@ -202,6 +202,8 @@ const SENSITIVE_FILES = [
   "docker-compose.yml",
   "vercel.json",
   "Dockerfile",
+  // Widening it would silently exempt code from analysis.
+  ".codegateignore",
 ];
 
 export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
