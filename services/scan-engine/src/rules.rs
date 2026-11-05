@@ -109,9 +109,13 @@ static JS_RULES: LangRules = LangRules {
         "location.search",
         "location.hash",
     ],
-    sanitizers: &["parseInt", "parseFloat", "Number", "Boolean", "encodeURIComponent"],
+    // Not encodeURIComponent: it leaves ' ( ) ! * intact, so a value it
+    // encoded still breaks out of a SQL string or an eval'd expression. It
+    // only neutralizes URL/HTML contexts — see web_sanitizers.
+    sanitizers: &["parseInt", "parseFloat", "Number", "Boolean"],
     cli_sources: &["process.argv"],
     web_sanitizers: &[
+        "encodeURIComponent",
         "path.basename",
         "basename",
         "sanitizeFilename",

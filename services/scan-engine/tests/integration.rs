@@ -275,3 +275,13 @@ fn unsafe_orm_and_vm_sinks_are_flagged() {
     assert!(rule_ids("a.js", "vm.runInNewContext(req.body.code);")
         .contains(&"RUST-JS-CODE-INJECTION-TAINT".to_string()));
 }
+
+#[test]
+fn encode_uri_component_does_not_sanitize_sql_or_eval() {
+    // ' ( ) are left intact: still injectable in a SQL string or eval.
+    let sql = r#"db.query("SELECT * FROM t WHERE n = '" + encodeURIComponent(req.query.n) + "'");"#;
+    assert!(rule_ids("a.js", sql).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    // ...but it does neutralize a URL path segment.
+    let url = "fetch(`https://api.example.com/u/${encodeURIComponent(req.query.u)}`);";
+    assert!(rule_ids("a.js", url).is_empty());
+}
