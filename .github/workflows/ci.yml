@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: TypeScript — typecheck + tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version lue dans package.json#packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Générer le client Prisma + builder les paquets partagés
+        run: |
+          pnpm --filter @codegate/db generate
+          pnpm --filter @codegate/shared --filter @codegate/db build
+      - run: pnpm -r typecheck
+      - run: pnpm --filter @codegate/api bench:typecheck
+      - run: pnpm --filter @codegate/api test
+
+  rust:
+    name: Rust — scan-engine (tests, clippy, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/scan-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/scan-engine
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codegate-scan
+          path: services/scan-engine/target/release/codegate-scan
+          retention-days: 3
+
+  bench:
+    name: Benchmark de justesse (précision / rappel)
+    needs: rust
+    runs-on: ubuntu-latest
+    env:
+      CODEGATE_SCAN_BIN: ${{ github.workspace }}/bin/codegate-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: codegate-scan
+          path: bin
+      - run: chmod +x bin/codegate-scan
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @codegate/shared build
+      # Échoue si une catégorie perd un vrai positif ou gagne un faux positif
+      # par rapport à apps/api/bench/baseline.json.
+      - name: Règles seules
+        run: pnpm --filter @codegate/api bench -- --engines core --check --verbose
+      - name: Règles + moteur Rust
+        run: pnpm --filter @codegate/api bench -- --engines core,rust --check --verbose

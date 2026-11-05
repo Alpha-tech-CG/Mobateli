@@ -35,7 +35,7 @@ export interface Expectation {
   kind: "VULN" | "SAFE";
   category: string;
   /** For DEP: the package name on that line. */
-  pkg?: string;
+  pkg?: string | undefined;
 }
 
 interface GoldenFile {
@@ -123,7 +123,7 @@ const CWE_TO_CAT: Record<string, string> = {
 
 export interface Alert {
   file: string;
-  line?: number;
+  line?: number | undefined;
   category: string;
   source: string; // rule id / secret type / package
   confidence: string;

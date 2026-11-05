@@ -14,6 +14,7 @@
     "test:db:setup": "node ../../scripts/setup-test-db.mjs",
     "test:integration": "node --import tsx --test \"src/**/*.itest.ts\"",
     "bench": "node --import tsx bench/run.ts",
+    "bench:typecheck": "tsc -p bench/tsconfig.json",
     "build:vercel": "node scripts/build-vercel.mjs",
     "lint": "eslint src --ext .ts"
   },
