@@ -33,9 +33,11 @@ const CHALLENGE_CATEGORY: Record<string, string | null> = {
   localXssChallenge: "XSS",
   xssBonusChallenge: "XSS",
   restfulXssChallenge: "XSS",
-  noSqlReviewsChallenge: null,
+  noSqlReviewsChallenge: "NOSQL",
   forgedReviewChallenge: null,
-  redirectChallenge: null,
+  // The flaw is the allowlist check (`url.includes(allowed)`), not a missing
+  // one: a taint rule sees a guarded redirect. Scored anyway, to be honest.
+  redirectChallenge: "REDIRECT",
   redirectCryptoCurrencyChallenge: null,
   directoryListingChallenge: null,
   accessLogDisclosureChallenge: null,

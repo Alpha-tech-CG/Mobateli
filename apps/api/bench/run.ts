@@ -120,6 +120,8 @@ const CWE_TO_CAT: Record<string, string> = {
   "CWE-347": "JWT",
   "CWE-942": "CORS",
   "CWE-295": "TLS",
+  "CWE-943": "NOSQL",
+  "CWE-601": "REDIRECT",
 };
 
 export interface Alert {

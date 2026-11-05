@@ -38,6 +38,8 @@ le dépôt, les secrets factices sont coupés par `«+»`, retiré avant l'analy
 | `JWT` | CWE-347 |
 | `CORS` | CWE-942 |
 | `TLS` | CWE-295 |
+| `NOSQL` | CWE-943 |
+| `REDIRECT` | CWE-601 |
 | `SECRET` | secrets détectés par le Secret Shield |
 | `DEP` | dépendance à risque élevé/critique (typosquat…) — appariée par nom de paquet |
 
