@@ -162,7 +162,11 @@ export function filesFromDiff(parsed: ParsedDiff): EngineFile[] {
 
   const files: EngineFile[] = [];
   for (const [path, lines] of byFile) {
-    const max = Math.max(...lines.keys());
+    // Not `Math.max(...lines.keys())`: spreading ~100k+ arguments overflows
+    // the call stack, which crashed the whole analysis of a PR adding a huge
+    // file (PR left without a verdict).
+    let max = 0;
+    for (const line of lines.keys()) if (line > max) max = line;
     const buffer: string[] = new Array(max).fill("");
     for (const [line, content] of lines) buffer[line - 1] = content;
     files.push({ path, content: buffer.join("\n") });

@@ -159,3 +159,16 @@ test("mergeRustFindings keeps base findings that have no engine equivalent", () 
   const merged = mergeRustFindings(base, [sqliJson as unknown as FindingResult]);
   assert.equal(merged.length, 2);
 });
+
+test("filesFromDiff: a huge added file does not overflow the stack", () => {
+  const n = 200_000;
+  const diff = [
+    "diff --git a/big.js b/big.js",
+    "--- /dev/null",
+    "+++ b/big.js",
+    `@@ -0,0 +1,${n} @@`,
+    ...Array.from({ length: n }, (_, i) => `+const a${i} = ${i};`),
+  ].join("\n");
+  const [file] = filesFromDiff(parseUnifiedDiff(diff));
+  assert.equal(file!.content.split("\n").length, n);
+});
