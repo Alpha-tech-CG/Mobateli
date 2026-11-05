@@ -9,6 +9,8 @@
  * Nothing in the clone is executed; files are only read. The annotation
  * comments are stripped before analysis so they cannot influence a rule.
  * Not part of CI (needs the network); run it by hand when the engines change.
+ * Works on any checkout (JS/TS/Python): without annotations it simply lists
+ * every alert for manual triage (used for NodeGoat and PyGoat too).
  */
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -54,14 +56,14 @@ const CHALLENGE_CATEGORY: Record<string, string | null> = {
   chatbotGreedyInjectionChallenge: null,
 };
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "codefixes", "test", "cypress", "coverage"]);
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "codefixes", "test", "tests", "cypress", "coverage", "migrations", "venv", ".venv"]);
 const ANNOTATION = /\s*\/\/\s*vuln-code-snippet\b.*$/;
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) return SKIP_DIRS.has(name) ? [] : walk(full);
-    return /\.(ts|js)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) ? [full] : [];
+    return /\.(ts|js|py)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) && !/^test_.*\.py$/.test(name) ? [full] : [];
   });
 }
 

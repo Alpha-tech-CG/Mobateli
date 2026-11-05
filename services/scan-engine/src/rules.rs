@@ -414,6 +414,10 @@ static PY_RULES: LangRules = LangRules {
         "request.cookies",
         "request.GET",
         "request.POST",
+        // Headers are attacker-controlled too (Referer, X-Forwarded-*…).
+        "request.headers",
+        "request.referrer",
+        "request.META",
         "sys.argv",
         "input(",
     ],
@@ -421,6 +425,9 @@ static PY_RULES: LangRules = LangRules {
     cli_sources: &["sys.argv", "input("],
     web_sanitizers: &[
         "os.path.basename",
+        // Route builders produce internal URLs (redirect(url_for(...))).
+        "url_for",
+        "reverse",
         "secure_filename",
         "html.escape",
         "markupsafe.escape",

@@ -272,6 +272,48 @@ const RULES: Rule[] = [
       /\{%-?\s*autoescape\s+(false|off)\b/.test(l),
   },
   {
+    id: "XXE_EXTERNAL_ENTITIES",
+    severity: "high",
+    confidence: "high",
+    cwe: "CWE-611",
+    owasp: "A05:2021-Security Misconfiguration",
+    title: "Parseur XML avec entités externes activées (XXE)",
+    description:
+      "Le parseur XML résout les entités externes : un document piégé lit des fichiers locaux (/etc/passwd), atteint des services internes (SSRF) ou épuise la mémoire.",
+    remediation:
+      "Laissez les entités externes désactivées (défaut), utilisez defusedxml en Python, et n'activez jamais noent/resolve_entities sur une entrée non fiable.",
+    test: (l) =>
+      /feature_external_(ges|pes)\s*,\s*(True|1)\b/.test(l) ||
+      /\bresolve_entities\s*=\s*True\b/.test(l) ||
+      /\bXMLParser\s*\([^)]*\b(load_dtd|huge_tree)\s*=\s*True/.test(l) ||
+      /\bnoent\s*:\s*true\b/.test(l),
+  },
+  {
+    id: "DJANGO_DEBUG_ENABLED",
+    severity: "medium",
+    confidence: "medium",
+    cwe: "CWE-489",
+    owasp: "A05:2021-Security Misconfiguration",
+    title: "Mode DEBUG activé dans les réglages",
+    description:
+      "DEBUG = True dans un fichier de réglages expose les traces, variables et requêtes SQL à tout visiteur provoquant une erreur.",
+    remediation: "Lisez DEBUG depuis l'environnement (False par défaut) et ne l'activez qu'en local.",
+    test: (l, ctx) => /(^|\/)settings[\w.]*\.py$/.test(ctx.file) && /^\s*DEBUG\s*=\s*True\b/.test(l),
+  },
+  {
+    id: "ALLOWED_HOSTS_WILDCARD",
+    severity: "medium",
+    confidence: "medium",
+    cwe: "CWE-16",
+    owasp: "A05:2021-Security Misconfiguration",
+    title: "ALLOWED_HOSTS accepte tous les hôtes",
+    description:
+      "ALLOWED_HOSTS = ['*'] désactive la protection contre les en-têtes Host forgés (empoisonnement de cache, liens de réinitialisation de mot de passe détournés).",
+    remediation: "Listez explicitement les domaines servis par l'application.",
+    test: (l, ctx) =>
+      /(^|\/)settings[\w.]*\.py$/.test(ctx.file) && /^\s*ALLOWED_HOSTS\s*=\s*\[\s*["']\*["']\s*\]/.test(l),
+  },
+  {
     id: "ANGULAR_SANITIZER_BYPASS",
     severity: "medium",
     confidence: "medium",
@@ -340,12 +382,27 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   let currentFile = "";
   let currentFn = "";
   let inBlockComment = false;
+  let inDocstring = false;
 
   for (const { file, line, content } of addedLines) {
     if (file !== currentFile) {
       currentFile = file;
       currentFn = "";
       inBlockComment = false;
+      inDocstring = false;
+    }
+    // Python docstrings / triple-quoted text: prose, not code ("eval() is…").
+    if (isPython(file)) {
+      const quotes = (content.match(/"""|'''/g) ?? []).length;
+      const startsQuoted = /^\s*[rRuUbBfF]?("""|''')/.test(content);
+      if (inDocstring) {
+        if (quotes % 2 === 1) inDocstring = false;
+        continue;
+      }
+      if (startsQuoted) {
+        if (quotes % 2 === 1) inDocstring = true;
+        continue;
+      }
     }
     // Inside a `/* … */` block (e.g. a commented-out fix): not live code.
     const opensAt = content.indexOf("/*");

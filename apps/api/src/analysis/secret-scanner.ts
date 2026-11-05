@@ -85,6 +85,9 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
     // A key in a sample/test/fixture file is expected and not a real exposure.
     const inSample = isTestOrExampleFile(file);
 
+    // A line already identified as a provider credential is not reported a
+    // second time by the generic "name = value" catcher.
+    let providerHit = false;
     for (const p of PATTERNS) {
       const m = content.match(p.regex);
       // A provider *test-mode* key (sk_test_…) in a test/fixture file is the
@@ -94,6 +97,7 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
         const key = `${p.type}:${file}:${line}`;
         if (seen.has(key)) continue;
         seen.add(key);
+        providerHit = true;
         results.push({
           secretType: p.type,
           location: `${file}:${line}`,
@@ -106,7 +110,7 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
       }
     }
 
-    const g = content.match(GENERIC_ASSIGN);
+    const g = providerHit ? null : content.match(GENERIC_ASSIGN);
     if (g) {
       const value = g[2]!;
       // Only flag if the value looks random and is not an obvious placeholder.

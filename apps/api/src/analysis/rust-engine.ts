@@ -259,6 +259,22 @@ export function corroborate(
  * issue on the same line, instead of both being reported.
  */
 function family(f: FindingResult): string {
+  // The CWE is authoritative; text heuristics only for findings without one
+  // (a code-injection title mentioning "exec()" is not a command injection).
+  const byCwe: Record<string, string> = {
+    "CWE-89": "sqli",
+    "CWE-78": "cmdi",
+    "CWE-77": "cmdi",
+    "CWE-94": "code",
+    "CWE-95": "code",
+    "CWE-22": "path",
+    "CWE-918": "ssrf",
+    "CWE-79": "xss",
+    "CWE-943": "nosql",
+    "CWE-601": "redirect",
+  };
+  const cwe = f.cwe?.match(/CWE-\d+/)?.[0];
+  if (cwe && byCwe[cwe]) return byCwe[cwe];
   const s = `${f.ruleId ?? ""} ${f.cwe ?? ""} ${f.title}`.toUpperCase();
   if (s.includes("CWE-89") || s.includes("SQL")) return "sqli";
   if (
