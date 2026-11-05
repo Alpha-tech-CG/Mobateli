@@ -121,6 +121,21 @@ fn is_sanitizer_call(node: Node, source: &str, call_kinds: &[&str], sanitizers: 
     })
 }
 
+/// `store.get(key)` / `Model.findByPk(id)` whose receiver is not a source.
+fn is_lookup_call(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> bool {
+    if profile.lookups.is_empty() || !call_kinds.contains(&node.kind()) {
+        return false;
+    }
+    let Some(callee) = node.child_by_field_name("function") else {
+        return false;
+    };
+    let callee = text(callee, source).trim();
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    profile.lookups.contains(&method) && !contains_source(receiver, &profile.sources)
+}
+
 /// What an expression carries once its sanitized sub-expressions are set
 /// aside: whether an untrusted source appears in it, and which variables it
 /// reads. A sanitizer anywhere inside neutralizes only what it wraps —
@@ -145,7 +160,9 @@ fn digest(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> D
     let root_is_property = node.kind() == "identifier" && is_property_identifier(node);
     let mut stack = vec![node];
     while let Some(n) = stack.pop() {
-        if is_sanitizer_call(n, source, call_kinds, &profile.sanitizers) {
+        if is_sanitizer_call(n, source, call_kinds, &profile.sanitizers)
+            || is_lookup_call(n, source, call_kinds, profile)
+        {
             let (a, b) = (n.start_byte() - start, n.end_byte() - start);
             if b <= masked.len() {
                 masked[a..b].fill(b' ');
@@ -256,6 +273,10 @@ impl Scopes {
 struct Profile<'r> {
     sources: Vec<&'r str>,
     sanitizers: Vec<&'r str>,
+    /// Lookup methods (`.get`, `.findByPk`…): a lookup KEYED by input returns
+    /// server-side data (`sessions.get(req.cookies.sid)`), not the input —
+    /// unless the receiver itself is a source (`request.args.get('url')`).
+    lookups: Vec<&'r str>,
 }
 
 impl<'r> Profile<'r> {
@@ -263,6 +284,7 @@ impl<'r> Profile<'r> {
         Profile {
             sources: rules.sources.to_vec(),
             sanitizers: rules.sanitizers.to_vec(),
+            lookups: Vec::new(),
         }
     }
 
@@ -280,6 +302,7 @@ impl<'r> Profile<'r> {
                 .chain(rules.web_sanitizers)
                 .copied()
                 .collect(),
+            lookups: rules.lookups.to_vec(),
         }
     }
 }

@@ -73,6 +73,8 @@ pub struct LangRules {
     pub cli_sources: &'static [&'static str],
     /// Extra sanitizers for the web profile (path/URL/HTML neutralizers).
     pub web_sanitizers: &'static [&'static str],
+    /// Lookup methods for the web profile (see `Profile::lookups`).
+    pub lookups: &'static [&'static str],
     /// AST node kinds that open a function scope. Taint is tracked per scope:
     /// a variable is visible in its scope and the scopes nested inside it, so
     /// `name` tainted in one handler does not taint a `name` in another.
@@ -123,6 +125,15 @@ static JS_RULES: LangRules = LangRules {
         "escape",
         "DOMPurify.sanitize",
         "sanitizeHtml",
+    ],
+    lookups: &[
+        "get",
+        "find",
+        "findOne",
+        "findByPk",
+        "findById",
+        "findUnique",
+        "findFirst",
     ],
     scope_kinds: &[
         "function_declaration",
@@ -302,6 +313,7 @@ static PY_RULES: LangRules = LangRules {
         "markupsafe.escape",
         "bleach.clean",
     ],
+    lookups: &["get", "get_object_or_404", "first", "one"],
     scope_kinds: &["function_definition", "lambda"],
     assign_kinds: &["assignment", "augmented_assignment", "named_expression"],
     call_kinds: &["call"],

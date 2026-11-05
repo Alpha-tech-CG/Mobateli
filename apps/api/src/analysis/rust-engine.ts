@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ParsedDiff } from "./diff.js";
+import { isMinified } from "./sast.js";
 import type { Confidence, FindingResult } from "./types.js";
 import type { FindingType, Severity } from "@codegate/shared";
 
@@ -64,16 +65,19 @@ function isEnabled(opts: RustEngineOptions): boolean {
 
 /**
  * Default runner: spawn `codegate-scan --stdin`, write the manifest, collect
- * stdout. Resolves `"[]"` on ANY failure (missing binary, non-zero exit,
- * timeout) — this is the fail-open boundary.
+ * stdout. Rejects on ANY failure (missing binary, non-zero exit, timeout);
+ * `runRustEngineDetailed` turns that into `ran: false` — the fail-open
+ * boundary — so "the engine found nothing" and "the engine did not run" stay
+ * distinguishable.
  */
 const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     let settled = false;
-    const done = (out: string) => {
+    const done = (out: string | null) => {
       if (!settled) {
         settled = true;
-        resolve(out);
+        if (out === null) reject(new Error("codegate-scan failed"));
+        else resolve(out);
       }
     };
 
@@ -81,12 +85,12 @@ const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
     try {
       child = spawn(binaryPath, ["--stdin"], { stdio: ["pipe", "pipe", "ignore"] });
     } catch {
-      return done("[]");
+      return done(null);
     }
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      done("[]");
+      done(null);
     }, timeoutMs);
 
     let stdout = "";
@@ -95,11 +99,11 @@ const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
     });
     child.on("error", () => {
       clearTimeout(timer);
-      done("[]");
+      done(null);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      done(code === 0 ? stdout : "[]");
+      done(code === 0 ? stdout : null);
     });
 
     child.stdin.on("error", () => {
@@ -133,13 +137,14 @@ function toFinding(raw: unknown): FindingResult | null {
   return finding;
 }
 
-function parseOutput(stdout: string): FindingResult[] {
+/** Parsed findings, or null when the output is not a JSON array. */
+function parseOutput(stdout: string): FindingResult[] | null {
   try {
     const data = JSON.parse(stdout);
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) return null;
     return data.map(toFinding).filter((f): f is FindingResult => f !== null);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -152,6 +157,7 @@ function parseOutput(stdout: string): FindingResult[] {
 export function filesFromDiff(parsed: ParsedDiff): EngineFile[] {
   const byFile = new Map<string, Map<number, string>>();
   for (const { file, line, content } of parsed.addedLines) {
+    if (isMinified(file)) continue; // generated bundles: see sast.ts
     let lines = byFile.get(file);
     if (!lines) {
       lines = new Map();
@@ -175,11 +181,17 @@ export function filesFromDiff(parsed: ParsedDiff): EngineFile[] {
 }
 
 /** Run the engine over a set of files. Always resolves (fails open to `[]`). */
-export async function runRustEngine(
+/** Outcome of one engine run: `ran` is true only for a complete, valid run. */
+export interface RustRun {
+  findings: FindingResult[];
+  ran: boolean;
+}
+
+export async function runRustEngineDetailed(
   files: EngineFile[],
   opts: RustEngineOptions = {},
-): Promise<FindingResult[]> {
-  if (!isEnabled(opts) || files.length === 0) return [];
+): Promise<RustRun> {
+  if (!isEnabled(opts) || files.length === 0) return { findings: [], ran: false };
   const runner = opts.runner ?? spawnRunner;
   const manifest = JSON.stringify({ files });
   try {
@@ -187,10 +199,58 @@ export async function runRustEngine(
       binaryPath: resolveBinary(opts),
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
-    return parseOutput(stdout);
+    const findings = parseOutput(stdout);
+    return findings === null ? { findings: [], ran: false } : { findings, ran: true };
   } catch {
-    return [];
+    return { findings: [], ran: false };
   }
+}
+
+export async function runRustEngine(
+  files: EngineFile[],
+  opts: RustEngineOptions = {},
+): Promise<FindingResult[]> {
+  return (await runRustEngineDetailed(files, opts)).findings;
+}
+
+/** Languages the engine parses (keep in sync with services/scan-engine/src/lang.rs). */
+const ENGINE_LANGUAGE = /\.(js|jsx|mjs|cjs|ts|mts|cts|tsx|py|pyi)$/i;
+
+/**
+ * Regex rules that only APPROXIMATE a dataflow question ("does user input
+ * reach this sink?") that the taint engine answers properly.
+ */
+const TAINT_APPROXIMATIONS = new Set([
+  "SQL_STRING_CONCAT",
+  "CHILD_PROCESS_INJECTION",
+  "PYTHON_SHELL_INJECTION",
+  "PATH_TRAVERSAL",
+  "SSRF_REQUEST",
+]);
+
+/**
+ * After a complete engine run, a taint-approximating regex finding that the
+ * engine did not confirm (no engine finding of that family on that line) is
+ * downgraded to low confidence: still reported — the input may come from a
+ * source the engine does not model (a DB value, a message queue) — but it no
+ * longer weighs like a confirmed injection. Never applied when the engine did
+ * not run (timeout, missing binary): that must not weaken the regex net.
+ */
+export function corroborate(
+  findings: FindingResult[],
+  engineFindings: FindingResult[],
+  ran: boolean,
+): FindingResult[] {
+  if (!ran) return findings;
+  const confirmed = new Set(engineFindings.map(dedupeKey));
+  return findings.map((f) =>
+    f.ruleId !== undefined &&
+    TAINT_APPROXIMATIONS.has(f.ruleId) &&
+    ENGINE_LANGUAGE.test(f.filePath ?? "") &&
+    !confirmed.has(dedupeKey(f))
+      ? { ...f, confidence: "low" }
+      : f,
+  );
 }
 
 /**
@@ -209,6 +269,9 @@ function family(f: FindingResult): string {
   )
     return "cmdi";
   if (s.includes("CWE-94") || s.includes("EVAL") || s.includes("CODE INJECT")) return "code";
+  if (s.includes("CWE-22")) return "path";
+  if (s.includes("CWE-918")) return "ssrf";
+  if (s.includes("CWE-79")) return "xss";
   return `${f.ruleId ?? f.title}`;
 }
 

@@ -285,3 +285,19 @@ fn encode_uri_component_does_not_sanitize_sql_or_eval() {
     let url = "fetch(`https://api.example.com/u/${encodeURIComponent(req.query.u)}`);";
     assert!(rule_ids("a.js", url).is_empty());
 }
+
+#[test]
+fn a_lookup_keyed_by_input_returns_server_data() {
+    // The session found by cookie is server data; its id is not attacker-chosen.
+    let session = r#"
+const user = sessions.get(req.cookies.token);
+fs.writeFile(`uploads/${user.id}.png`, buf, cb);
+"#;
+    assert!(rule_ids("a.js", session).is_empty(), "{:?}", rule_ids("a.js", session));
+    // But a lookup ON a source is the source itself.
+    let py = "url = request.args.get('u')\nrequests.get(url)";
+    assert!(rule_ids("a.py", py).contains(&"RUST-PY-SSRF-TAINT".to_string()));
+    // And injection rules are unaffected: the key still reaches a SQL string.
+    let sql = r#"db.query("SELECT * FROM t WHERE id = " + cache.get(req.query.id));"#;
+    assert!(rule_ids("a.js", sql).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+}

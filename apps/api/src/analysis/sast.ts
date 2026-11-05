@@ -32,6 +32,9 @@ interface Rule {
 
 const isPython = (file: string) => /\.pyi?$/.test(file);
 
+/** Minified bundle (`*.min.js`, `*.bundle.js`): generated, not authored. */
+export const isMinified = (file: string) => /\.(min|bundle)\.(m?js|cjs)$/.test(file);
+
 /** Concatenated operands of a string literal (`"..." + x`, `x + "..."`). */
 function concatOperands(line: string): string[] {
   const out: string[] = [];
@@ -52,6 +55,10 @@ function hasFixedOrigin(line: string): boolean {
   return /\(\s*f?["'`]https?:\/\/[^/?#"'`$+{%]+[/?#]/.test(line);
 }
 
+/** Shape of a SQL statement (verb + its companion keyword). */
+const SQL_STATEMENT =
+  /\bSELECT\b[\s\S]*\bFROM\b|\bINSERT\s+INTO\b|\bUPDATE\s+[\w."`\[\]]+\s+SET\b|\bDELETE\s+FROM\b/i;
+
 /** Variable names that hint at a security-sensitive value. */
 const SENSITIVE_NAME = /(token|secret|password|passwd|otp|session|nonce|salt|key|csrf|reset|verif|auth)/i;
 
@@ -67,8 +74,9 @@ const RULES: Rule[] = [
       "Une requête SQL est assemblée à partir de chaînes concaténées, ce qui expose à l'injection SQL.",
     remediation: "Utilisez des requêtes paramétrées (placeholders) au lieu de concaténer les entrées.",
     test: (l) => {
-      if (!/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(l)) return false;
-      if (/\$\{.*\}.*(FROM|WHERE|VALUES)/i.test(l)) return true;
+      // A real statement, not the word "update" in a log message.
+      if (!SQL_STATEMENT.test(l)) return false;
+      if (/\$\{[^}]+\}/.test(l)) return true;
       if (!/["'`]\s*\+\s*\w/.test(l)) return false;
       // `"SELECT … FROM " + TABLE` — only constants concatenated: not injectable.
       const operands = concatOperands(l);
@@ -130,10 +138,11 @@ const RULES: Rule[] = [
     description:
       "pickle.loads, yaml.load (sans SafeLoader) ou l'équivalent exécutent du code lors du chargement de données non fiables.",
     remediation: "Utilisez yaml.safe_load / un format de données inerte (JSON). Ne désérialisez jamais de données non fiables.",
-    test: (l) =>
+    test: (l, ctx) =>
       /\b(c?pickle|marshal|dill|cloudpickle)\.(loads|load)\s*\(/.test(l) ||
       /\bjsonpickle\.decode\s*\(/.test(l) ||
-      /\byaml\.load\s*\((?![^)]*SafeLoader)/.test(l),
+      // PyYAML's yaml.load builds arbitrary objects; js-yaml ≥ 4's load is safe.
+      (isPython(ctx.file) && /\byaml\.load\s*\((?![^)]*SafeLoader)/.test(l)),
   },
   {
     id: "XSS_INNERHTML",
@@ -147,7 +156,7 @@ const RULES: Rule[] = [
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
     test: (l) =>
       // A fixed literal (`el.innerHTML = ""`, static markup) carries no input.
-      (/\.innerHTML\s*=/.test(l) && !/\.innerHTML\s*=\s*(["'`])[^"'`$]*\1\s*;?\s*$/.test(l)) ||
+      (/\.innerHTML\s*\+?=(?!=)/.test(l) && !/\.innerHTML\s*=\s*(["'`])[^"'`$]*\1\s*;?\s*$/.test(l)) ||
       /dangerouslySetInnerHTML/.test(l),
   },
   {
@@ -178,7 +187,10 @@ const RULES: Rule[] = [
       /\b(fetch|axios(\.(get|post|put|patch|delete|request))?|got|request|https?\.(get|request)|requests\.(get|post|put|patch|delete|head|request)|httpx\.(get|post|request)|urlopen)\s*\(/.test(
         l,
       ) &&
-      /(req\.(params|query|body)|request\.(args|form|values|json|get_json|data|query|body|params)|`.*\$\{)/.test(l) &&
+      // A server-side request input on the line (the Rust engine follows it
+      // through variables). Any template interpolation is not enough: a
+      // browser-side `this.http.get(`${this.host}/${id}`)` is not SSRF.
+      /(req\.(params|query|body)|request\.(args|form|values|json|get_json|data|query|body|params))/.test(l) &&
       !hasFixedOrigin(l),
   },
   {
@@ -225,6 +237,22 @@ const RULES: Rule[] = [
       // jsonwebtoken's jwt.decode never verifies; PyJWT's jwt.decode does
       // (unless told not to, caught above), so only flag it outside Python.
       (!isPython(ctx.file) && /\bjwt\.decode\s*\(/.test(l)),
+  },
+  {
+    id: "ANGULAR_SANITIZER_BYPASS",
+    severity: "medium",
+    confidence: "medium",
+    cwe: "CWE-79",
+    owasp: "A03:2021-Injection",
+    title: "Contournement du sanitizer Angular",
+    description:
+      "bypassSecurityTrust* marque une valeur comme sûre et désactive l'échappement d'Angular : si elle provient de l'utilisateur, c'est une XSS.",
+    remediation:
+      "Laissez Angular échapper la valeur (interpolation, [innerHTML] filtré), ou assainissez-la (DOMPurify) avant tout bypassSecurityTrust*.",
+    test: (l) =>
+      /\.bypassSecurityTrust(Html|Script|Style|Url|ResourceUrl)\s*\(/.test(l) &&
+      // A fixed literal is reviewed markup, not user input.
+      !/\.bypassSecurityTrust\w+\s*\(\s*(["'`])[^"'`$]*\1\s*\)/.test(l),
   },
   {
     id: "CORS_WILDCARD",
@@ -284,6 +312,9 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
       currentFile = file;
       currentFn = "";
     }
+    // Minified bundles are third-party/generated code: one 10 KiB line of
+    // `innerHTML=` noise, and not what the PR author wrote.
+    if (isMinified(file)) continue;
     const decl = content.match(FN_DECL);
     const declared = decl && (decl[1] ?? decl[2] ?? decl[3] ?? decl[4]);
     if (declared && !NOT_A_FUNCTION.has(declared)) currentFn = declared;
