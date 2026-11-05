@@ -221,6 +221,9 @@ const ENGINE_LANGUAGE = /\.(js|jsx|mjs|cjs|ts|mts|cts|tsx|py|pyi)$/i;
  * reach this sink?") that the taint engine answers properly.
  */
 const TAINT_APPROXIMATIONS = new Set([
+  // eval of something the engine sees no untrusted input reaching (a startup
+  // file, a constant) is a smell, not a confirmed code injection.
+  "DANGEROUS_EVAL",
   "SQL_STRING_CONCAT",
   "CHILD_PROCESS_INJECTION",
   "PYTHON_SHELL_INJECTION",

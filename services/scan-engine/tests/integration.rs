@@ -385,3 +385,32 @@ fn needle_and_request_helpers_are_ssrf_sinks() {
     let src = "const url = req.query.url + req.query.symbol;\nneedle.get(url, cb);";
     assert!(rule_ids("a.js", src).contains(&"RUST-JS-SSRF-TAINT".to_string()));
 }
+
+#[test]
+fn lookups_keep_the_receiver_taint_and_drop_the_key() {
+    // Data looked up BY an input key is server data…
+    assert!(rule_ids("a.js", "res.send(users[req.params.id] || {});").is_empty());
+    assert!(rule_ids("a.js", "res.send('x ' + names.slice(req.params.a, req.params.b));").is_empty());
+    // …but a lookup ON a tainted value stays tainted.
+    let recv = "const q = req.query.q; res.send('<p>' + q.slice(0, 10));";
+    assert!(rule_ids("a.js", recv).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let params = r#"const p = new URLSearchParams(location.search); document.write(p.get("x"));"#;
+    assert!(rule_ids("a.js", params).contains(&"RUST-JS-XSS-TAINT".to_string()));
+}
+
+#[test]
+fn confined_downloads_and_same_site_redirects_are_safe() {
+    assert!(rule_ids("a.js", "res.download(req.params.file, { root: DIR });").is_empty());
+    assert!(rule_ids("a.js", "res.download(req.query.f);")
+        .contains(&"RUST-JS-PATH-TRAVERSAL-TAINT".to_string()));
+    assert!(rule_ids("a.js", "res.redirect('/user/' + req.params.id);").is_empty());
+    for open in ["res.redirect('//' + req.query.h);", "res.redirect(req.query.next);"] {
+        assert!(rule_ids("a.js", open).contains(&"RUST-JS-OPEN-REDIRECT-TAINT".to_string()), "{open}");
+    }
+}
+
+#[test]
+fn pillow_imagemath_eval_is_code_injection() {
+    let src = "expression = request.form.get('expr')\nImageMath.eval(expression, a=img)";
+    assert!(rule_ids("a.py", src).contains(&"RUST-PY-CODE-INJECTION-TAINT".to_string()));
+}

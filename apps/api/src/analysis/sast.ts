@@ -28,6 +28,8 @@ interface Rule {
   description: string;
   remediation: string;
   test: (line: string, ctx: LineContext) => boolean;
+  /** Per-hit confidence when it depends on context (defaults to `confidence`). */
+  confidenceFor?: (line: string, ctx: LineContext) => Confidence;
 }
 
 const isPython = (file: string) => /\.pyi?$/.test(file);
@@ -208,6 +210,9 @@ const RULES: Rule[] = [
     description: "MD5 et SHA-1 sont cassés pour un usage de sécurité.",
     remediation: "Utilisez SHA-256+ pour l'intégrité, et argon2/bcrypt/scrypt pour les mots de passe.",
     test: (l) => /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l) || /\bhashlib\.(md5|sha1)\s*\(/.test(l),
+    // Broken for passwords/tokens; a checksum, cache key or HMAC digest
+    // (`hashlib.sha1` as itsdangerous' default) is a much weaker signal.
+    confidenceFor: (l, ctx) => (SENSITIVE_NAME.test(l) || SENSITIVE_NAME.test(ctx.fn) ? "high" : "low"),
   },
   {
     id: "WEAK_RANDOM",
@@ -436,7 +441,7 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
           remediation: rule.remediation,
           cwe: rule.cwe,
           owasp: rule.owasp,
-          confidence: rule.confidence,
+          confidence: rule.confidenceFor ? rule.confidenceFor(content, ctx) : rule.confidence,
         });
       }
     }

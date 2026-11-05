@@ -38,6 +38,9 @@ pub struct SinkRule {
     /// filter AND an update document; Sequelize's `instance.update(values)`
     /// has one).
     pub min_args: usize,
+    /// Skip when an options-object argument has one of these keys — e.g.
+    /// Express `res.sendFile(p, { root })` confines the path to `root`.
+    pub skip_option_keys: &'static [&'static str],
     /// Which positional argument is dangerous (0 = first; `insertAdjacentHTML`
     /// takes its markup second).
     pub arg_index: usize,
@@ -87,6 +90,7 @@ const SINK: SinkRule = SinkRule {
     require_object_arg: false,
     skip_object_keys: &[],
     min_args: 0,
+    skip_option_keys: &[],
     arg_index: 0,
     guards: &[],
     skip_fixed_origin: false,
@@ -164,6 +168,11 @@ static JS_RULES: LangRules = LangRules {
     nosql_sanitizers: &["String", "mongoSanitize", "sanitize", "escapeRegExp"],
     lookups: &[
         "get",
+        "slice",
+        "substring",
+        "substr",
+        "at",
+        "charAt",
         "find",
         "findOne",
         "findByPk",
@@ -266,6 +275,7 @@ static JS_RULES: LangRules = LangRules {
             ],
             profile: ProfileKind::Web,
             guards: &["startsWith"],
+            skip_option_keys: &["root"],
             ..SINK
         },
         SinkRule {
@@ -397,6 +407,7 @@ static JS_RULES: LangRules = LangRules {
             callee_equals: &["res.redirect", "response.redirect", "ctx.redirect", "reply.redirect"],
             profile: ProfileKind::Web,
             guards: &["startsWith"],
+            skip_fixed_origin: true,
             ..SINK
         },
     ],
@@ -495,7 +506,8 @@ static PY_RULES: LangRules = LangRules {
                 "Une entrée utilisateur atteint eval() ou exec(), ce qui exécute du code Python arbitraire contrôlé par l'attaquant (analyse de taint).",
             remediation:
                 "Supprimez eval/exec. Utilisez ast.literal_eval pour des littéraux, ou une logique explicite sans exécution dynamique.",
-            callee_ends_with: &[],
+            // Pillow's ImageMath.eval evaluates Python (CVE-2022-22817).
+            callee_ends_with: &["ImageMath.eval", "ImageMath.unsafe_eval"],
             callee_equals: &["eval", "exec"],
             require_contains: None,
             ..SINK
@@ -556,6 +568,7 @@ static PY_RULES: LangRules = LangRules {
             callee_equals: &["redirect", "flask.redirect", "HttpResponseRedirect", "RedirectResponse"],
             profile: ProfileKind::Web,
             guards: &["startswith"],
+            skip_fixed_origin: true,
             ..SINK
         },
         SinkRule {

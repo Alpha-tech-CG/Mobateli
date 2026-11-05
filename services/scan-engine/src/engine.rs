@@ -122,18 +122,30 @@ fn is_sanitizer_call(node: Node, source: &str, call_kinds: &[&str], sanitizers: 
 }
 
 /// `store.get(key)` / `Model.findByPk(id)` whose receiver is not a source.
-fn is_lookup_call(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> bool {
-    if profile.lookups.is_empty() || !call_kinds.contains(&node.kind()) {
-        return false;
+/// The KEY part of a lookup, whose value does not flow into the result:
+/// the arguments of `store.get(key)` / `names.slice(a, b)`, or the index of
+/// `users[key]`. The receiver is kept, so the result is tainted exactly when
+/// the receiver is (`p.get("x")` with `p` tainted still is;
+/// `sessions.get(req.cookies.sid)` is not). Web/NoSQL profiles only.
+fn lookup_key<'a>(node: Node<'a>, call_kinds: &[&str], source: &str, profile: &Profile) -> Option<Node<'a>> {
+    if profile.lookups.is_empty() {
+        return None;
     }
-    let Some(callee) = node.child_by_field_name("function") else {
-        return false;
-    };
-    let callee = text(callee, source).trim();
-    let Some((receiver, method)) = callee.rsplit_once('.') else {
-        return false;
-    };
-    profile.lookups.contains(&method) && !contains_source(receiver, &profile.sources)
+    match node.kind() {
+        "subscript_expression" => return node.child_by_field_name("index"), // JS
+        "subscript" => return node.child_by_field_name("subscript"),        // Python
+        _ => {}
+    }
+    if !call_kinds.contains(&node.kind()) {
+        return None;
+    }
+    let callee = node.child_by_field_name("function")?;
+    let (_, method) = text(callee, source).trim().rsplit_once('.')?;
+    if profile.lookups.contains(&method) {
+        node.child_by_field_name("arguments")
+    } else {
+        None
+    }
 }
 
 /// What an expression carries once its sanitized sub-expressions are set
@@ -160,14 +172,27 @@ fn digest(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> D
     let root_is_property = node.kind() == "identifier" && is_property_identifier(node);
     let mut stack = vec![node];
     while let Some(n) = stack.pop() {
-        if is_sanitizer_call(n, source, call_kinds, &profile.sanitizers)
-            || is_lookup_call(n, source, call_kinds, profile)
-        {
+        if is_sanitizer_call(n, source, call_kinds, &profile.sanitizers) {
             let (a, b) = (n.start_byte() - start, n.end_byte() - start);
             if b <= masked.len() {
                 masked[a..b].fill(b' ');
             }
             continue; // nothing inside a sanitizer call reaches the outside
+        }
+        if let Some(key) = lookup_key(n, call_kinds, source, profile) {
+            // Mask the key; keep walking the receiver.
+            let (a, b) = (key.start_byte() - start, key.end_byte() - start);
+            if b <= masked.len() {
+                masked[a..b].fill(b' ');
+            }
+            let key_id = key.id();
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                if child.id() != key_id {
+                    stack.push(child);
+                }
+            }
+            continue;
         }
         if matches!(n.kind(), "member_expression" | "attribute") {
             for field in ["property", "attribute"] {
@@ -479,6 +504,16 @@ fn has_fixed_origin(arg_text: &str) -> bool {
     else {
         return false;
     };
+    // A same-site relative path ("/user/" + id): one leading slash followed
+    // by a literal character — not "//host" (protocol-relative) nor "/\\".
+    let mut chars = rest.chars();
+    if chars.next() == Some('/') {
+        if let Some(c) = chars.next() {
+            if c != '/' && c != '\\' && c != '$' && c != '{' && c != '"' && c != '\'' && c != '`' {
+                return true;
+            }
+        }
+    }
     let Some(after_scheme) = rest
         .strip_prefix("https://")
         .or_else(|| rest.strip_prefix("http://"))
@@ -635,7 +670,13 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
                 }
             }
             let arg_text = text(arg0, source);
-            if rule.skip_call_arg && is_call_kind(arg0.kind()) {
+            let (profile, tainted) = &profiles[&rule.profile];
+            // A wrapping call transforms the input (render, readFileSync)…
+            // unless it is a lookup, whose result is its receiver's data.
+            if rule.skip_call_arg
+                && is_call_kind(arg0.kind())
+                && lookup_key(arg0, rules.call_kinds, source, profile).is_none()
+            {
                 continue;
             }
             if rule.skip_call_arg
@@ -649,6 +690,11 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
             }
             if rule.min_args > 0 && positional_count(args) < rule.min_args {
                 continue;
+            }
+            if !rule.skip_option_keys.is_empty()
+                && orm_options_anywhere(args, source, rule.skip_option_keys)
+            {
+                continue; // e.g. res.sendFile(p, { root }) — confined
             }
             if rule.require_object_arg {
                 // `find(filter)` where `filter = { … }` in a visible scope.
@@ -674,7 +720,6 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
                     continue;
                 }
             }
-            let (profile, tainted) = &profiles[&rule.profile];
             let d = digest(arg0, source, rules.call_kinds, profile);
             let Some(inline) = expr_taint(&d, scope, tainted, &scopes) else {
                 continue;
