@@ -35,8 +35,11 @@ const PATTERNS: Pattern[] = [
 ];
 
 // Generic "key = 'value'" assignments where the name hints at a secret.
+// The name may carry a prefix (`signingSecret`, `db_password`, `GITHUB_TOKEN`):
+// what matters is that it ENDS with the sensitive word — `passwordField` or
+// `tokenCount` do not.
 const GENERIC_ASSIGN =
-  /\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*['"]([^'"]{8,})['"]/i;
+  /\b\w*?(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|secret[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*['"]([^'"]{8,})['"]/i;
 
 // Obvious non-secret values: placeholders, docs, env-var references.
 const PLACEHOLDER =
@@ -48,6 +51,11 @@ function looksLikePlaceholder(value: string): boolean {
   if (/\$\{|\{\{|<[^>]+>|process\.env|os\.environ|import\.meta\.env/.test(value)) return true;
   // A run of a single repeated char (aaaa…, 0000…) is never a live secret.
   if (/^(.)\1{7,}$/.test(value)) return true;
+  // An identifier-like word sequence (`password_confirmation_input`,
+  // `user-api-token`) is a field name or label, not a credential.
+  if (/^[a-z]+(?:[_.-][a-z]+)+$/i.test(value)) return true;
+  // A code fragment caught between two string literals (`'KEY=' + read(…)`).
+  if (/\s/.test(value) && /[()+;=]/.test(value)) return true;
   return false;
 }
 
@@ -79,6 +87,9 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
 
     for (const p of PATTERNS) {
       const m = content.match(p.regex);
+      // A provider *test-mode* key (sk_test_…) in a test/fixture file is the
+      // expected kind of fixture, not an exposure.
+      if (m && inSample && /_test_/.test(m[0])) continue;
       if (m) {
         const key = `${p.type}:${file}:${line}`;
         if (seen.has(key)) continue;

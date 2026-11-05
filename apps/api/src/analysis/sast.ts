@@ -10,6 +10,13 @@ import type { Severity } from "@codegate/shared";
  * professional audit rather than a raw regex dump.
  */
 
+/** Where a line sits: its file and the function it belongs to (best effort). */
+export interface LineContext {
+  file: string;
+  /** Name of the enclosing function, or "" at top level / unknown. */
+  fn: string;
+}
+
 interface Rule {
   id: string;
   severity: Severity;
@@ -20,8 +27,33 @@ interface Rule {
   title: string;
   description: string;
   remediation: string;
-  test: (line: string) => boolean;
+  test: (line: string, ctx: LineContext) => boolean;
 }
+
+const isPython = (file: string) => /\.pyi?$/.test(file);
+
+/** Concatenated operands of a string literal (`"..." + x`, `x + "..."`). */
+function concatOperands(line: string): string[] {
+  const out: string[] = [];
+  for (const m of line.matchAll(/["'`]\s*\+\s*([A-Za-z_$][\w$.]*)/g)) out.push(m[1]!);
+  for (const m of line.matchAll(/([A-Za-z_$][\w$.]*)\s*\+\s*["'`]/g)) out.push(m[1]!);
+  return out;
+}
+
+/** `UPPER_CASE` constant (a table name, a config value) — not user input. */
+const isConstantName = (name: string) => /^[A-Z][A-Z0-9_]*$/.test(name);
+
+/**
+ * The first argument of the call opened at `(` is a string literal whose
+ * scheme and host are fixed (`"https://api.example.com/v1?q=" + q`,
+ * `` `https://host/${path}` ``): only the path/query is steerable — not SSRF.
+ */
+function hasFixedOrigin(line: string): boolean {
+  return /\(\s*f?["'`]https?:\/\/[^/?#"'`$+{%]+[/?#]/.test(line);
+}
+
+/** Variable names that hint at a security-sensitive value. */
+const SENSITIVE_NAME = /(token|secret|password|passwd|otp|session|nonce|salt|key|csrf|reset|verif|auth)/i;
 
 const RULES: Rule[] = [
   {
@@ -34,9 +66,14 @@ const RULES: Rule[] = [
     description:
       "Une requête SQL est assemblée à partir de chaînes concaténées, ce qui expose à l'injection SQL.",
     remediation: "Utilisez des requêtes paramétrées (placeholders) au lieu de concaténer les entrées.",
-    test: (l) =>
-      /\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(l) &&
-      /["'`]\s*\+\s*\w|\$\{.*\}.*(FROM|WHERE|VALUES)/i.test(l),
+    test: (l) => {
+      if (!/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(l)) return false;
+      if (/\$\{.*\}.*(FROM|WHERE|VALUES)/i.test(l)) return true;
+      if (!/["'`]\s*\+\s*\w/.test(l)) return false;
+      // `"SELECT … FROM " + TABLE` — only constants concatenated: not injectable.
+      const operands = concatOperands(l);
+      return !(operands.length > 0 && operands.every(isConstantName));
+    },
   },
   {
     id: "DANGEROUS_EVAL",
@@ -60,7 +97,12 @@ const RULES: Rule[] = [
     description:
       "exec() avec une chaîne interpolée permet l'injection de commandes. L'agent ne doit jamais exécuter de shell non maîtrisé (cahier §5.4).",
     remediation: "Utilisez execFile/spawn avec un tableau d'arguments, jamais une chaîne shell concaténée.",
-    test: (l) => /\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l),
+    test: (l) => {
+      if (!/\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l)) return false;
+      // Only constants interpolated (`git log ${BRANCH}`): nothing injectable.
+      const parts = [...l.matchAll(/\$\{\s*([^}]*?)\s*\}/g)].map((m) => m[1]!);
+      return !(parts.length > 0 && parts.every(isConstantName));
+    },
   },
   {
     id: "PYTHON_SHELL_INJECTION",
@@ -72,7 +114,11 @@ const RULES: Rule[] = [
     description:
       "subprocess.* avec shell=True sur une commande dynamique permet l'injection de commandes.",
     remediation: "Passez une liste d'arguments et laissez shell=False (défaut).",
-    test: (l) => /\b(subprocess\.(run|call|Popen|check_output)|os\.system)\b/.test(l) && /shell\s*=\s*True/.test(l),
+    test: (l) =>
+      /\b(subprocess\.(run|call|Popen|check_output)|os\.system)\b/.test(l) &&
+      /shell\s*=\s*True/.test(l) &&
+      // A fixed command string (`"df -h"`) cannot be injected.
+      !/\(\s*(["'])[^"'{}]*\1\s*,/.test(l),
   },
   {
     id: "INSECURE_DESERIALIZATION",
@@ -84,7 +130,10 @@ const RULES: Rule[] = [
     description:
       "pickle.loads, yaml.load (sans SafeLoader) ou l'équivalent exécutent du code lors du chargement de données non fiables.",
     remediation: "Utilisez yaml.safe_load / un format de données inerte (JSON). Ne désérialisez jamais de données non fiables.",
-    test: (l) => /\bpickle\.(loads|load)\s*\(/.test(l) || /\byaml\.load\s*\((?![^)]*SafeLoader)/.test(l),
+    test: (l) =>
+      /\b(c?pickle|marshal|dill|cloudpickle)\.(loads|load)\s*\(/.test(l) ||
+      /\bjsonpickle\.decode\s*\(/.test(l) ||
+      /\byaml\.load\s*\((?![^)]*SafeLoader)/.test(l),
   },
   {
     id: "XSS_INNERHTML",
@@ -96,7 +145,10 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (l) => /\.innerHTML\s*=/.test(l) || /dangerouslySetInnerHTML/.test(l),
+    test: (l) =>
+      // A fixed literal (`el.innerHTML = ""`, static markup) carries no input.
+      (/\.innerHTML\s*=/.test(l) && !/\.innerHTML\s*=\s*(["'`])[^"'`$]*\1\s*;?\s*$/.test(l)) ||
+      /dangerouslySetInnerHTML/.test(l),
   },
   {
     id: "PATH_TRAVERSAL",
@@ -123,8 +175,11 @@ const RULES: Rule[] = [
       "Une requête sortante dont l'URL provient d'une entrée utilisateur permet le SSRF (accès aux services internes, métadonnées cloud).",
     remediation: "Validez l'URL contre une liste blanche de domaines ; bloquez les IP privées et les métadonnées cloud.",
     test: (l) =>
-      /\b(fetch|axios(\.get|\.post)?|got|request|http\.get|https\.get)\s*\(/.test(l) &&
-      /(req\.(params|query|body)|request\.|`.*\$\{)/.test(l),
+      /\b(fetch|axios(\.(get|post|put|patch|delete|request))?|got|request|https?\.(get|request)|requests\.(get|post|put|patch|delete|head|request)|httpx\.(get|post|request)|urlopen)\s*\(/.test(
+        l,
+      ) &&
+      /(req\.(params|query|body)|request\.(args|form|values|json|get_json|data|query|body|params)|`.*\$\{)/.test(l) &&
+      !hasFixedOrigin(l),
   },
   {
     id: "WEAK_HASH",
@@ -147,7 +202,12 @@ const RULES: Rule[] = [
     description:
       "Math.random() n'est pas cryptographiquement sûr ; l'utiliser pour un token/mot de passe/identifiant de session rend la valeur prédictible.",
     remediation: "Utilisez crypto.randomBytes / crypto.randomUUID (ou secrets en Python).",
-    test: (l) => /\bMath\.random\s*\(\)/.test(l) && /(token|secret|password|otp|session|nonce|salt|key)/i.test(l),
+    test: (l, ctx) =>
+      (/\bMath\.random\s*\(\)/.test(l) ||
+        /\brandom\.(random|randint|randrange|choice|choices|getrandbits|sample)\s*\(/.test(l)) &&
+      // The sensitive name is on the line, or is the enclosing function's
+      // (`function resetToken() { return Math.random()… }`).
+      (SENSITIVE_NAME.test(l) || SENSITIVE_NAME.test(ctx.fn)),
   },
   {
     id: "JWT_WEAK_VERIFY",
@@ -159,10 +219,12 @@ const RULES: Rule[] = [
     description:
       "Désactiver la vérification de signature (algorithme 'none' ou verify:false) laisse forger n'importe quel jeton.",
     remediation: "Vérifiez toujours la signature avec un algorithme fort (RS256/ES256) et une clé secrète.",
-    test: (l) =>
-      /algorithms?\s*:\s*\[?\s*['"]none['"]/i.test(l) ||
-      /jwt\.decode\s*\([^)]*\)/.test(l) ||
-      /verify(_signature)?\s*[:=]\s*False/.test(l),
+    test: (l, ctx) =>
+      /algorithms?\s*[:=]\s*\[?\s*['"]none['"]/i.test(l) ||
+      /verify_signature["']?\s*[:=]\s*False/.test(l) ||
+      // jsonwebtoken's jwt.decode never verifies; PyJWT's jwt.decode does
+      // (unless told not to, caught above), so only flag it outside Python.
+      (!isPython(ctx.file) && /\bjwt\.decode\s*\(/.test(l)),
   },
   {
     id: "CORS_WILDCARD",
@@ -192,7 +254,8 @@ const RULES: Rule[] = [
       /rejectUnauthorized\s*:\s*false/.test(l) ||
       /NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*['"]?0/.test(l) ||
       /verify\s*=\s*False/.test(l) ||
-      /InsecureRequestWarning|verify_mode\s*=\s*ssl\.CERT_NONE/.test(l),
+      /InsecureRequestWarning|verify_mode\s*=\s*ssl\.CERT_NONE/.test(l) ||
+      /\bssl\._create_unverified_context\s*\(/.test(l),
   },
 ];
 
@@ -206,14 +269,29 @@ const SENSITIVE_FILES = [
   ".codegateignore",
 ];
 
+/** Function name declared on this line, if any (JS/TS/Python, best effort). */
+const FN_DECL =
+  /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)|\bdef\s+([A-Za-z_]\w*)|\b([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)|^\s*(?:(?:public|private|protected|static|async)\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\{/;
+const NOT_A_FUNCTION = new Set(["if", "for", "while", "switch", "catch", "return", "function"]);
+
 export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   const findings: FindingResult[] = [];
+  let currentFile = "";
+  let currentFn = "";
 
   for (const { file, line, content } of addedLines) {
+    if (file !== currentFile) {
+      currentFile = file;
+      currentFn = "";
+    }
+    const decl = content.match(FN_DECL);
+    const declared = decl && (decl[1] ?? decl[2] ?? decl[3] ?? decl[4]);
+    if (declared && !NOT_A_FUNCTION.has(declared)) currentFn = declared;
     // A rule example written in a comment is not a vulnerability.
     if (isCommentLine(content)) continue;
+    const ctx: LineContext = { file, fn: currentFn };
     for (const rule of RULES) {
-      if (rule.test(content)) {
+      if (rule.test(content, ctx)) {
         findings.push({
           type: "sast",
           severity: rule.severity,
