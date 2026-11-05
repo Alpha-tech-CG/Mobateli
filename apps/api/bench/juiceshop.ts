@@ -73,10 +73,11 @@ interface VulnLine {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const root = args.find((a) => !a.startsWith("--") && a !== args[args.indexOf("--json") + 1]);
+  const jsonAt = args.indexOf("--json");
+  const root = args.find((a, i) => !a.startsWith("--") && (jsonAt === -1 || i !== jsonAt + 1));
   if (!root) throw new Error("usage: juiceshop.ts <juice-shop checkout> [--rust] [--json out.json]");
   const useRust = args.includes("--rust");
-  const jsonOut = args.includes("--json") ? args[args.indexOf("--json") + 1] : undefined;
+  const jsonOut = jsonAt === -1 ? undefined : args[jsonAt + 1];
 
   const vulnLines: VulnLine[] = [];
   const parts: string[] = [];

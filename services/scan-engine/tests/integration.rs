@@ -379,3 +379,9 @@ fn insert_adjacent_html_checks_its_markup_argument() {
         .contains(&"RUST-JS-XSS-TAINT".to_string()));
     assert!(rule_ids("a.js", "el.insertAdjacentHTML(location.hash, '<b>x</b>');").is_empty());
 }
+
+#[test]
+fn needle_and_request_helpers_are_ssrf_sinks() {
+    let src = "const url = req.query.url + req.query.symbol;\nneedle.get(url, cb);";
+    assert!(rule_ids("a.js", src).contains(&"RUST-JS-SSRF-TAINT".to_string()));
+}

@@ -32,8 +32,13 @@ interface Rule {
 
 const isPython = (file: string) => /\.pyi?$/.test(file);
 
-/** Minified bundle (`*.min.js`, `*.bundle.js`): generated, not authored. */
-export const isMinified = (file: string) => /\.(min|bundle)\.(m?js|cjs)$/.test(file);
+/**
+ * Generated or vendored code, not what the PR author wrote: minified bundles
+ * (`*.min.js`, `*-min.js`, `*.bundle.js`) and third-party directories.
+ */
+export const isMinified = (file: string) =>
+  /[.-](min|bundle)\.(m?js|cjs)$/.test(file) ||
+  /(^|\/)(vendor|vendors|third[_-]party|bower_components|node_modules)\//.test(file);
 
 /** Concatenated operands of a string literal (`"..." + x`, `x + "..."`). */
 function concatOperands(line: string): string[] {
@@ -252,6 +257,21 @@ const RULES: Rule[] = [
     test: (l) => /\$where["']?\s*:\s*[^,}]*?(["'`]\s*\+|\+\s*["'`]|\$\{)/.test(l),
   },
   {
+    id: "TEMPLATE_AUTOESCAPE_DISABLED",
+    severity: "high",
+    confidence: "high",
+    cwe: "CWE-79",
+    owasp: "A03:2021-Injection",
+    title: "Échappement automatique des templates désactivé",
+    description:
+      "Le moteur de templates n'échappe plus les variables : toute donnée utilisateur affichée dans une page devient une XSS, sur l'ensemble du site.",
+    remediation:
+      "Laissez autoescape activé (valeur par défaut) et n'utilisez |safe / {% autoescape false %} que sur du HTML déjà assaini.",
+    test: (l) =>
+      /\bautoescape["']?\s*[:=]\s*(false|False|0)\b/.test(l) ||
+      /\{%-?\s*autoescape\s+(false|off)\b/.test(l),
+  },
+  {
     id: "ANGULAR_SANITIZER_BYPASS",
     severity: "medium",
     confidence: "medium",
@@ -319,11 +339,23 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   const findings: FindingResult[] = [];
   let currentFile = "";
   let currentFn = "";
+  let inBlockComment = false;
 
   for (const { file, line, content } of addedLines) {
     if (file !== currentFile) {
       currentFile = file;
       currentFn = "";
+      inBlockComment = false;
+    }
+    // Inside a `/* … */` block (e.g. a commented-out fix): not live code.
+    const opensAt = content.indexOf("/*");
+    const closesAt = content.lastIndexOf("*/");
+    if (inBlockComment) {
+      if (closesAt === -1) continue;
+      inBlockComment = false;
+      if (content.slice(closesAt + 2).trim() === "") continue;
+    } else if (opensAt !== -1 && closesAt < opensAt && !/["'`][^"'`]*\/\*/.test(content.slice(0, opensAt + 2))) {
+      inBlockComment = true;
     }
     // Minified bundles are third-party/generated code: one 10 KiB line of
     // `innerHTML=` noise, and not what the PR author wrote.
