@@ -254,8 +254,8 @@ const RULES: Rule[] = [
       /rejectUnauthorized\s*:\s*false/.test(l) ||
       /NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*['"]?0/.test(l) ||
       /verify\s*=\s*False/.test(l) ||
-      /InsecureRequestWarning|verify_mode\s*=\s*ssl\.CERT_NONE/.test(l) ||
-      /\bssl\._create_unverified_context\s*\(/.test(l),
+      /\bssl\._create_unverified_context\s*\(/.test(l) ||
+      /InsecureRequestWarning|verify_mode\s*=\s*ssl\.CERT_NONE/.test(l),
   },
 ];
 
