@@ -11,7 +11,7 @@
 //! regex rules in apps/api/src/analysis/sast.ts — kept intraprocedural and
 //! deliberately conservative to hold the false-positive rate down.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use tree_sitter::{Node, Parser};
@@ -59,18 +59,20 @@ fn text<'a>(node: Node, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
 }
 
+/// Push `node`'s children on `stack`. Uses a cursor: `Node::child(i)` is O(i)
+/// in tree-sitter, so indexing every child of a node with many children (an
+/// unclosed `[[[[…` yields 50 000 siblings) was quadratic.
+fn push_children<'a>(node: Node<'a>, stack: &mut Vec<Node<'a>>) {
+    let mut cursor = node.walk();
+    stack.extend(node.children(&mut cursor));
+}
+
 /// Flatten the tree into a list of nodes (order irrelevant to the analysis).
 fn descendants<'a>(root: Node<'a>) -> Vec<Node<'a>> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        let mut i = node.child_count();
-        while i > 0 {
-            i -= 1;
-            if let Some(child) = node.child(i) {
-                stack.push(child);
-            }
-        }
+        push_children(node, &mut stack);
         out.push(node);
     }
     out
@@ -96,12 +98,34 @@ fn is_property_identifier(node: Node) -> bool {
 }
 
 /// Identifiers referenced in a subtree, excluding `.property` positions.
+///
+/// Linear in the subtree size: property positions are recorded while visiting
+/// their member/attribute parent (pre-order), instead of calling
+/// `Node::parent()` per identifier — tree-sitter's `parent()` walks down from
+/// the root, which made a deeply nested expression (`a + b + c + …`) quadratic
+/// and let a ~130 KiB file push the engine past the adapter's timeout.
 fn referenced_idents(node: Node, source: &str) -> HashSet<String> {
-    descendants(node)
-        .into_iter()
-        .filter(|n| n.kind() == "identifier" && !is_property_identifier(*n))
-        .map(|n| text(n, source).to_string())
-        .collect()
+    let mut out = HashSet::new();
+    let mut property_ids: HashSet<usize> = HashSet::new();
+    let root_is_property = node.kind() == "identifier" && is_property_identifier(node);
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "member_expression" | "attribute") {
+            for field in ["property", "attribute"] {
+                if let Some(prop) = n.child_by_field_name(field) {
+                    property_ids.insert(prop.id());
+                }
+            }
+        }
+        if n.kind() == "identifier"
+            && !property_ids.contains(&n.id())
+            && !(n.id() == node.id() && root_is_property)
+        {
+            out.insert(text(n, source).to_string());
+        }
+        push_children(n, &mut stack);
+    }
+    out
 }
 
 fn contains_source(text: &str, sources: &[&str]) -> bool {
@@ -148,13 +172,11 @@ fn assign_rhs<'a>(node: Node<'a>) -> Option<Node<'a>> {
 /// args like `shell=True` and comments). Checking only the first argument is
 /// what distinguishes an injected query string from safely-bound parameters.
 fn first_positional<'a>(args: Node<'a>) -> Option<Node<'a>> {
-    for i in 0..args.named_child_count() {
-        let child = args.named_child(i)?;
-        if !matches!(child.kind(), "keyword_argument" | "comment") {
-            return Some(child);
-        }
-    }
-    None
+    let mut cursor = args.walk();
+    let found = args
+        .named_children(&mut cursor)
+        .find(|child| !matches!(child.kind(), "keyword_argument" | "comment"));
+    found
 }
 
 fn callee_matches(callee: &str, rule: &SinkRule) -> bool {
@@ -166,30 +188,55 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
     let nodes = descendants(root);
 
     // --- Pass 1: compute tainted variables to a fixpoint. ---
-    let assigns: Vec<(String, Node)> = nodes
-        .iter()
-        .filter(|n| rules.assign_kinds.contains(&n.kind()))
-        .filter_map(|n| {
-            let target = assign_target(*n)?;
-            let rhs = assign_rhs(*n)?;
-            Some((text(target, source).to_string(), rhs))
-        })
-        .collect();
-
+    //
+    // Worklist propagation, linear in the number of assignments: each
+    // right-hand side is examined once (sanitizer / inline source / the
+    // identifiers it references), then taint flows along the "variable →
+    // assignments that read it" edges. Same result as re-scanning every
+    // assignment until nothing changes, without the O(n²) passes a long chain
+    // written in reverse order (`b = a;` before `a = source;`) used to cost.
+    struct Assign {
+        target: String,
+        refs: HashSet<String>,
+    }
+    let mut assigns: Vec<Assign> = Vec::new();
     let mut tainted: HashSet<String> = HashSet::new();
-    loop {
-        let mut changed = false;
-        for (name, rhs) in &assigns {
-            if tainted.contains(name) {
-                continue;
-            }
-            if expr_tainted(*rhs, source, &tainted, rules) {
-                tainted.insert(name.clone());
-                changed = true;
-            }
+    let mut work: Vec<String> = Vec::new();
+    for n in nodes.iter().filter(|n| rules.assign_kinds.contains(&n.kind())) {
+        let (Some(target), Some(rhs)) = (assign_target(*n), assign_rhs(*n)) else {
+            continue;
+        };
+        let target = text(target, source).to_string();
+        let rhs_text = text(rhs, source);
+        if is_sanitized(rhs_text, rules.sanitizers) {
+            continue; // a sanitized value never carries taint
         }
-        if !changed {
-            break;
+        if contains_source(rhs_text, rules.sources) {
+            if tainted.insert(target.clone()) {
+                work.push(target);
+            }
+            continue;
+        }
+        assigns.push(Assign {
+            target,
+            refs: referenced_idents(rhs, source),
+        });
+    }
+    let mut readers: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, a) in assigns.iter().enumerate() {
+        for r in &a.refs {
+            readers.entry(r.as_str()).or_default().push(i);
+        }
+    }
+    while let Some(var) = work.pop() {
+        let Some(idxs) = readers.get(var.as_str()) else {
+            continue;
+        };
+        for &i in idxs {
+            let target = &assigns[i].target;
+            if tainted.insert(target.clone()) {
+                work.push(target.clone());
+            }
         }
     }
 
@@ -214,17 +261,22 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
         let Some(arg0) = first_positional(args) else {
             continue;
         };
-        let call_text_nospace: String = text(*node, source)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
+        // Built lazily: copying every call's text up front was quadratic for
+        // deeply nested calls (`f(f(f(…)))`).
+        let mut call_text_nospace: Option<String> = None;
 
         for rule in rules.sinks {
             if !callee_matches(callee_text, rule) {
                 continue;
             }
             if let Some(req) = rule.require_contains {
-                if !call_text_nospace.contains(req) {
+                let nospace = call_text_nospace.get_or_insert_with(|| {
+                    text(*node, source)
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect()
+                });
+                if !nospace.contains(req) {
                     continue;
                 }
             }
