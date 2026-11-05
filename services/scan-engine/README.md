@@ -23,6 +23,8 @@ pour **JavaScript / TypeScript** et **Python** :
 | `RUST-*-PATH-TRAVERSAL-TAINT` | CWE-22 | A01:2021-Broken Access Control | Entrée de requête atteignant `fs.*`/`sendFile`/`open()` sans contrôle `startsWith` |
 | `RUST-*-SSRF-TAINT` | CWE-918 | A10:2021-SSRF | Entrée de requête déterminant l'hôte d'un appel sortant (`fetch`, `axios`, `requests`…) |
 | `RUST-JS-XSS-TAINT` | CWE-79 | A03:2021-Injection | Entrée écrite telle quelle dans `res.send/write` ou `document.write` |
+| `RUST-JS-NOSQL-INJECTION-TAINT` | CWE-943 | A03:2021-Injection | Valeur du corps/query (objet possible : `{"$ne": null}`) dans un filtre MongoDB littéral — hors `req.params`, `{ where }` ORM, `String(x)` |
+| `RUST-*-OPEN-REDIRECT-TAINT` | CWE-601 | A01:2021-Broken Access Control | Entrée de requête comme cible de `res.redirect` / `redirect()`, sauf contrôle `startsWith` |
 
 Faible taux de faux positifs par construction :
 
@@ -38,7 +40,10 @@ Faible taux de faux positifs par construction :
   autre handler ;
 - un assainisseur **imbriqué** ne neutralise que ce qu'il entoure
   (`path.join(D, path.basename(req.query.f))` est sûr, `"a" + req.query.q` non) ;
-- PATH/SSRF/XSS n'utilisent que les sources **web** (pas `process.argv`,
+- NoSQL utilise un profil dédié : seules les sources pouvant porter un
+  **objet** (corps JSON, query string parsée par qs) comptent, et `String(x)`
+  neutralise ;
+- PATH/SSRF/XSS/redirection n'utilisent que les sources **web** (pas `process.argv`,
   `sys.argv`, `input()` : un CLI qui ouvre le chemin qu'on lui donne fait son
   travail) ; SSRF ignore une URL dont le schéma et l'hôte sont fixés.
 

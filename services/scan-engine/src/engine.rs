@@ -18,7 +18,7 @@ use tree_sitter::{Node, Parser};
 
 use crate::finding::{Confidence, Finding};
 use crate::lang::Language;
-use crate::rules::{self, LangRules, SinkRule};
+use crate::rules::{self, LangRules, ProfileKind, SinkRule};
 
 /// A file to analyze: a (virtual) path used for language detection and
 /// reporting, plus its full text. Matches the `{ path, content }` JSON the
@@ -288,6 +288,32 @@ impl<'r> Profile<'r> {
         }
     }
 
+    fn nosql(rules: &'r LangRules) -> Self {
+        Profile {
+            sources: rules
+                .sources
+                .iter()
+                .copied()
+                .filter(|s| !rules.cli_sources.contains(s) && !rules.string_sources.contains(s))
+                .collect(),
+            sanitizers: rules
+                .sanitizers
+                .iter()
+                .chain(rules.nosql_sanitizers)
+                .copied()
+                .collect(),
+            lookups: rules.lookups.to_vec(),
+        }
+    }
+
+    fn of(kind: ProfileKind, rules: &'r LangRules) -> Self {
+        match kind {
+            ProfileKind::Injection => Profile::injection(rules),
+            ProfileKind::Web => Profile::web(rules),
+            ProfileKind::NoSql => Profile::nosql(rules),
+        }
+    }
+
     fn web(rules: &'r LangRules) -> Self {
         Profile {
             sources: rules
@@ -429,6 +455,40 @@ fn has_fixed_origin(arg_text: &str) -> bool {
     false
 }
 
+/// An object/dict literal used as a query filter: not one whose top-level
+/// keys mark an ORM's structured options (`{ where: … }`).
+fn is_filter_object(node: Node, source: &str, skip_keys: &[&str]) -> bool {
+    if !matches!(node.kind(), "object" | "dictionary") {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let has_skipped_key = node.named_children(&mut cursor).any(|pair| {
+        pair.child_by_field_name("key").is_some_and(|k| {
+            let key = text(k, source).trim_matches(|c| c == '"' || c == '\'');
+            skip_keys.contains(&key)
+        })
+    });
+    !has_skipped_key
+}
+
+fn positional_count(args: Node) -> usize {
+    let mut cursor = args.walk();
+    let n = args
+        .named_children(&mut cursor)
+        .filter(|c| !matches!(c.kind(), "keyword_argument" | "comment"))
+        .count();
+    n
+}
+
+/// Any argument is an ORM options object (`Model.update(values, { where })`).
+fn orm_options_anywhere(args: Node, source: &str, skip_keys: &[&str]) -> bool {
+    let mut cursor = args.walk();
+    let found = args.named_children(&mut cursor).any(|a| {
+        matches!(a.kind(), "object" | "dictionary") && !is_filter_object(a, source, skip_keys)
+    });
+    found
+}
+
 fn is_call_kind(kind: &str) -> bool {
     matches!(kind, "call_expression" | "call" | "new_expression")
 }
@@ -465,14 +525,15 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
         })
         .collect();
 
-    let injection = Profile::injection(rules);
-    let web = Profile::web(rules);
-    let tainted_injection = index_by_name(propagate(&assigns, &scopes, &injection, source, rules.call_kinds));
-    let tainted_web = if rules.sinks.iter().any(|r| r.web_only) {
-        index_by_name(propagate(&assigns, &scopes, &web, source, rules.call_kinds))
-    } else {
-        HashMap::new()
-    };
+    // One propagation per profile the sinks actually use.
+    let mut profiles: HashMap<ProfileKind, (Profile, Tainted)> = HashMap::new();
+    for rule in rules.sinks {
+        profiles.entry(rule.profile).or_insert_with(|| {
+            let p = Profile::of(rule.profile, rules);
+            let t = index_by_name(propagate(&assigns, &scopes, &p, source, rules.call_kinds));
+            (p, t)
+        });
+    }
 
     // Validation calls (`target.startsWith(ROOT)`), by scope.
     let mut guarded: Vec<(usize, &str, &str)> = Vec::new();
@@ -536,11 +597,16 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
             if rule.skip_fixed_origin && has_fixed_origin(arg_text) {
                 continue;
             }
-            let (profile, tainted) = if rule.web_only {
-                (&web, &tainted_web)
-            } else {
-                (&injection, &tainted_injection)
-            };
+            if rule.min_args > 0 && positional_count(args) < rule.min_args {
+                continue;
+            }
+            if rule.require_object_arg
+                && (!is_filter_object(arg0, source, rule.skip_object_keys)
+                    || orm_options_anywhere(args, source, rule.skip_object_keys))
+            {
+                continue;
+            }
+            let (profile, tainted) = &profiles[&rule.profile];
             let d = digest(arg0, source, rules.call_kinds, profile);
             let Some(inline) = expr_taint(&d, scope, tainted, &scopes) else {
                 continue;
@@ -555,7 +621,9 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
                     continue;
                 }
             }
-            let line = node.start_position().row + 1;
+            // The argument's line: in a call spread over several lines it is
+            // where the untrusted value actually is.
+            let line = arg0.start_position().row + 1;
             if !seen.insert((rule.id, line)) {
                 continue;
             }

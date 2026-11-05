@@ -301,3 +301,45 @@ fs.writeFile(`uploads/${user.id}.png`, buf, cb);
     let sql = r#"db.query("SELECT * FROM t WHERE id = " + cache.get(req.query.id));"#;
     assert!(rule_ids("a.js", sql).contains(&"RUST-JS-SQLI-TAINT".to_string()));
 }
+
+#[test]
+fn nosql_operator_injection_from_body_or_query() {
+    let src = r#"
+app.post("/login", async (req, res) => {
+  await User.findOne({ email: req.body.email, password: req.body.password });
+  await db.reviews.updateMany({ _id: req.body.id }, { $set: { m: 1 } });
+});
+"#;
+    let ids = rule_ids("a.js", src);
+    assert_eq!(ids.iter().filter(|i| *i == "RUST-JS-NOSQL-INJECTION-TAINT").count(), 2, "{ids:?}");
+}
+
+#[test]
+fn nosql_skips_strings_orm_options_and_coercion() {
+    for safe in [
+        "db.orders.findOne({ orderId: req.params.id });", // route params are strings
+        "User.findOne({ where: { id: req.body.id } });",   // Sequelize/Prisma: SQL, bound
+        "user.update({ name: req.body.name });",            // instance update, not a filter
+        "User.update({ role: req.body.role }, { where: { id: 1 } });",
+        "User.findOne({ email: String(req.body.email) });", // coerced to a string
+        "users.find(u => u.id === req.body.id);",           // Array.prototype.find
+    ] {
+        assert!(rule_ids("a.js", safe).is_empty(), "{safe} → {:?}", rule_ids("a.js", safe));
+    }
+}
+
+#[test]
+fn open_redirect_unless_validated_or_fixed() {
+    assert!(rule_ids("a.js", "res.redirect(req.query.next);")
+        .contains(&"RUST-JS-OPEN-REDIRECT-TAINT".to_string()));
+    let guarded = r#"
+app.get("/done", (req, res) => {
+  const next = String(req.query.next);
+  if (!next.startsWith("/")) return res.redirect("/");
+  res.redirect(next);
+});
+"#;
+    assert!(rule_ids("a.js", guarded).is_empty(), "{:?}", rule_ids("a.js", guarded));
+    assert!(rule_ids("a.py", "return redirect(request.args.get('next'))")
+        .contains(&"RUST-PY-OPEN-REDIRECT-TAINT".to_string()));
+}

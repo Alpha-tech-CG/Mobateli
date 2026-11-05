@@ -239,6 +239,19 @@ const RULES: Rule[] = [
       (!isPython(ctx.file) && /\bjwt\.decode\s*\(/.test(l)),
   },
   {
+    id: "NOSQL_WHERE_INJECTION",
+    severity: "high",
+    confidence: "medium",
+    cwe: "CWE-943",
+    owasp: "A03:2021-Injection",
+    title: "Injection NoSQL : $where construit dynamiquement",
+    description:
+      "Un opérateur MongoDB $where est assemblé par concaténation : c'est du JavaScript exécuté par le serveur de base de données (injection de code, déni de service par sleep()).",
+    remediation:
+      "N'utilisez pas $where ; exprimez le filtre avec des opérateurs ($eq, $in…) et des valeurs typées.",
+    test: (l) => /\$where["']?\s*:\s*[^,}]*?(["'`]\s*\+|\+\s*["'`]|\$\{)/.test(l),
+  },
+  {
     id: "ANGULAR_SANITIZER_BYPASS",
     severity: "medium",
     confidence: "medium",

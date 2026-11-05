@@ -27,11 +27,17 @@ pub struct SinkRule {
     /// If set, the whole call text (whitespace stripped) must also contain this
     /// — e.g. `shell=True`, so a safe `subprocess.run([...])` is not flagged.
     pub require_contains: Option<&'static str>,
-    /// Use the *web* taint profile: only request-borne sources (not
-    /// `process.argv` / `sys.argv` / `input()` — a CLI opening the path or URL
-    /// it was given is its job, not a vulnerability), plus the family's
-    /// `web_sanitizers` (`path.basename`, `secure_filename`…).
-    pub web_only: bool,
+    /// Which taint profile decides whether the argument is tainted.
+    pub profile: ProfileKind,
+    /// Only flag when the argument is an object/dict literal (a query
+    /// filter) that does not carry one of `skip_object_keys` at top level —
+    /// `{ where: … }` is a Sequelize/Prisma filter, parameterized SQL.
+    pub require_object_arg: bool,
+    pub skip_object_keys: &'static [&'static str],
+    /// Minimum number of positional arguments (a MongoDB update always has a
+    /// filter AND an update document; Sequelize's `instance.update(values)`
+    /// has one).
+    pub min_args: usize,
     /// Methods that validate a variable when called on it anywhere in a scope
     /// visible from the sink (`target.startsWith(ROOT)` — a path containment
     /// check). A sink argument referencing a guarded variable is not flagged.
@@ -43,6 +49,23 @@ pub struct SinkRule {
     /// Skip when the argument is itself a call (`res.send(render(x))`,
     /// `res.send(fs.readFileSync(p))`): its output is not the raw input.
     pub skip_call_arg: bool,
+}
+
+/// Taint profiles: which strings count as untrusted input and which calls
+/// neutralize it, per kind of sink.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ProfileKind {
+    /// Every source; injection sanitizers (SQL, commands, code).
+    Injection,
+    /// Request-borne sources only (not `process.argv` / `sys.argv` /
+    /// `input()` — a CLI opening the path or URL it was given is its job),
+    /// plus `web_sanitizers` (`path.basename`, `secure_filename`…) and
+    /// lookups (`sessions.get(req.cookies.sid)` returns server data).
+    Web,
+    /// Sources that can carry an OBJECT (a JSON body, a qs-parsed query):
+    /// `{"$ne": null}` turns a filter value into an operator. Route params
+    /// and CLI args are always strings; `String(x)` neutralizes.
+    NoSql,
 }
 
 /// Defaults for the optional `SinkRule` fields (`..SINK` in the tables).
@@ -57,7 +80,10 @@ const SINK: SinkRule = SinkRule {
     callee_ends_with: &[],
     callee_equals: &[],
     require_contains: None,
-    web_only: false,
+    profile: ProfileKind::Injection,
+    require_object_arg: false,
+    skip_object_keys: &[],
+    min_args: 0,
     guards: &[],
     skip_fixed_origin: false,
     skip_call_arg: false,
@@ -69,10 +95,14 @@ pub struct LangRules {
     /// Callee prefixes that neutralize taint (the value is cleansed/validated).
     pub sanitizers: &'static [&'static str],
     /// Sources that are not attacker-controlled in a web service (CLI args,
-    /// stdin). Excluded from the web taint profile (see `SinkRule::web_only`).
+    /// stdin). Excluded from the web and NoSQL taint profiles.
     pub cli_sources: &'static [&'static str],
     /// Extra sanitizers for the web profile (path/URL/HTML neutralizers).
     pub web_sanitizers: &'static [&'static str],
+    /// Sources that are always strings (route params): no operator injection.
+    pub string_sources: &'static [&'static str],
+    /// Extra sanitizers for the NoSQL profile (`String(x)`, mongo-sanitize).
+    pub nosql_sanitizers: &'static [&'static str],
     /// Lookup methods for the web profile (see `Profile::lookups`).
     pub lookups: &'static [&'static str],
     /// AST node kinds that open a function scope. Taint is tracked per scope:
@@ -126,6 +156,8 @@ static JS_RULES: LangRules = LangRules {
         "DOMPurify.sanitize",
         "sanitizeHtml",
     ],
+    string_sources: &["req.params", "request.params", "ctx.params"],
+    nosql_sanitizers: &["String", "mongoSanitize", "sanitize", "escapeRegExp"],
     lookups: &[
         "get",
         "find",
@@ -228,7 +260,7 @@ static JS_RULES: LangRules = LangRules {
                 ".sendFile",
                 ".download",
             ],
-            web_only: true,
+            profile: ProfileKind::Web,
             guards: &["startsWith"],
             ..SINK
         },
@@ -259,7 +291,7 @@ static JS_RULES: LangRules = LangRules {
                 "superagent.post",
             ],
             callee_equals: &["fetch", "axios", "got", "request", "needle"],
-            web_only: true,
+            profile: ProfileKind::Web,
             skip_fixed_origin: true,
             ..SINK
         },
@@ -282,8 +314,64 @@ static JS_RULES: LangRules = LangRules {
                 "document.write",
                 "document.writeln",
             ],
-            web_only: true,
+            profile: ProfileKind::Web,
             skip_call_arg: true,
+            ..SINK
+        },
+        SinkRule {
+            id: "RUST-JS-NOSQL-INJECTION-TAINT",
+            cwe: "CWE-943",
+            owasp: "A03:2021-Injection",
+            title: "Injection NoSQL : objet de requête contrôlé par l'entrée",
+            description:
+                "Une valeur du corps ou de la query string arrive telle quelle dans un filtre MongoDB. Express/qs la parse en objet : {\"$ne\": null} ou {\"$gt\": \"\"} devient un opérateur et contourne le filtre (authentification, mise à jour de masse) — analyse de taint.",
+            remediation:
+                "Forcez le type (String(x), parseInt), validez le corps (zod/joi) ou activez sanitizeFilter / express-mongo-sanitize.",
+            callee_ends_with: &[
+                ".find",
+                ".findOne",
+                ".findOneAndDelete",
+                ".deleteOne",
+                ".deleteMany",
+                ".remove",
+                ".count",
+                ".countDocuments",
+                ".exists",
+            ],
+            profile: ProfileKind::NoSql,
+            require_object_arg: true,
+            skip_object_keys: &["where", "include", "select", "data"],
+            ..SINK
+        },
+        SinkRule {
+            id: "RUST-JS-NOSQL-INJECTION-TAINT",
+            cwe: "CWE-943",
+            owasp: "A03:2021-Injection",
+            title: "Injection NoSQL : filtre de mise à jour contrôlé par l'entrée",
+            description:
+                "Une valeur du corps ou de la query string arrive telle quelle dans le filtre d'une mise à jour MongoDB. Express/qs la parse en objet : {\"$ne\": -1} sélectionne tous les documents et la mise à jour s'applique en masse — analyse de taint.",
+            remediation:
+                "Forcez le type (String(x)), validez le corps (zod/joi), ou activez sanitizeFilter / express-mongo-sanitize.",
+            callee_ends_with: &[".update", ".updateOne", ".updateMany", ".findOneAndUpdate", ".replaceOne"],
+            profile: ProfileKind::NoSql,
+            require_object_arg: true,
+            skip_object_keys: &["where", "include", "select", "data"],
+            min_args: 2,
+            ..SINK
+        },
+        SinkRule {
+            id: "RUST-JS-OPEN-REDIRECT-TAINT",
+            cwe: "CWE-601",
+            owasp: "A01:2021-Broken Access Control",
+            severity: Severity::Medium,
+            title: "Redirection ouverte : cible de redirection contrôlée par l'entrée",
+            description:
+                "Une entrée de requête détermine l'URL de res.redirect(). Un attaquant fabrique un lien vers votre domaine qui renvoie vers son site (hameçonnage, vol de jeton OAuth) — analyse de taint.",
+            remediation:
+                "Ne redirigez que vers des chemins relatifs validés, ou vérifiez l'hôte de l'URL contre une liste blanche exacte (new URL(x).host).",
+            callee_equals: &["res.redirect", "response.redirect", "ctx.redirect", "reply.redirect"],
+            profile: ProfileKind::Web,
+            guards: &["startsWith"],
             ..SINK
         },
     ],
@@ -313,6 +401,8 @@ static PY_RULES: LangRules = LangRules {
         "markupsafe.escape",
         "bleach.clean",
     ],
+    string_sources: &["request.args", "request.form", "request.values", "request.GET", "request.POST"],
+    nosql_sanitizers: &["str"],
     lookups: &["get", "get_object_or_404", "first", "one"],
     scope_kinds: &["function_definition", "lambda"],
     assign_kinds: &["assignment", "augmented_assignment", "named_expression"],
@@ -389,7 +479,7 @@ static PY_RULES: LangRules = LangRules {
                 "Utilisez werkzeug secure_filename / os.path.basename, ou résolvez le chemin et vérifiez qu'il reste sous le dossier autorisé.",
             callee_ends_with: &["os.remove", "os.unlink", "shutil.rmtree", "shutil.copy", "send_file"],
             callee_equals: &["open", "io.open", "codecs.open"],
-            web_only: true,
+            profile: ProfileKind::Web,
             guards: &["startswith"],
             ..SINK
         },
@@ -417,8 +507,23 @@ static PY_RULES: LangRules = LangRules {
                 "session.get",
                 "session.post",
             ],
-            web_only: true,
+            profile: ProfileKind::Web,
             skip_fixed_origin: true,
+            ..SINK
+        },
+        SinkRule {
+            id: "RUST-PY-OPEN-REDIRECT-TAINT",
+            cwe: "CWE-601",
+            owasp: "A01:2021-Broken Access Control",
+            severity: Severity::Medium,
+            title: "Redirection ouverte : cible de redirection contrôlée par l'entrée",
+            description:
+                "Une entrée de requête détermine l'URL de redirect(). Un attaquant fabrique un lien vers votre domaine qui renvoie vers son site (hameçonnage, vol de jeton OAuth) — analyse de taint.",
+            remediation:
+                "Utilisez url_has_allowed_host_and_scheme (Django) ou vérifiez l'hôte contre une liste blanche, sinon redirigez vers un chemin relatif fixe.",
+            callee_equals: &["redirect", "flask.redirect", "HttpResponseRedirect", "RedirectResponse"],
+            profile: ProfileKind::Web,
+            guards: &["startswith"],
             ..SINK
         },
     ],
