@@ -32,7 +32,13 @@ declare module "@fastify/jwt" {
 }
 
 async function authPlugin(app: FastifyInstance, opts: { jwtSecret: string }) {
-  await app.register(fastifyJwt, { secret: opts.jwtSecret });
+  // Pin the algorithm on both sides: tokens are only ever HS256-signed by
+  // this API, so nothing else (`none`, RS*/ES* key confusion) is accepted.
+  await app.register(fastifyJwt, {
+    secret: opts.jwtSecret,
+    sign: { algorithm: "HS256" },
+    verify: { algorithms: ["HS256"] },
+  });
 
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
