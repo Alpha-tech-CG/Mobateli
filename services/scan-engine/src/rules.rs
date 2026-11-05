@@ -38,6 +38,9 @@ pub struct SinkRule {
     /// filter AND an update document; Sequelize's `instance.update(values)`
     /// has one).
     pub min_args: usize,
+    /// Which positional argument is dangerous (0 = first; `insertAdjacentHTML`
+    /// takes its markup second).
+    pub arg_index: usize,
     /// Methods that validate a variable when called on it anywhere in a scope
     /// visible from the sink (`target.startsWith(ROOT)` — a path containment
     /// check). A sink argument referencing a guarded variable is not flagged.
@@ -84,6 +87,7 @@ const SINK: SinkRule = SinkRule {
     require_object_arg: false,
     skip_object_keys: &[],
     min_args: 0,
+    arg_index: 0,
     guards: &[],
     skip_fixed_origin: false,
     skip_call_arg: false,
@@ -319,6 +323,21 @@ static JS_RULES: LangRules = LangRules {
             ..SINK
         },
         SinkRule {
+            id: "RUST-JS-XSS-TAINT",
+            cwe: "CWE-79",
+            owasp: "A03:2021-Injection",
+            severity: Severity::Medium,
+            title: "XSS : entrée utilisateur insérée comme HTML",
+            description:
+                "Une entrée (URL, requête) est insérée comme HTML via insertAdjacentHTML : le navigateur l'interprète et exécute tout script injecté (analyse de taint).",
+            remediation:
+                "Insérez du texte (insertAdjacentText, textContent) ou assainissez le HTML (DOMPurify.sanitize) avant insertion.",
+            callee_ends_with: &[".insertAdjacentHTML"],
+            profile: ProfileKind::Web,
+            arg_index: 1,
+            ..SINK
+        },
+        SinkRule {
             id: "RUST-JS-NOSQL-INJECTION-TAINT",
             cwe: "CWE-943",
             owasp: "A03:2021-Injection",
@@ -524,6 +543,42 @@ static PY_RULES: LangRules = LangRules {
             callee_equals: &["redirect", "flask.redirect", "HttpResponseRedirect", "RedirectResponse"],
             profile: ProfileKind::Web,
             guards: &["startswith"],
+            ..SINK
+        },
+        SinkRule {
+            id: "RUST-PY-NOSQL-INJECTION-TAINT",
+            cwe: "CWE-943",
+            owasp: "A03:2021-Injection",
+            title: "Injection NoSQL : filtre pymongo contrôlé par l'entrée",
+            description:
+                "Une valeur d'un corps JSON (request.json / get_json) arrive telle quelle dans un filtre pymongo : un objet {\"$ne\": null} devient un opérateur et contourne le filtre (analyse de taint).",
+            remediation:
+                "Forcez le type (str(x)), validez le corps (pydantic/marshmallow), et n'acceptez jamais un dict utilisateur comme valeur de filtre.",
+            callee_ends_with: &[
+                ".find",
+                ".find_one",
+                ".delete_one",
+                ".delete_many",
+                ".count_documents",
+                ".find_one_and_delete",
+            ],
+            profile: ProfileKind::NoSql,
+            require_object_arg: true,
+            ..SINK
+        },
+        SinkRule {
+            id: "RUST-PY-NOSQL-INJECTION-TAINT",
+            cwe: "CWE-943",
+            owasp: "A03:2021-Injection",
+            title: "Injection NoSQL : filtre de mise à jour pymongo contrôlé par l'entrée",
+            description:
+                "Une valeur d'un corps JSON arrive telle quelle dans le filtre d'une mise à jour pymongo : {\"$ne\": null} sélectionne tous les documents (analyse de taint).",
+            remediation:
+                "Forcez le type (str(x)) ou validez le corps avant de construire le filtre.",
+            callee_ends_with: &[".update_one", ".update_many", ".find_one_and_update", ".replace_one"],
+            profile: ProfileKind::NoSql,
+            require_object_arg: true,
+            min_args: 2,
             ..SINK
         },
     ],

@@ -343,3 +343,39 @@ app.get("/done", (req, res) => {
     assert!(rule_ids("a.py", "return redirect(request.args.get('next'))")
         .contains(&"RUST-PY-OPEN-REDIRECT-TAINT".to_string()));
 }
+
+#[test]
+fn destructured_request_fields_are_tainted() {
+    let login = r#"
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  await User.findOne({ email, password });
+});
+"#;
+    assert!(rule_ids("a.js", login).contains(&"RUST-JS-NOSQL-INJECTION-TAINT".to_string()));
+    let renamed = r#"const { id: reviewId = 0 } = req.body; db.query("SELECT * FROM r WHERE id = " + reviewId);"#;
+    assert!(rule_ids("a.js", renamed).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    let py = "a, b = request.args.get('a'), 1\ncursor.execute('SELECT * FROM t WHERE a = ' + a)";
+    assert!(rule_ids("a.py", py).contains(&"RUST-PY-SQLI-TAINT".to_string()));
+    // The default value is not bound: `{ x = req.query.y } = {}` binds x only.
+    let default_only = "const { x = 1 } = config; db.query(\"SELECT \" + x);";
+    assert!(rule_ids("a.js", default_only).is_empty());
+}
+
+#[test]
+fn filter_object_in_a_variable_and_pymongo() {
+    let js = "const filter = { c: req.query.c }; db.products.find(filter);";
+    assert!(rule_ids("a.js", js).contains(&"RUST-JS-NOSQL-INJECTION-TAINT".to_string()));
+    let js_safe = "const filter = { c: String(req.query.c) }; db.products.find(filter);";
+    assert!(rule_ids("a.js", js_safe).is_empty());
+    let py = "body = request.get_json()\ndb.users.find_one({'email': body['email']})";
+    assert!(rule_ids("a.py", py).contains(&"RUST-PY-NOSQL-INJECTION-TAINT".to_string()));
+    assert!(rule_ids("a.py", "db.users.find_one({'email': request.args['e']})").is_empty());
+}
+
+#[test]
+fn insert_adjacent_html_checks_its_markup_argument() {
+    assert!(rule_ids("a.js", "el.insertAdjacentHTML('beforeend', location.hash);")
+        .contains(&"RUST-JS-XSS-TAINT".to_string()));
+    assert!(rule_ids("a.js", "el.insertAdjacentHTML(location.hash, '<b>x</b>');").is_empty());
+}

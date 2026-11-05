@@ -22,14 +22,15 @@ pour **JavaScript / TypeScript** et **Python** :
 | `RUST-*-CODE-INJECTION-TAINT` | CWE-94 | A03:2021-Injection | Entrée utilisateur atteignant `eval`/`new Function`/`vm.run*`/`exec` |
 | `RUST-*-PATH-TRAVERSAL-TAINT` | CWE-22 | A01:2021-Broken Access Control | Entrée de requête atteignant `fs.*`/`sendFile`/`open()` sans contrôle `startsWith` |
 | `RUST-*-SSRF-TAINT` | CWE-918 | A10:2021-SSRF | Entrée de requête déterminant l'hôte d'un appel sortant (`fetch`, `axios`, `requests`…) |
-| `RUST-JS-XSS-TAINT` | CWE-79 | A03:2021-Injection | Entrée écrite telle quelle dans `res.send/write` ou `document.write` |
-| `RUST-JS-NOSQL-INJECTION-TAINT` | CWE-943 | A03:2021-Injection | Valeur du corps/query (objet possible : `{"$ne": null}`) dans un filtre MongoDB littéral — hors `req.params`, `{ where }` ORM, `String(x)` |
+| `RUST-JS-XSS-TAINT` | CWE-79 | A03:2021-Injection | Entrée écrite telle quelle dans `res.send/write`, `document.write` ou `insertAdjacentHTML` |
+| `RUST-*-NOSQL-INJECTION-TAINT` | CWE-943 | A03:2021-Injection | Valeur du corps/query (objet possible : `{"$ne": null}`) dans un filtre MongoDB littéral — hors `req.params`, `{ where }` ORM, `String(x)` |
 | `RUST-*-OPEN-REDIRECT-TAINT` | CWE-601 | A01:2021-Broken Access Control | Entrée de requête comme cible de `res.redirect` / `redirect()`, sauf contrôle `startsWith` |
 
 Faible taux de faux positifs par construction :
 
 - **liaison de variables** (`a = source; b = a; sink(b)` est suivi jusqu'au sink
-  par point fixe), pas de simple match ligne-à-ligne ;
+  par point fixe), y compris la **déstructuration** (`const { email } =
+  req.body`, `a, b = …`) et les propriétés raccourcies (`{ email }`) ;
 - seul le **premier argument positionnel** d'un sink est testé, donc une requête
   **paramétrée** (`execute(sql, params)`) n'est pas signalée ;
 - prise en compte des **assainisseurs** (`parseInt`, `shlex.quote`…) qui coupent

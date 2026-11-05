@@ -176,7 +176,8 @@ fn digest(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> D
                 }
             }
         }
-        if n.kind() == "identifier"
+        // `{ email }` reads the variable `email` (shorthand property).
+        if (n.kind() == "identifier" || n.kind() == "shorthand_property_identifier")
             && !property_ids.contains(&n.id())
             && !(n.id() == node.id() && root_is_property)
         {
@@ -191,13 +192,49 @@ fn digest(node: Node, source: &str, call_kinds: &[&str], profile: &Profile) -> D
     }
 }
 
-/// Left-hand side variable name of an assignment node, if it is a plain
-/// identifier (destructuring and member targets are not tracked in v1).
-fn assign_target<'a>(node: Node<'a>) -> Option<Node<'a>> {
-    let target = node
+/// Variables bound by an assignment: a plain identifier, or every name a
+/// destructuring pattern binds — `const { email, password } = req.body`,
+/// `const [a, b] = x`, `{ id: userId, ...rest }`, Python `a, b = …`. Each
+/// gets the right-hand side's taint (a sound over-approximation: we do not
+/// track which property flows where). Member targets (`obj.x = …`) are not
+/// variables and are skipped.
+fn assign_targets<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let Some(target) = node
         .child_by_field_name("name")
-        .or_else(|| node.child_by_field_name("left"))?;
-    (target.kind() == "identifier").then_some(target)
+        .or_else(|| node.child_by_field_name("left"))
+    else {
+        return Vec::new();
+    };
+    if target.kind() == "identifier" {
+        return vec![target];
+    }
+    if !matches!(
+        target.kind(),
+        "object_pattern" | "array_pattern" | "pattern_list" | "tuple_pattern" | "list_pattern"
+    ) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![target];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "identifier" | "shorthand_property_identifier_pattern" => out.push(n),
+            // `{ key: value }` binds `value`; the key is a property name.
+            "pair_pattern" => {
+                if let Some(v) = n.child_by_field_name("value") {
+                    stack.push(v);
+                }
+            }
+            // `{ a = default }` / `[a = default]` binds `a`, not the default.
+            "assignment_pattern" | "object_assignment_pattern" => {
+                if let Some(l) = n.child_by_field_name("left") {
+                    stack.push(l);
+                }
+            }
+            _ => push_children(n, &mut stack),
+        }
+    }
+    out
 }
 
 fn assign_rhs<'a>(node: Node<'a>) -> Option<Node<'a>> {
@@ -209,10 +246,15 @@ fn assign_rhs<'a>(node: Node<'a>) -> Option<Node<'a>> {
 /// args like `shell=True` and comments). Checking only the first argument is
 /// what distinguishes an injected query string from safely-bound parameters.
 fn first_positional<'a>(args: Node<'a>) -> Option<Node<'a>> {
+    nth_positional(args, 0)
+}
+
+fn nth_positional<'a>(args: Node<'a>, n: usize) -> Option<Node<'a>> {
     let mut cursor = args.walk();
     let found = args
         .named_children(&mut cursor)
-        .find(|child| !matches!(child.kind(), "keyword_argument" | "comment"));
+        .filter(|child| !matches!(child.kind(), "keyword_argument" | "comment"))
+        .nth(n);
     found
 }
 
@@ -514,14 +556,18 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
     let assigns: Vec<Assign> = nodes
         .iter()
         .filter(|n| rules.assign_kinds.contains(&n.kind()))
-        .filter_map(|n| {
-            let target = assign_target(*n)?;
-            let rhs = assign_rhs(*n)?;
-            Some(Assign {
-                scope: scopes.of(*n),
-                target: text(target, source).to_string(),
-                rhs,
-            })
+        .flat_map(|n| {
+            let rhs = assign_rhs(*n);
+            let scope = scopes.of(*n);
+            assign_targets(*n)
+                .into_iter()
+                .filter_map(move |t| {
+                    Some(Assign {
+                        scope,
+                        target: text(t, source).to_string(),
+                        rhs: rhs?,
+                    })
+                })
         })
         .collect();
 
@@ -561,9 +607,9 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
         let Some(args) = node.child_by_field_name("arguments") else {
             continue;
         };
-        let Some(arg0) = first_positional(args) else {
+        if first_positional(args).is_none() {
             continue;
-        };
+        }
         let scope = scopes.of(*node);
         // Built lazily: copying every call's text up front was quadratic for
         // deeply nested calls (`f(f(f(…)))`).
@@ -573,6 +619,10 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
             if !callee_matches(callee_text, rule) {
                 continue;
             }
+            // The argument this sink is dangerous in (usually the first).
+            let Some(arg0) = nth_positional(args, rule.arg_index) else {
+                continue;
+            };
             if let Some(req) = rule.require_contains {
                 let nospace = call_text_nospace.get_or_insert_with(|| {
                     text(*node, source)
@@ -600,11 +650,29 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
             if rule.min_args > 0 && positional_count(args) < rule.min_args {
                 continue;
             }
-            if rule.require_object_arg
-                && (!is_filter_object(arg0, source, rule.skip_object_keys)
-                    || orm_options_anywhere(args, source, rule.skip_object_keys))
-            {
-                continue;
+            if rule.require_object_arg {
+                // `find(filter)` where `filter = { … }` in a visible scope.
+                let object = if arg0.kind() == "identifier" {
+                    let name = text(arg0, source);
+                    assigns
+                        .iter()
+                        .find(|a| {
+                            a.target == name
+                                && scopes.visible(a.scope, scope)
+                                && matches!(a.rhs.kind(), "object" | "dictionary")
+                        })
+                        .map(|a| a.rhs)
+                } else {
+                    Some(arg0)
+                };
+                let Some(object) = object else {
+                    continue;
+                };
+                if !is_filter_object(object, source, rule.skip_object_keys)
+                    || orm_options_anywhere(args, source, rule.skip_object_keys)
+                {
+                    continue;
+                }
             }
             let (profile, tainted) = &profiles[&rule.profile];
             let d = digest(arg0, source, rules.call_kinds, profile);
