@@ -466,3 +466,69 @@ fn results_do_not_depend_on_file_order() {
     assert_eq!(forward, key(analyze_inputs(&rev)));
     assert_eq!(forward, key(analyze_inputs(&files)), "deterministic");
 }
+
+// --------------------------------------------------------------------------
+// Pilot on Alpha's projects (2026-11): responses that are not HTML, and
+// `.download()` methods that are not Express's.
+// --------------------------------------------------------------------------
+
+#[test]
+fn xss_skipped_when_the_response_is_declared_non_html() {
+    let pdf = r#"class C {
+  @Get(':id/pdf')
+  async pdf(@Param('id') id: string, @Res() res: any) {
+    const { filename, pdf } = await this.invoices.pdf(id);
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"` });
+    res.send(pdf);
+  }
+}"#;
+    assert!(!rule_ids("a.ts", pdf).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let csv = r#"app.get('/x.csv', (req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.send(req.query.rows);
+});"#;
+    assert!(!rule_ids("a.js", csv).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let typed = "app.get('/j', (req, res) => { res.type('json'); res.send(req.query.v); });";
+    assert!(!rule_ids("a.js", typed).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let download = r#"app.get('/d', (req, res) => {
+  res.set({ 'Content-Type': req.query.t, 'Content-Disposition': `attachment; filename="x"` });
+  res.send(req.query.body);
+});"#;
+    assert!(!rule_ids("a.js", download).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let sandboxed = r#"app.get('/doc', (req, res) => {
+  res.set({ 'Content-Type': req.query.t, 'Content-Security-Policy': "default-src 'none'; sandbox" });
+  res.send(req.query.body);
+});"#;
+    assert!(!rule_ids("a.js", sandboxed).contains(&"RUST-JS-XSS-TAINT".to_string()));
+}
+
+#[test]
+fn xss_still_flagged_for_html_or_undeclared_responses() {
+    let html = r#"app.get('/h', (req, res) => {
+  res.set('Content-Type', 'text/html');
+  res.send(req.query.q);
+});"#;
+    assert!(rule_ids("a.js", html).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let svg = r#"app.get('/s', (req, res) => { res.type('image/svg+xml'); res.send(req.query.q); });"#;
+    assert!(rule_ids("a.js", svg).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let scripts = r#"app.get('/doc', (req, res) => {
+  res.set({ 'Content-Security-Policy': "sandbox allow-scripts" });
+  res.send(req.query.body);
+});"#;
+    assert!(rule_ids("a.js", scripts).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    // A non-HTML response in ANOTHER handler does not cover this one.
+    let other = r#"app.get('/a', (req, res) => { res.type('json'); res.send('{}'); });
+app.get('/b', (req, res) => { res.send(req.query.q); });"#;
+    assert!(rule_ids("a.js", other).contains(&"RUST-JS-XSS-TAINT".to_string()));
+}
+
+#[test]
+fn path_download_is_express_res_download_only() {
+    let service = r#"class C {
+  @Get(':jobId/download')
+  async dl(@Param('jobId') jobId: string) { return this.exports.download(jobId); }
+}"#;
+    assert!(!rule_ids("a.ts", service).contains(&"RUST-JS-PATH-TRAVERSAL-TAINT".to_string()));
+    assert!(rule_ids("a.js", "app.get('/f', (req, res) => res.download(req.query.f));")
+        .contains(&"RUST-JS-PATH-TRAVERSAL-TAINT".to_string()));
+}

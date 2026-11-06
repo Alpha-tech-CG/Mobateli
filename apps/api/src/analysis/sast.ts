@@ -15,6 +15,14 @@ export interface LineContext {
   file: string;
   /** Name of the enclosing function, or "" at top level / unknown. */
   fn: string;
+  /** The next added line of the same file ("" if none) — for a value written on the following line. */
+  next: string;
+  /**
+   * The line is inside a tagged SQL template (`` sql`…` ``, Prisma
+   * `` $queryRaw`…` ``) opened on an earlier line: its `${…}` are bound
+   * parameters, not concatenation.
+   */
+  inTaggedSql: boolean;
 }
 
 interface Rule {
@@ -54,6 +62,58 @@ function concatOperands(line: string): string[] {
 const isConstantName = (name: string) => /^[A-Z][A-Z0-9_]*$/.test(name);
 
 /**
+ * Opening of a tagged SQL template whose `${…}` are bound parameters: Prisma
+ * `` $queryRaw`…` `` / `` $executeRaw`…` `` (not the `…Unsafe(` variants),
+ * and the `` sql`…` `` tag of drizzle, postgres.js, slonik, `Prisma.sql`.
+ */
+const TAGGED_SQL_OPEN = /(?:\$queryRaw|\$executeRaw|(?<![\w$])sql|Prisma\.sql)\s*(?:<[^`]*>)?\s*`/;
+/** An escape hatch that splices raw text into a tagged template. */
+const RAW_SQL_SPLICE = /\b(?:raw|unsafe|\$queryRawUnsafe|\$executeRawUnsafe)\s*\(/;
+
+/** Unescaped backticks on the line from index `from` on. */
+const backticksFrom = (line: string, from: number) => (line.slice(from).match(/(?<!\\)`/g) ?? []).length;
+
+/**
+ * Markup value that carries no input: a string/template literal without
+ * interpolation, or an `UPPER_CASE` module constant (`HTML`, `ICONS[name]`).
+ */
+function isInertMarkup(value: string): boolean {
+  const v = value.trim().replace(/[\s;,)}]+$/, "");
+  if (/^"(?:[^"\\]|\\.)*"$|^'(?:[^'\\]|\\.)*'$/.test(v)) return true;
+  if (/^`[^`]*`$/.test(v) && !v.includes("${")) return true;
+  return /^[A-Z][A-Z0-9_]*(?:\[[\w$.'"]+\]|\.[A-Za-z_$][\w$]*)?$/.test(v);
+}
+
+/**
+ * `el.innerHTML = …` / `dangerouslySetInnerHTML={{ __html: … }}` writes
+ * markup that may carry input — not when the value is inert markup, nor when
+ * it copies another element's already-parsed markup (`a.innerHTML = b.innerHTML`).
+ */
+function writesLiveMarkup(l: string, next: string): boolean {
+  const assigns = [...l.matchAll(/\.innerHTML\s*\+?=(?!=)\s*/g)];
+  if (assigns.length > 0) {
+    return assigns.some((m) => {
+      const rhs = l.slice(m.index! + m[0].length).trim();
+      // The value alone on the line, or the first statement of several.
+      const first = rhs.split(/;\s*(?=[\w$.]+\s*[.(=])/)[0]!;
+      if (isInertMarkup(rhs) || isInertMarkup(first)) return false;
+      return !/^[\w$.]+\.innerHTML\s*(;|$)/.test(rhs);
+    });
+  }
+  const at = l.indexOf("dangerouslySetInnerHTML");
+  if (at === -1) return false;
+  const after = l.slice(at);
+  const html = /__html\s*:\s*(.*?)\s*\}\s*\}/.exec(after);
+  if (html) return !isInertMarkup(html[1]!);
+  // `dangerouslySetInnerHTML={{` with `__html: …` alone on the next line.
+  if (/=\s*\{\{\s*$/.test(after)) {
+    const v = /^\s*__html\s*:\s*(.*?)\s*,?\s*$/.exec(next);
+    if (v) return !isInertMarkup(v[1]!);
+  }
+  return true;
+}
+
+/**
  * The first argument of the call opened at `(` is a string literal whose
  * scheme and host are fixed (`"https://api.example.com/v1?q=" + q`,
  * `` `https://host/${path}` ``): only the path/query is steerable — not SSRF.
@@ -68,6 +128,14 @@ const SQL_STATEMENT =
 
 /** Variable names that hint at a security-sensitive value. */
 const SENSITIVE_NAME = /(token|secret|password|passwd|otp|session|nonce|salt|key|csrf|reset|verif|auth)/i;
+/**
+ * Names that denote a credential itself (a password, a token, a one-time
+ * code, a `clientSecret`). A bare `secret` is left out: it is as often the
+ * number of a guessing game (`secret = random.randint(1, 100)`).
+ */
+const CREDENTIAL_NAME = /(password|passwd|token|otp|\wsecret|secret[_-]?(key|token))$/i;
+/** `const resetToken = …` / `password: …` — a credential being assigned on the line. */
+const CREDENTIAL_ASSIGN = /\b(\w*(password|passwd|token|otp)|\w+secret|secret[_-]?(key|token))\s*[:=](?!=)/i;
 
 const RULES: Rule[] = [
   {
@@ -80,9 +148,18 @@ const RULES: Rule[] = [
     description:
       "Une requête SQL est assemblée à partir de chaînes concaténées, ce qui expose à l'injection SQL.",
     remediation: "Utilisez des requêtes paramétrées (placeholders) au lieu de concaténer les entrées.",
-    test: (l) => {
+    test: (l, ctx) => {
       // A real statement, not the word "update" in a log message.
       if (!SQL_STATEMENT.test(l)) return false;
+      // A tagged template binds its `${…}` as parameters — unless raw text
+      // is spliced in, or strings are concatenated next to it.
+      if (
+        (ctx.inTaggedSql || TAGGED_SQL_OPEN.test(l)) &&
+        !RAW_SQL_SPLICE.test(l) &&
+        !/["'`]\s*\+|\+\s*["'`]/.test(l)
+      ) {
+        return false;
+      }
       if (/\$\{[^}]+\}/.test(l)) return true;
       if (!/["'`]\s*\+\s*\w/.test(l)) return false;
       // `"SELECT … FROM " + TABLE` — only constants concatenated: not injectable.
@@ -161,10 +238,9 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (l) =>
-      // A fixed literal (`el.innerHTML = ""`, static markup) carries no input.
-      (/\.innerHTML\s*\+?=(?!=)/.test(l) && !/\.innerHTML\s*=\s*(["'`])[^"'`$]*\1\s*;?\s*$/.test(l)) ||
-      /dangerouslySetInnerHTML/.test(l),
+    // A fixed literal (`el.innerHTML = ""`, static markup), a module
+    // constant or a copy of another element's markup carries no input.
+    test: (l, ctx) => writesLiveMarkup(l, ctx.next),
   },
   {
     id: "PATH_TRAVERSAL",
@@ -230,6 +306,10 @@ const RULES: Rule[] = [
       // The sensitive name is on the line, or is the enclosing function's
       // (`function resetToken() { return Math.random()… }`).
       (SENSITIVE_NAME.test(l) || SENSITIVE_NAME.test(ctx.fn)),
+    // A password, secret, token or one-time code built from Math.random is
+    // predictable (`function tempPassword() { … Math.random() … }`); a weaker
+    // hint (`key`, `session`, `nonce`) is often a sort key or a cache key.
+    confidenceFor: (l, ctx) => (CREDENTIAL_NAME.test(ctx.fn) || CREDENTIAL_ASSIGN.test(l) ? "medium" : "low"),
   },
   {
     id: "JWT_WEAK_VERIFY",
@@ -388,13 +468,23 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   let currentFn = "";
   let inBlockComment = false;
   let inDocstring = false;
+  let inTaggedSql = false;
 
-  for (const { file, line, content } of addedLines) {
+  for (const [i, { file, line, content }] of addedLines.entries()) {
     if (file !== currentFile) {
       currentFile = file;
       currentFn = "";
       inBlockComment = false;
       inDocstring = false;
+      inTaggedSql = false;
+    }
+    // A tagged SQL template spanning several lines: inside until its closing backtick.
+    const taggedHere = inTaggedSql;
+    if (inTaggedSql) {
+      if (backticksFrom(content, 0) % 2 === 1) inTaggedSql = false;
+    } else {
+      const open = TAGGED_SQL_OPEN.exec(content);
+      if (open && backticksFrom(content, open.index) % 2 === 1) inTaggedSql = true;
     }
     // Python docstrings / triple-quoted text: prose, not code ("eval() is…").
     if (isPython(file)) {
@@ -427,7 +517,9 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
     if (declared && !NOT_A_FUNCTION.has(declared)) currentFn = declared;
     // A rule example written in a comment is not a vulnerability.
     if (isCommentLine(content)) continue;
-    const ctx: LineContext = { file, fn: currentFn };
+    const following = addedLines[i + 1];
+    const next = following && following.file === file && following.line === line + 1 ? following.content : "";
+    const ctx: LineContext = { file, fn: currentFn, next, inTaggedSql: taggedHere };
     for (const rule of RULES) {
       if (rule.test(content, ctx)) {
         findings.push({
