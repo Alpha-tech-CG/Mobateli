@@ -23,10 +23,15 @@ export function encrypt(plaintext: string, encryptionKey: string): string {
 
 export function decrypt(payload: string, encryptionKey: string): string {
   const buf = Buffer.from(payload, "base64");
+  // A truncated payload would yield a short auth tag, which GCM accepts
+  // unless the length is enforced — and short tags are far easier to forge.
+  if (buf.length < IV_LENGTH + TAG_LENGTH) throw new Error("ciphertext too short");
   const iv = buf.subarray(0, IV_LENGTH);
   const tag = buf.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
   const enc = buf.subarray(IV_LENGTH + TAG_LENGTH);
-  const decipher = createDecipheriv("aes-256-gcm", key(encryptionKey), iv);
+  const decipher = createDecipheriv("aes-256-gcm", key(encryptionKey), iv, {
+    authTagLength: TAG_LENGTH,
+  });
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
 }

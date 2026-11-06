@@ -181,3 +181,288 @@ fn no_taint_returns_empty() {
     let src = r#"db.query("SELECT * FROM t WHERE id = " + 42);"#;
     assert!(analyze_source("n.js", src).is_empty());
 }
+
+// --------------------------------------------------------------------------
+// Scoping, nested sanitizers, PATH / SSRF / XSS sinks
+// --------------------------------------------------------------------------
+
+#[test]
+fn taint_does_not_leak_between_functions() {
+    // `name` is tainted in one handler and sanitized in another.
+    let src = r#"
+def read_file():
+    name = request.args.get("name")
+    return open(name).read()
+
+def quoted():
+    name = shlex.quote(request.args.get("name"))
+    subprocess.run("echo " + name, shell=True)
+"#;
+    let ids = rule_ids("app.py", src);
+    assert!(!ids.contains(&"RUST-PY-CMDI-SUBPROCESS-TAINT".to_string()), "{ids:?}");
+}
+
+#[test]
+fn module_level_taint_reaches_nested_functions() {
+    let src = r#"
+const id = req.query.id;
+app.get("/x", () => { db.query("SELECT * FROM t WHERE id = " + id); });
+"#;
+    assert!(rule_ids("a.js", src).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+}
+
+#[test]
+fn nested_sanitizer_neutralizes_only_what_it_wraps() {
+    let safe = r#"res.send(`<p>${escapeHtml(req.query.q)}</p>`);"#;
+    assert!(rule_ids("a.js", safe).is_empty(), "{:?}", rule_ids("a.js", safe));
+    let unsafe_ = r#"res.send(`<p>${escapeHtml(req.query.q)} ${req.query.r}</p>`);"#;
+    assert!(rule_ids("a.js", unsafe_).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let path = "fs.readFile(path.join(DIR, path.basename(req.query.f)), cb);";
+    assert!(rule_ids("a.js", path).is_empty());
+}
+
+#[test]
+fn path_traversal_through_a_variable_is_flagged_unless_guarded() {
+    let vuln = r#"
+app.get("/d/:n", (req, res) => {
+  const target = path.join(ROOT, req.params.n);
+  fs.createReadStream(target).pipe(res);
+});
+"#;
+    assert!(rule_ids("a.js", vuln).contains(&"RUST-JS-PATH-TRAVERSAL-TAINT".to_string()));
+    let guarded = r#"
+app.get("/d", (req, res) => {
+  const target = path.resolve(ROOT, String(req.query.n));
+  if (!target.startsWith(ROOT + path.sep)) return res.sendStatus(400);
+  fs.createReadStream(target).pipe(res);
+});
+"#;
+    assert!(rule_ids("a.js", guarded).is_empty(), "{:?}", rule_ids("a.js", guarded));
+}
+
+#[test]
+fn cli_arguments_are_not_a_path_or_ssrf_source() {
+    // A CLI opening the path / URL it was given is its job.
+    assert!(rule_ids("cli.js", "fs.readFileSync(process.argv[2]);").is_empty());
+    assert!(rule_ids("cli.py", "open(sys.argv[1]).read()").is_empty());
+    assert!(rule_ids("cli.py", "requests.get(sys.argv[1])").is_empty());
+}
+
+#[test]
+fn ssrf_requires_a_steerable_origin() {
+    assert!(rule_ids("a.js", "await fetch(req.query.url);").contains(&"RUST-JS-SSRF-TAINT".to_string()));
+    assert!(rule_ids("a.js", "await fetch(`https://${req.query.host}/x`);")
+        .contains(&"RUST-JS-SSRF-TAINT".to_string()));
+    assert!(rule_ids("a.js", "await fetch(`https://api.example.com/v1?q=${req.query.q}`);").is_empty());
+    assert!(rule_ids("a.py", "requests.get(request.args.get('url'))")
+        .contains(&"RUST-PY-SSRF-TAINT".to_string()));
+}
+
+#[test]
+fn xss_skips_wrapped_calls_and_json() {
+    assert!(rule_ids("a.js", r#"res.send("<b>" + req.query.n + "</b>");"#)
+        .contains(&"RUST-JS-XSS-TAINT".to_string()));
+    assert!(rule_ids("a.js", "res.json({ n: req.query.n });").is_empty());
+    assert!(rule_ids("a.js", "res.send(fs.readFileSync(req.query.f));")
+        .iter()
+        .all(|id| id != "RUST-JS-XSS-TAINT"));
+}
+
+#[test]
+fn unsafe_orm_and_vm_sinks_are_flagged() {
+    assert!(rule_ids("a.ts", "prisma.$queryRawUnsafe(`SELECT ${req.body.k}`);")
+        .contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    assert!(rule_ids("a.js", "vm.runInNewContext(req.body.code);")
+        .contains(&"RUST-JS-CODE-INJECTION-TAINT".to_string()));
+}
+
+#[test]
+fn encode_uri_component_does_not_sanitize_sql_or_eval() {
+    // ' ( ) are left intact: still injectable in a SQL string or eval.
+    let sql = r#"db.query("SELECT * FROM t WHERE n = '" + encodeURIComponent(req.query.n) + "'");"#;
+    assert!(rule_ids("a.js", sql).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    // ...but it does neutralize a URL path segment.
+    let url = "fetch(`https://api.example.com/u/${encodeURIComponent(req.query.u)}`);";
+    assert!(rule_ids("a.js", url).is_empty());
+}
+
+#[test]
+fn a_lookup_keyed_by_input_returns_server_data() {
+    // The session found by cookie is server data; its id is not attacker-chosen.
+    let session = r#"
+const user = sessions.get(req.cookies.token);
+fs.writeFile(`uploads/${user.id}.png`, buf, cb);
+"#;
+    assert!(rule_ids("a.js", session).is_empty(), "{:?}", rule_ids("a.js", session));
+    // But a lookup ON a source is the source itself.
+    let py = "url = request.args.get('u')\nrequests.get(url)";
+    assert!(rule_ids("a.py", py).contains(&"RUST-PY-SSRF-TAINT".to_string()));
+    // And injection rules are unaffected: the key still reaches a SQL string.
+    let sql = r#"db.query("SELECT * FROM t WHERE id = " + cache.get(req.query.id));"#;
+    assert!(rule_ids("a.js", sql).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+}
+
+#[test]
+fn nosql_operator_injection_from_body_or_query() {
+    let src = r#"
+app.post("/login", async (req, res) => {
+  await User.findOne({ email: req.body.email, password: req.body.password });
+  await db.reviews.updateMany({ _id: req.body.id }, { $set: { m: 1 } });
+});
+"#;
+    let ids = rule_ids("a.js", src);
+    assert_eq!(ids.iter().filter(|i| *i == "RUST-JS-NOSQL-INJECTION-TAINT").count(), 2, "{ids:?}");
+}
+
+#[test]
+fn nosql_skips_strings_orm_options_and_coercion() {
+    for safe in [
+        "db.orders.findOne({ orderId: req.params.id });", // route params are strings
+        "User.findOne({ where: { id: req.body.id } });",   // Sequelize/Prisma: SQL, bound
+        "user.update({ name: req.body.name });",            // instance update, not a filter
+        "User.update({ role: req.body.role }, { where: { id: 1 } });",
+        "User.findOne({ email: String(req.body.email) });", // coerced to a string
+        "users.find(u => u.id === req.body.id);",           // Array.prototype.find
+    ] {
+        assert!(rule_ids("a.js", safe).is_empty(), "{safe} → {:?}", rule_ids("a.js", safe));
+    }
+}
+
+#[test]
+fn open_redirect_unless_validated_or_fixed() {
+    assert!(rule_ids("a.js", "res.redirect(req.query.next);")
+        .contains(&"RUST-JS-OPEN-REDIRECT-TAINT".to_string()));
+    let guarded = r#"
+app.get("/done", (req, res) => {
+  const next = String(req.query.next);
+  if (!next.startsWith("/")) return res.redirect("/");
+  res.redirect(next);
+});
+"#;
+    assert!(rule_ids("a.js", guarded).is_empty(), "{:?}", rule_ids("a.js", guarded));
+    assert!(rule_ids("a.py", "return redirect(request.args.get('next'))")
+        .contains(&"RUST-PY-OPEN-REDIRECT-TAINT".to_string()));
+}
+
+#[test]
+fn destructured_request_fields_are_tainted() {
+    let login = r#"
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  await User.findOne({ email, password });
+});
+"#;
+    assert!(rule_ids("a.js", login).contains(&"RUST-JS-NOSQL-INJECTION-TAINT".to_string()));
+    let renamed = r#"const { id: reviewId = 0 } = req.body; db.query("SELECT * FROM r WHERE id = " + reviewId);"#;
+    assert!(rule_ids("a.js", renamed).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    let py = "a, b = request.args.get('a'), 1\ncursor.execute('SELECT * FROM t WHERE a = ' + a)";
+    assert!(rule_ids("a.py", py).contains(&"RUST-PY-SQLI-TAINT".to_string()));
+    // The default value is not bound: `{ x = req.query.y } = {}` binds x only.
+    let default_only = "const { x = 1 } = config; db.query(\"SELECT \" + x);";
+    assert!(rule_ids("a.js", default_only).is_empty());
+}
+
+#[test]
+fn filter_object_in_a_variable_and_pymongo() {
+    let js = "const filter = { c: req.query.c }; db.products.find(filter);";
+    assert!(rule_ids("a.js", js).contains(&"RUST-JS-NOSQL-INJECTION-TAINT".to_string()));
+    let js_safe = "const filter = { c: String(req.query.c) }; db.products.find(filter);";
+    assert!(rule_ids("a.js", js_safe).is_empty());
+    let py = "body = request.get_json()\ndb.users.find_one({'email': body['email']})";
+    assert!(rule_ids("a.py", py).contains(&"RUST-PY-NOSQL-INJECTION-TAINT".to_string()));
+    assert!(rule_ids("a.py", "db.users.find_one({'email': request.args['e']})").is_empty());
+}
+
+#[test]
+fn insert_adjacent_html_checks_its_markup_argument() {
+    assert!(rule_ids("a.js", "el.insertAdjacentHTML('beforeend', location.hash);")
+        .contains(&"RUST-JS-XSS-TAINT".to_string()));
+    assert!(rule_ids("a.js", "el.insertAdjacentHTML(location.hash, '<b>x</b>');").is_empty());
+}
+
+#[test]
+fn needle_and_request_helpers_are_ssrf_sinks() {
+    let src = "const url = req.query.url + req.query.symbol;\nneedle.get(url, cb);";
+    assert!(rule_ids("a.js", src).contains(&"RUST-JS-SSRF-TAINT".to_string()));
+}
+
+#[test]
+fn lookups_keep_the_receiver_taint_and_drop_the_key() {
+    // Data looked up BY an input key is server data…
+    assert!(rule_ids("a.js", "res.send(users[req.params.id] || {});").is_empty());
+    assert!(rule_ids("a.js", "res.send('x ' + names.slice(req.params.a, req.params.b));").is_empty());
+    // …but a lookup ON a tainted value stays tainted.
+    let recv = "const q = req.query.q; res.send('<p>' + q.slice(0, 10));";
+    assert!(rule_ids("a.js", recv).contains(&"RUST-JS-XSS-TAINT".to_string()));
+    let params = r#"const p = new URLSearchParams(location.search); document.write(p.get("x"));"#;
+    assert!(rule_ids("a.js", params).contains(&"RUST-JS-XSS-TAINT".to_string()));
+}
+
+#[test]
+fn confined_downloads_and_same_site_redirects_are_safe() {
+    assert!(rule_ids("a.js", "res.download(req.params.file, { root: DIR });").is_empty());
+    assert!(rule_ids("a.js", "res.download(req.query.f);")
+        .contains(&"RUST-JS-PATH-TRAVERSAL-TAINT".to_string()));
+    assert!(rule_ids("a.js", "res.redirect('/user/' + req.params.id);").is_empty());
+    for open in ["res.redirect('//' + req.query.h);", "res.redirect(req.query.next);"] {
+        assert!(rule_ids("a.js", open).contains(&"RUST-JS-OPEN-REDIRECT-TAINT".to_string()), "{open}");
+    }
+}
+
+#[test]
+fn pillow_imagemath_eval_is_code_injection() {
+    let src = "expression = request.form.get('expr')\nImageMath.eval(expression, a=img)";
+    assert!(rule_ids("a.py", src).contains(&"RUST-PY-CODE-INJECTION-TAINT".to_string()));
+}
+
+#[test]
+fn route_handler_parameters_are_request_input() {
+    let fastapi = r#"
+@router.get("/items")
+def search(session: SessionDep, q: str = Query(...), item_id: int = 0, user: CurrentUser = Depends(get_user)):
+    return session.exec(text(f"SELECT * FROM item WHERE t = '{q}' AND id = {item_id}")).all()
+
+@router.get("/ping/{host}")
+def ping(host: str):
+    return subprocess.run(f"ping {host}", shell=True)
+"#;
+    let ids = rule_ids("a.py", fastapi);
+    assert!(ids.contains(&"RUST-PY-SQLI-TAINT".to_string()), "{ids:?}");
+    assert!(ids.contains(&"RUST-PY-CMDI-SUBPROCESS-TAINT".to_string()), "{ids:?}");
+    // int / Depends(...) parameters are not input; a non-route function's are not either.
+    let safe = r#"
+@router.get("/n/{item_id}")
+def n(item_id: int, user: CurrentUser = Depends(get_user)):
+    return session.exec(text(f"SELECT * FROM item WHERE id = {item_id} AND o = {user.id}"))
+
+def helper(q: str):
+    return session.exec(text(f"SELECT * FROM t WHERE q = '{q}'"))
+"#;
+    assert!(rule_ids("a.py", safe).is_empty(), "{:?}", rule_ids("a.py", safe));
+    let express = r#"router.get("/u", async ({ query }: Request, res: Response) => {
+  await db.query(`SELECT * FROM users WHERE name = '${query.name}'`);
+});"#;
+    assert!(rule_ids("a.ts", express).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+    let nest = r#"class C { @Get() find(@Query('q') q: string) { return this.db.query(`SELECT * FROM t WHERE q = '${q}'`); } }"#;
+    assert!(rule_ids("a.ts", nest).contains(&"RUST-JS-SQLI-TAINT".to_string()));
+}
+
+#[test]
+fn results_do_not_depend_on_file_order() {
+    use codegate_scan_engine::{analyze_inputs, FileInput};
+    let files = vec![
+        FileInput { path: "a.js".into(), content: "db.query('SELECT ' + req.query.a);".into() },
+        FileInput { path: "b.py".into(), content: "cursor.execute('SELECT ' + request.args['b'])".into() },
+        FileInput { path: "c.ts".into(), content: "res.redirect(req.query.next);".into() },
+    ];
+    let key = |v: Vec<codegate_scan_engine::Finding>| {
+        let mut s: Vec<String> = v.iter().map(|f| serde_json::to_string(f).unwrap()).collect();
+        s.sort();
+        s
+    };
+    let forward = key(analyze_inputs(&files));
+    let mut rev = files.clone();
+    rev.reverse();
+    assert_eq!(forward, key(analyze_inputs(&rev)));
+    assert_eq!(forward, key(analyze_inputs(&files)), "deterministic");
+}

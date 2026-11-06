@@ -1,0 +1,406 @@
+{
+  "core": {
+    "engines": "core",
+    "byCategory": {
+      "SECRET": {
+        "tp": 7,
+        "fp": 0,
+        "fn": 0,
+        "tn": 10
+      },
+      "DEP": {
+        "tp": 4,
+        "fp": 0,
+        "fn": 1,
+        "tn": 8
+      },
+      "HASH": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "RANDOM": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 3
+      },
+      "JWT": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "TLS": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "SQLI": {
+        "tp": 5,
+        "fp": 1,
+        "fn": 3,
+        "tn": 4
+      },
+      "CMDI": {
+        "tp": 3,
+        "fp": 1,
+        "fn": 2,
+        "tn": 4
+      },
+      "CODEI": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 1,
+        "tn": 3
+      },
+      "NOSQL": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 3,
+        "tn": 4
+      },
+      "REDIRECT": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 3,
+        "tn": 4
+      },
+      "PATH": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 2,
+        "tn": 2
+      },
+      "SSRF": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 2,
+        "tn": 3
+      },
+      "XSS": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 2,
+        "tn": 2
+      },
+      "CORS": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "DESER": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "XXE": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "MISCONFIG": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      }
+    }
+  },
+  "core,rust": {
+    "engines": "core,rust",
+    "byCategory": {
+      "SECRET": {
+        "tp": 7,
+        "fp": 0,
+        "fn": 0,
+        "tn": 10
+      },
+      "DEP": {
+        "tp": 4,
+        "fp": 0,
+        "fn": 1,
+        "tn": 8
+      },
+      "HASH": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "RANDOM": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 3
+      },
+      "JWT": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "TLS": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "SQLI": {
+        "tp": 8,
+        "fp": 1,
+        "fn": 0,
+        "tn": 4
+      },
+      "CMDI": {
+        "tp": 5,
+        "fp": 1,
+        "fn": 0,
+        "tn": 4
+      },
+      "CODEI": {
+        "tp": 4,
+        "fp": 0,
+        "fn": 0,
+        "tn": 3
+      },
+      "NOSQL": {
+        "tp": 4,
+        "fp": 0,
+        "fn": 0,
+        "tn": 4
+      },
+      "REDIRECT": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 4
+      },
+      "PATH": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "SSRF": {
+        "tp": 4,
+        "fp": 0,
+        "fn": 0,
+        "tn": 3
+      },
+      "XSS": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "CORS": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "DESER": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "XXE": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "MISCONFIG": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      }
+    }
+  },
+  "holdout:core": {
+    "engines": "holdout:core",
+    "byCategory": {
+      "SECRET": {
+        "tp": 5,
+        "fp": 0,
+        "fn": 0,
+        "tn": 5
+      },
+      "DEP": {
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "tn": 10
+      },
+      "SQLI": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 2,
+        "tn": 3
+      },
+      "CMDI": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 2,
+        "tn": 3
+      },
+      "CODEI": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 2,
+        "tn": 1
+      },
+      "PATH": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 4,
+        "tn": 2
+      },
+      "SSRF": {
+        "tp": 5,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "XSS": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 3,
+        "tn": 2
+      },
+      "RANDOM": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "HASH": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "JWT": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "TLS": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      },
+      "CORS": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "DESER": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      }
+    }
+  },
+  "holdout:core,rust": {
+    "engines": "holdout:core,rust",
+    "byCategory": {
+      "SECRET": {
+        "tp": 5,
+        "fp": 0,
+        "fn": 0,
+        "tn": 5
+      },
+      "DEP": {
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "tn": 10
+      },
+      "SQLI": {
+        "tp": 5,
+        "fp": 0,
+        "fn": 0,
+        "tn": 3
+      },
+      "CMDI": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 3
+      },
+      "CODEI": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "PATH": {
+        "tp": 4,
+        "fp": 1,
+        "fn": 0,
+        "tn": 2
+      },
+      "SSRF": {
+        "tp": 5,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "XSS": {
+        "tp": 2,
+        "fp": 1,
+        "fn": 1,
+        "tn": 2
+      },
+      "RANDOM": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "HASH": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "JWT": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2
+      },
+      "TLS": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0
+      },
+      "CORS": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      },
+      "DESER": {
+        "tp": 2,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+# Semgrep dogfooding (CI job "audit"): CodeGate's own code only.
+node_modules/
+target/
+dist/
+.next/
+apps/api/bench/golden/
+apps/api/bench/holdout/

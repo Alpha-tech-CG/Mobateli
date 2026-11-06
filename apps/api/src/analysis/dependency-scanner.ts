@@ -16,6 +16,14 @@ const POPULAR_NPM = [
   "zod", "prisma", "@prisma/client", "typescript", "eslint", "jest", "vitest",
   "webpack", "vite", "rollup", "babel", "moment", "dayjs", "uuid", "bcrypt",
   "jsonwebtoken", "cors", "body-parser", "mongoose", "pg", "redis", "ioredis",
+  // Frequent typosquatting targets (names ≥ 6 chars to keep short-name
+  // collisions out — see the length rule in nearestPopular).
+  "cross-env", "request", "node-fetch", "nodemon", "rimraf", "mkdirp", "semver",
+  "yargs", "inquirer", "minimist", "underscore", "jquery", "socket.io", "mysql2",
+  "sequelize", "typeorm", "graphql", "nodemailer", "multer", "passport", "helmet",
+  "cookie-parser", "express-session", "tailwindcss", "postcss", "autoprefixer",
+  "prettier", "ts-node", "electron", "puppeteer", "playwright", "cheerio",
+  "coffee-script", "event-stream", "discord.js", "web3", "ethers",
 ];
 
 // Well-known, legitimate packages whose names happen to sit a short edit
@@ -29,6 +37,36 @@ const KNOWN_LEGIT = new Set([
   "nanoid", "esbuild", "tslib", "clsx", "swr", "mobx", "luxon", "undici",
   "pino", "cosmiconfig", "picocolors", "date-fns",
 ]);
+
+/**
+ * Edit distance where swapping two adjacent letters counts as ONE edit
+ * (optimal string alignment): `lodahs` is 1 away from `lodash`, the most
+ * common typo, where plain Levenshtein says 2.
+ */
+export function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const d: number[][] = Array.from({ length: m + 1 }, (_, i) => {
+    const row = new Array<number>(n + 1).fill(0);
+    row[0] = i;
+    return row;
+  });
+  for (let j = 0; j <= n; j++) d[0]![j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        v = Math.min(v, d[i - 2]![j - 2]! + 1);
+      }
+      d[i]![j] = v;
+    }
+  }
+  return d[m]![n]!;
+}
+
+/** Name with separators dropped: `crossenv` and `cross-env` collide. */
+const squash = (name: string) => name.replace(/[-_.]/g, "");
 
 export function levenshtein(a: string, b: string): number {
   const m = a.length;
@@ -64,7 +102,14 @@ export function nearestPopular(name: string): { target: string; distance: number
   let best: { target: string; distance: number } | null = null;
   for (const pkg of POPULAR_NPM) {
     if (pkg === name) return null; // exact match ⇒ legitimate, not a squat
-    const d = levenshtein(name, pkg);
+  }
+  for (const pkg of POPULAR_NPM) {
+    // Same name once separators are dropped (`crossenv` vs `cross-env`): the
+    // classic squat of a hyphenated package — one edit, whatever the length.
+    if (squash(pkg) === squash(name) && pkg.length >= 5) {
+      return { target: pkg, distance: 1 };
+    }
+    const d = editDistance(name, pkg);
     const minLen = Math.min(name.length, pkg.length);
     if (d >= 1 && d <= 2 && minLen >= 4 * d && (!best || d < best.distance)) {
       best = { target: pkg, distance: d };

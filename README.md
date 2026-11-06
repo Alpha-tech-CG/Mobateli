@@ -56,6 +56,17 @@ CodeGate ne remplace pas GitHub, Vercel ou Linear — **il les sécurise.** Chaq
 
 **P3** ✅ GitLab (2ᵉ SCM) · Jira (remédiation entreprise) · SCIM 2.0 (provisioning) · SAML SSO
 
+### Exclure des chemins : `.codegateignore`
+
+Un fichier `.codegateignore` à la racine du dépôt analysé (syntaxe proche de
+`.gitignore` : `dossier/`, `*.min.js`, `docs/**/*.md`, `!exception`) exclut
+des chemins de l'analyse de code (SAST, dépendances, Semgrep, moteur Rust).
+
+- Il est lu sur la **branche par défaut**, jamais dans la PR analysée : une PR
+  ne peut pas s'exclure elle-même. Une modification ne prend effet qu'une fois
+  fusionnée, et la PR qui le modifie est signalée (fichier sensible).
+- Les **secrets restent détectés partout**, chemins exclus compris.
+
 **Post-MVP** ⬜ Moteur de scan Rust · détection de prompt injection · OpenTelemetry · CI/CD + déploiement UE
 
 ## Démarrage rapide

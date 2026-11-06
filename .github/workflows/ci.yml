@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Actions are pinned to full commit SHAs (a tag can be repointed by its
+# owner — supply-chain risk); the comment gives the matching release.
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: TypeScript — typecheck + tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Générer le client Prisma + builder les paquets partagés
+        run: |
+          pnpm --filter @codegate/db generate
+          pnpm --filter @codegate/shared --filter @codegate/db build
+      - run: pnpm -r typecheck
+      - run: pnpm --filter @codegate/api bench:typecheck
+      - run: pnpm --filter @codegate/api test
+
+  rust:
+    name: Rust — scan-engine (tests, clippy, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/scan-engine
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: clippy
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: services/scan-engine
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: cargo build --release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codegate-scan
+          path: services/scan-engine/target/release/codegate-scan
+          retention-days: 3
+      # Statically linked build for the Vercel deployment: it runs whatever
+      # glibc the serverless runtime ships (see apps/api/scripts/build-vercel.mjs).
+      - name: Binaire Linux statique (musl) pour le déploiement
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          cargo build --release --target x86_64-unknown-linux-musl
+          ./target/x86_64-unknown-linux-musl/release/codegate-scan --version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codegate-scan-linux-musl
+          path: services/scan-engine/target/x86_64-unknown-linux-musl/release/codegate-scan
+          retention-days: 30
+
+  bench:
+    name: Benchmark de justesse (précision / rappel)
+    needs: rust
+    runs-on: ubuntu-latest
+    env:
+      CODEGATE_SCAN_BIN: ${{ github.workspace }}/bin/codegate-scan
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: codegate-scan
+          path: bin
+      - run: chmod +x bin/codegate-scan
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @codegate/shared build
+      # Échoue si une catégorie perd un vrai positif ou gagne un faux positif
+      # par rapport à apps/api/bench/baseline.json.
+      - name: Règles seules
+        run: pnpm --filter @codegate/api bench -- --engines core --check --verbose
+      - name: Règles + moteur Rust
+        run: pnpm --filter @codegate/api bench -- --engines core,rust --check --verbose
+      - name: Jeu de contrôle (holdout), règles + moteur Rust
+        run: pnpm --filter @codegate/api bench -- --dataset holdout --engines core,rust --check --verbose
+
+  audit:
+    name: Audit de CodeGate lui-même (dépendances + Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        # No `cache: pnpm`: this job installs nothing, so the store directory
+        # never exists and the post-step cache save fails the job.
+        with:
+          node-version: 22
+      # Avis acceptés et justifiés : pnpm-workspace.yaml › auditConfig.
+      - name: pnpm audit (dépendances npm de production)
+        run: pnpm audit --prod --audit-level=high
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - name: cargo audit (dépendances Rust)
+        working-directory: services/scan-engine
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
+      - name: Semgrep sur le code de CodeGate
+        run: |
+          pipx install semgrep
+          semgrep scan --error --metrics=off             --config p/ci --config p/owasp-top-ten --config p/secrets             --config p/typescript --config p/nodejs
+
+  fuzz:
+    name: Fuzzing du moteur Rust (libFuzzer, 2 min)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/scan-engine
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: services/scan-engine/fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Corpus de départ (jeu de cas du benchmark)
+        run: |
+          mkdir -p fuzz/corpus/analyze
+          find ../../apps/api/bench/golden ../../apps/api/bench/holdout -type f \( -name '*.ts' -o -name '*.py' -o -name '*.js' \) \
+            -exec cp {} fuzz/corpus/analyze/ \;
+      # -timeout : une entrée lente est un échec (contournement par dépassement
+      # du délai de l'adaptateur TS), pas seulement un plantage.
+      - run: cargo fuzz run analyze -- -max_total_time=120 -timeout=2 -rss_limit_mb=2048
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: services/scan-engine/fuzz/artifacts

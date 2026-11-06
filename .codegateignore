@@ -1,0 +1,7 @@
+# Chemins exclus de l'analyse de code CodeGate (syntaxe proche de .gitignore).
+# Lu sur la branche par défaut : une PR ne peut pas s'exclure elle-même.
+# Les secrets restent détectés partout, même dans ces chemins.
+
+# Jeux de cas volontairement vulnérables du benchmark de justesse.
+apps/api/bench/golden/
+apps/api/bench/holdout/

@@ -27,3 +27,33 @@ export async function fetchPrDiff(
     return null;
   }
 }
+
+/**
+ * Read one file from the repository's DEFAULT branch (no `ref`), e.g. the
+ * `.codegateignore`. Deliberately never the PR head: a pull request must not
+ * be able to change the rules it is judged by. Returns null when the file is
+ * absent, the App isn't configured, or the call fails.
+ */
+export async function fetchDefaultBranchFile(
+  config: AppConfig,
+  installationId: number,
+  fullName: string,
+  path: string,
+): Promise<string | null> {
+  const [owner, repo] = fullName.split("/");
+  if (!owner || !repo) return null;
+
+  try {
+    const octokit = await getInstallationOctokit(config, installationId);
+    const res = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
+      owner,
+      repo,
+      path,
+      mediaType: { format: "raw" },
+    });
+    // With the raw media type, the body is the file content.
+    return typeof res.data === "string" ? res.data : null;
+  } catch {
+    return null; // 404 (no ignore file) or any API failure.
+  }
+}

@@ -5,7 +5,7 @@
 // packages stay external and are installed by Vercel with npm from a
 // generated package.json (no pnpm workspace needed on Vercel's side).
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +45,25 @@ await build({
 });
 
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
+
+// The Rust taint engine. Without it the deployed bot runs the regex rules
+// only — far lower recall (0/5 of Juice Shop's SQL injections) and no
+// corroboration. It must be a STATIC Linux x86_64 build (CI artifact
+// `codegate-scan-linux-musl`): `CODEGATE_SCAN_LINUX_BIN=/path/to/codegate-scan`.
+const engine = process.env.CODEGATE_SCAN_LINUX_BIN;
+let engineBundled = false;
+if (engine && existsSync(engine)) {
+  mkdirSync(join(out, "bin"), { recursive: true });
+  cpSync(engine, join(out, "bin", "codegate-scan"));
+  chmodSync(join(out, "bin", "codegate-scan"), 0o755);
+  engineBundled = true;
+} else if (process.env.CODEGATE_ALLOW_NO_ENGINE !== "1") {
+  console.error(
+    "✖ Moteur Rust absent : définissez CODEGATE_SCAN_LINUX_BIN (artefact CI codegate-scan-linux-musl),\n" +
+      "  ou CODEGATE_ALLOW_NO_ENGINE=1 pour déployer volontairement sans lui (règles regex seules).",
+  );
+  process.exit(1);
+}
 writeFileSync(join(out, "public", "robots.txt"), "User-agent: *\nDisallow: /\n");
 
 writeFileSync(
@@ -75,7 +94,7 @@ writeFileSync(
       functions: {
         "api/index.js": {
           maxDuration: 30,
-          includeFiles: "node_modules/pdfkit/js/data/**",
+          includeFiles: engineBundled ? "{node_modules/pdfkit/js/data/**,bin/**}" : "node_modules/pdfkit/js/data/**",
         },
       },
       rewrites: [{ source: "/(.*)", destination: "/api" }],
@@ -85,4 +104,4 @@ writeFileSync(
   ),
 );
 
-console.log(`Vercel bundle ready in ${out}`);
+console.log(`Vercel bundle ready in ${out} — moteur Rust ${engineBundled ? "embarqué" : "ABSENT (règles regex seules)"}`);

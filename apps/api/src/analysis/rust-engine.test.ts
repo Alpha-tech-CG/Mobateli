@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { parseUnifiedDiff } from "./diff.js";
 import {
   runRustEngine,
+  runRustEngineDetailed,
+  corroborate,
   filesFromDiff,
   mergeRustFindings,
   type EngineRunner,
@@ -158,4 +160,55 @@ test("mergeRustFindings keeps base findings that have no engine equivalent", () 
   ];
   const merged = mergeRustFindings(base, [sqliJson as unknown as FindingResult]);
   assert.equal(merged.length, 2);
+});
+
+test("filesFromDiff: a huge added file does not overflow the stack", () => {
+  const n = 200_000;
+  const diff = [
+    "diff --git a/big.js b/big.js",
+    "--- /dev/null",
+    "+++ b/big.js",
+    `@@ -0,0 +1,${n} @@`,
+    ...Array.from({ length: n }, (_, i) => `+const a${i} = ${i};`),
+  ].join("\n");
+  const [file] = filesFromDiff(parseUnifiedDiff(diff));
+  assert.equal(file!.content.split("\n").length, n);
+});
+
+test("runRustEngineDetailed: a failed run is distinguishable from an empty one", async () => {
+  const ok = await runRustEngineDetailed([{ path: "a.js", content: "x" }], { runner: async () => "[]" });
+  assert.deepEqual(ok, { findings: [], ran: true });
+  const failed = await runRustEngineDetailed([{ path: "a.js", content: "x" }], {
+    runner: async () => {
+      throw new Error("timeout");
+    },
+  });
+  assert.equal(failed.ran, false);
+  const garbage = await runRustEngineDetailed([{ path: "a.js", content: "x" }], { runner: async () => "not json" });
+  assert.equal(garbage.ran, false);
+});
+
+test("corroborate: unconfirmed taint-approximating regex findings are downgraded only after a real run", () => {
+  const regex: FindingResult = {
+    type: "sast",
+    severity: "high",
+    title: "SQL",
+    description: "",
+    filePath: "a.ts",
+    line: 3,
+    ruleId: "SQL_STRING_CONCAT",
+    cwe: "CWE-89",
+    confidence: "medium",
+  };
+  const other: FindingResult = { ...regex, ruleId: "WEAK_HASH", cwe: "CWE-327", line: 4 };
+  const python: FindingResult = { ...regex, filePath: "Dockerfile" };
+  const [r1, r2, r3] = corroborate([regex, other, python], [], true);
+  assert.equal(r1!.confidence, "low");
+  assert.equal(r2!.confidence, "medium", "rules the engine does not model are untouched");
+  assert.equal(r3!.confidence, "medium", "files the engine cannot parse are untouched");
+  // Engine did not run (timeout…): nothing is weakened.
+  assert.equal(corroborate([regex], [], false)[0]!.confidence, "medium");
+  // Engine confirmed the same issue on that line: kept as is.
+  const confirmed: FindingResult = { ...regex, ruleId: "RUST-JS-SQLI-TAINT", confidence: "high" };
+  assert.equal(corroborate([regex], [confirmed], true)[0]!.confidence, "medium");
 });

@@ -2,7 +2,8 @@ import { Worker } from "bullmq";
 import type { Redis } from "ioredis";
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
-import { fetchPrDiff } from "../lib/github-diff.js";
+import { fetchDefaultBranchFile, fetchPrDiff } from "../lib/github-diff.js";
+import { IGNORE_FILE, parseIgnoreFile } from "../analysis/ignore.js";
 import { analyzeDiffWithIntel } from "../analysis/analyzer.js";
 import { buildPrComment } from "../analysis/explainer.js";
 import { resolveEnforcement } from "../analysis/policy.js";
@@ -47,18 +48,23 @@ export function createPrAnalysisWorker(
       // Fetch the diff via GitHub when the App is configured; otherwise run on
       // an empty diff (local dev / unconfigured) → clean result.
       let diff = "";
+      let ignoreFile: string | null = null;
       if (pr.repository.installationId != null) {
-        const fetched = await fetchPrDiff(
-          config,
-          Number(pr.repository.installationId),
-          pr.repository.name,
-          pr.number,
-        );
+        const installationId = Number(pr.repository.installationId);
+        const [fetched, ignore] = await Promise.all([
+          fetchPrDiff(config, installationId, pr.repository.name, pr.number),
+          // Read from the default branch, never the PR head (see ignore.ts).
+          fetchDefaultBranchFile(config, installationId, pr.repository.name, IGNORE_FILE),
+        ]);
         if (fetched) diff = fetched;
+        ignoreFile = ignore;
       }
 
       // Deterministic core + OSV known-vulnerability enrichment (fails open).
-      const result = await analyzeDiffWithIntel(diff);
+      const result = await analyzeDiffWithIntel(
+        diff,
+        ignoreFile ? { isIgnored: parseIgnoreFile(ignoreFile) } : {},
+      );
 
       // Replace previous findings for this PR (idempotent re-analysis), then
       // persist the new set and the decision — atomically, with retry on a
