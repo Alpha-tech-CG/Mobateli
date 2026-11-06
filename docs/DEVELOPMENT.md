@@ -134,6 +134,12 @@ cd apps/api/.vercel-deploy && vercel deploy --prod   # projet Vercel codegate-ap
 
 Le build refuse de produire un bundle sans moteur, sauf avec
 `CODEGATE_ALLOW_NO_ENGINE=1` (choix explicite).
+
+Le build Vercel **de production** applique les migrations Prisma en attente (`prisma migrate
+deploy`, via `DATABASE_URL_UNPOOLED` si présent) avant `prisma generate` : les
+URL de base de production sont des variables sensibles, lisibles seulement par
+Vercel. Si une migration échoue, le build échoue et le déploiement précédent
+reste en production. Un déploiement d'aperçu ne migre jamais.
 - **Slack** : dashboard → Intégrations → URL de webhook entrant ; alertes sur PR bloquée, secret, déploiement bloqué.
 - **GitLab** (P3, 2ᵉ SCM) : dashboard → Intégrations → « Connecter GitLab » génère un token ; à coller dans le webhook GitLab (événement *Merge request*) pointant sur `POST /webhooks/gitlab`.
 - **Jira** (P3) : dashboard → Intégrations → `baseUrl`, email, jeton API, clé de projet ; crée des issues de remédiation (REST v3).
