@@ -48,6 +48,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+          targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: services/scan-engine
@@ -59,6 +60,18 @@ jobs:
           name: codegate-scan
           path: services/scan-engine/target/release/codegate-scan
           retention-days: 3
+      # Statically linked build for the Vercel deployment: it runs whatever
+      # glibc the serverless runtime ships (see apps/api/scripts/build-vercel.mjs).
+      - name: Binaire Linux statique (musl) pour le déploiement
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          cargo build --release --target x86_64-unknown-linux-musl
+          ./target/x86_64-unknown-linux-musl/release/codegate-scan --version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codegate-scan-linux-musl
+          path: services/scan-engine/target/x86_64-unknown-linux-musl/release/codegate-scan
+          retention-days: 30
 
   bench:
     name: Benchmark de justesse (précision / rappel)

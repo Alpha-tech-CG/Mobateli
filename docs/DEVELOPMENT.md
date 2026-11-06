@@ -119,6 +119,21 @@ uvicorn app.main:app --reload --port 8000
 - **GitHub App** : renseigner `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_WEBHOOK_SECRET`, pointer le webhook sur `POST /webhooks/github`. Permissions minimales (PR, checks, commentaires).
 - **Linear** : dashboard → Intégrations → coller la clé API + Team ID. Déclenche la création d'issues de remédiation sur risque bloquant.
 - **Vercel** : webhook sur `POST /webhooks/vercel` (signature HMAC-SHA1) ; le déploiement est évalué avant mise en production.
+
+### Déployer l'API (bot GitHub) sur Vercel avec le moteur Rust
+
+Le bot doit embarquer le moteur Rust, sinon il ne lance que les règles regex
+(rappel bien plus faible, pas de corroboration). Le binaire doit être un build
+Linux **statique** : c'est l'artefact CI `codegate-scan-linux-musl`.
+
+```bash
+gh run download --repo Alpha-tech-CG/Mobateli -n codegate-scan-linux-musl -D /tmp/engine   # run CI de main
+CODEGATE_SCAN_LINUX_BIN=/tmp/engine/codegate-scan pnpm --filter @codegate/api build:vercel
+cd apps/api/.vercel-deploy && vercel deploy --prod   # projet Vercel codegate-api
+```
+
+Le build refuse de produire un bundle sans moteur, sauf avec
+`CODEGATE_ALLOW_NO_ENGINE=1` (choix explicite).
 - **Slack** : dashboard → Intégrations → URL de webhook entrant ; alertes sur PR bloquée, secret, déploiement bloqué.
 - **GitLab** (P3, 2ᵉ SCM) : dashboard → Intégrations → « Connecter GitLab » génère un token ; à coller dans le webhook GitLab (événement *Merge request*) pointant sur `POST /webhooks/gitlab`.
 - **Jira** (P3) : dashboard → Intégrations → `baseUrl`, email, jeton API, clé de projet ; crée des issues de remédiation (REST v3).
