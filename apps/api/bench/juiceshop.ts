@@ -12,10 +12,12 @@
  * Works on any checkout (JS/TS/Python): without annotations it simply lists
  * every alert for manual triage (used for NodeGoat and PyGoat too).
  */
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeDiff, analyzeDiffWithIntel } from "../src/analysis/analyzer.js";
+import { IGNORE_FILE, parseIgnoreFile } from "../src/analysis/ignore.js";
 import { alertsFrom, type Alert } from "./run.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -59,12 +61,34 @@ const CHALLENGE_CATEGORY: Record<string, string | null> = {
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "codefixes", "test", "tests", "cypress", "coverage", "migrations", "venv", ".venv"]);
 const ANNOTATION = /\s*\/\/\s*vuln-code-snippet\b.*$/;
 
+const isSource = (name: string) =>
+  /\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) && !/^test_.*\.py$/.test(name);
+
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) return SKIP_DIRS.has(name) ? [] : walk(full);
-    return /\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(name) && !/\.(spec|test|d)\.ts$/.test(name) && !/^test_.*\.py$/.test(name) ? [full] : [];
+    return isSource(name) ? [full] : [];
   });
+}
+
+/**
+ * Files a pull request can actually contain: in a git checkout, the tracked
+ * files (so build output, caches and local-only folders — `.next`, `.turbo`,
+ * `.pnpm-store`… — are left out, as they are of every PR); otherwise a walk.
+ */
+function sourceFiles(root: string): string[] {
+  if (!existsSync(join(root, ".git"))) return walk(root);
+  const tracked = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 1 << 28 })
+    .split("\0")
+    .filter(Boolean);
+  // An empty index (a checkout that failed, e.g. on Windows long paths): walk.
+  if (tracked.length === 0) return walk(root);
+  return tracked
+    .filter((p) => !p.split("/").some((seg) => SKIP_DIRS.has(seg)))
+    .filter((p) => isSource(p.split("/").pop()!))
+    .map((p) => join(root, p))
+    .filter((full) => existsSync(full));
 }
 
 interface VulnLine {
@@ -76,15 +100,25 @@ interface VulnLine {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const jsonAt = args.indexOf("--json");
-  const root = args.find((a, i) => !a.startsWith("--") && (jsonAt === -1 || i !== jsonAt + 1));
-  if (!root) throw new Error("usage: juiceshop.ts <juice-shop checkout> [--rust] [--json out.json]");
+  const excludeAt = args.indexOf("--exclude");
+  const root = args.find(
+    (a, i) => !a.startsWith("--") && (jsonAt === -1 || i !== jsonAt + 1) && (excludeAt === -1 || i !== excludeAt + 1),
+  );
+  if (!root) throw new Error("usage: juiceshop.ts <checkout> [--rust] [--per-file] [--json out.json] [--exclude dir1,dir2]");
   const useRust = args.includes("--rust");
   const jsonOut = jsonAt === -1 ? undefined : args[jsonAt + 1];
+  // Top-level folders left out of a run without touching the checkout
+  // (e.g. a repository's deliberately vulnerable training targets).
+  const excluded = excludeAt === -1 ? [] : args[excludeAt + 1]!.split(",").map((d) => d.replace(/\/+$/, "") + "/");
 
   const vulnLines: VulnLine[] = [];
   const parts: string[] = [];
   let totalLines = 0;
-  const files = walk(root);
+  // The repository's own exclusions, as the bot applies them.
+  const ignoreAt = join(root, IGNORE_FILE);
+  const isIgnored = existsSync(ignoreAt) ? parseIgnoreFile(readFileSync(ignoreAt, "utf8")) : () => false;
+  const rel = (f: string) => relative(root, f).split("\\").join("/");
+  const files = sourceFiles(root).filter((f) => !isIgnored(rel(f)) && !excluded.some((d) => rel(f).startsWith(d)));
   for (const full of files) {
     const path = relative(root, full).split("\\").join("/");
     const lines = readFileSync(full, "utf8").replace(/\r\n/g, "\n").split("\n");

@@ -712,6 +712,73 @@ fn has_fixed_origin(arg_text: &str) -> bool {
 
 /// An object/dict literal used as a query filter: not one whose top-level
 /// keys mark an ORM's structured options (`{ where: … }`).
+/// The innermost function node around `node`.
+fn enclosing_scope<'a>(node: Node<'a>, scope_kinds: &[&str]) -> Option<Node<'a>> {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if scope_kinds.contains(&n.kind()) {
+            return Some(n);
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+/// The string literal that opens `s` (after its quote), if `s` starts with one.
+fn leading_literal(s: &str) -> Option<&str> {
+    let q = s.chars().next().filter(|c| matches!(c, '\'' | '"' | '`'))?;
+    let body = &s[1..];
+    Some(&body[..body.find(q).unwrap_or(body.len())])
+}
+
+/// A media type a browser renders as a document that can run script.
+fn is_markup_type(t: &str) -> bool {
+    t.contains("html") || t.contains("xml") || t.contains("svg") || t.contains("${")
+}
+
+/// The function sets its response up so that it is not rendered as HTML
+/// (see `SinkRule::skip_non_html_response`). Text search over the function,
+/// lowercased and without whitespace — `res.set({ 'Content-Type': 'application/pdf' })`,
+/// `res.setHeader('Content-Type', 'text/csv')`, `res.type('json')`,
+/// `'Content-Disposition': 'attachment; …'`, `res.attachment(name)`,
+/// `'Content-Security-Policy': "…; sandbox"`.
+fn declares_non_html_response(fn_text: &str) -> bool {
+    let t: String = fn_text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let header_value = |name: &str| -> Vec<String> {
+        t.match_indices(name)
+            .filter_map(|(i, _)| {
+                let rest = t[i + name.len()..].trim_start_matches(['\'', '"', '`']);
+                let rest = rest.strip_prefix(':').or_else(|| rest.strip_prefix(','))?;
+                leading_literal(rest).map(str::to_string)
+            })
+            .collect()
+    };
+    if header_value("content-type").iter().any(|v| v.contains('/') && !is_markup_type(v)) {
+        return true;
+    }
+    for call in ["res.type(", "response.type(", "res.contenttype(", "response.contenttype("] {
+        let typed = t.match_indices(call).any(|(i, _)| {
+            leading_literal(&t[i + call.len()..]).is_some_and(|v| !v.is_empty() && !is_markup_type(v))
+        });
+        if typed {
+            return true;
+        }
+    }
+    if header_value("content-disposition").iter().any(|v| v.starts_with("attachment")) {
+        return true;
+    }
+    if t.contains("res.attachment(") || t.contains("response.attachment(") {
+        return true;
+    }
+    header_value("content-security-policy")
+        .iter()
+        .any(|v| v.split(';').any(|d| d == "sandbox" || d.starts_with("sandbox")) && !v.contains("allow-scripts"))
+}
+
 fn is_filter_object(node: Node, source: &str, skip_keys: &[&str]) -> bool {
     if !matches!(node.kind(), "object" | "dictionary") {
         return false;
@@ -867,6 +934,12 @@ fn run(root: Node, source: &str, path: &str, rules: &LangRules) -> Vec<Finding> 
             if rule.skip_call_arg
                 && arg0.kind() == "await_expression"
                 && arg0.named_child(0).is_some_and(|c| is_call_kind(c.kind()))
+            {
+                continue;
+            }
+            if rule.skip_non_html_response
+                && enclosing_scope(*node, rules.scope_kinds)
+                    .is_some_and(|f| declares_non_html_response(text(f, source)))
             {
                 continue;
             }

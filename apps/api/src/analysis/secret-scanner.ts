@@ -60,7 +60,27 @@ function looksLikePlaceholder(value: string): boolean {
   if (/^(pbkdf2_sha(1|256)|bcrypt(_sha256)?|argon2|scrypt)\$/.test(value)) return true;
   // A code fragment caught between two string literals (`'KEY=' + read(…)`).
   if (/\s/.test(value) && /[()+;=]/.test(value)) return true;
+  // A shortened display value (`whsec_4Kd9…f21a`, `sk_live_…`) is not usable.
+  if (/…|\.{3}/.test(value)) return true;
+  // A phrase — a UI label or message (`'Secret de signature :'`) — is prose:
+  // words separated by spaces, optionally ending with punctuation.
+  if (/^[\p{L}\p{M}'’-]+(?:\s+[\p{L}\p{M}'’-]+)+\s*[:.!?]?$/u.test(value)) return true;
   return false;
+}
+
+/**
+ * A connection URL to a local or compose-internal host (`localhost`,
+ * `127.0.0.1`, a dotless service name like `postgres` or `db`) or with
+ * placeholder parts (`USER:PASS@HOST`, `${DB_PASSWORD}`): development or
+ * documentation credentials, not a production exposure.
+ */
+function isLocalConnectionUrl(url: string): boolean {
+  const m = /^\w+:\/\/([^:@/\s]+):([^@\s]+)@([^/:?\s]+)/.exec(url);
+  if (!m) return false;
+  const [, user, password, host] = m as unknown as [string, string, string, string];
+  if (/\$\{|\{\{|<[^>]+>/.test(url)) return true;
+  if (/^[A-Z_]+$/.test(user) && /^[A-Z_]+$/.test(password) && /^[A-Z_]+$/.test(host)) return true;
+  return /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|host\.docker\.internal)$/i.test(host) || !host.includes(".");
 }
 
 /** Shannon entropy (bits/char) — distinguishes random secrets from words. */
@@ -108,8 +128,9 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
           maskedPreview: maskSecret(m[0]),
           severity: p.severity,
           // A structured provider key in a sample file is still worth noting,
-          // but at low confidence — it is probably an illustrative value.
-          confidence: inSample ? "low" : "high",
+          // but at low confidence — it is probably an illustrative value. So
+          // is a database URL pointing at localhost or a compose service.
+          confidence: inSample || (p.type === "postgres_url" && isLocalConnectionUrl(m[0])) ? "low" : "high",
         });
       }
     }

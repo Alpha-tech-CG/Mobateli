@@ -55,6 +55,11 @@ pub struct SinkRule {
     /// Skip when the argument is itself a call (`res.send(render(x))`,
     /// `res.send(fs.readFileSync(p))`): its output is not the raw input.
     pub skip_call_arg: bool,
+    /// Skip when the enclosing function declares the response as not HTML:
+    /// a literal non-HTML `Content-Type` (`application/pdf`, `text/csv`…), a
+    /// download (`Content-Disposition: attachment`) or a sandboxing CSP
+    /// without `allow-scripts`. A browser does not run script in those.
+    pub skip_non_html_response: bool,
 }
 
 /// Taint profiles: which strings count as untrusted input and which calls
@@ -95,6 +100,7 @@ const SINK: SinkRule = SinkRule {
     guards: &[],
     skip_fixed_origin: false,
     skip_call_arg: false,
+    skip_non_html_response: false,
 };
 
 pub struct LangRules {
@@ -271,8 +277,10 @@ static JS_RULES: LangRules = LangRules {
                 ".rm",
                 ".rmSync",
                 ".sendFile",
-                ".download",
             ],
+            // Express `res.download(path)` — not any `.download()` method
+            // (`this.exports.download(id)` is a service call).
+            callee_equals: &["res.download", "response.download"],
             profile: ProfileKind::Web,
             guards: &["startsWith"],
             skip_option_keys: &["root"],
@@ -336,6 +344,7 @@ static JS_RULES: LangRules = LangRules {
             ],
             profile: ProfileKind::Web,
             skip_call_arg: true,
+            skip_non_html_response: true,
             ..SINK
         },
         SinkRule {
