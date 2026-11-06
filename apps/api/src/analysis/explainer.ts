@@ -48,14 +48,17 @@ export function explainFinding(f: FindingResult): string {
 }
 
 /** Build the structured GitHub PR comment body (cahier §6.2, §5.6). */
-export function buildPrComment(result: {
-  riskScore: number;
-  decision: string;
-  status: string;
-  findings: FindingResult[];
-  secrets: SecretResult[];
-  dependencies: DependencyResult[];
-}): string {
+export function buildPrComment(
+  result: {
+    riskScore: number;
+    decision: string;
+    status: string;
+    findings: FindingResult[];
+    secrets: SecretResult[];
+    dependencies: DependencyResult[];
+  },
+  extra: { suppressed?: number } = {},
+): string {
   const emoji =
     result.status === "blocked" ? "🛑" : result.status === "warning" ? "⚠️" : "✅";
   const lines: string[] = [];
@@ -96,7 +99,16 @@ export function buildPrComment(result: {
     lines.push("Aucun risque détecté. ✅");
   }
 
+  if (extra.suppressed) {
+    lines.push(
+      `🙈 ${extra.suppressed} alerte(s) masquée(s) : déjà signalée(s) comme fausse(s) alerte(s) par l'équipe sur ce dépôt.`,
+    );
+    lines.push("");
+  }
+
   lines.push("");
-  lines.push("<sub>CodeGate vérifie chaque PR générée par IA avant la production.</sub>");
+  lines.push(
+    "<sub>CodeGate vérifie chaque PR générée par IA avant la production. Une alerte vous semble fausse ? Signalez-la depuis la page de la PR dans le tableau de bord CodeGate : elle ne comptera plus dans le verdict de ce dépôt.</sub>",
+  );
   return lines.join("\n");
 }

@@ -107,7 +107,27 @@ export interface Finding {
   line: number | null;
   ruleId: string | null;
   remediation: string | null;
+  /** open | acknowledged (confirmed by the team) | false_positive | resolved */
   status: string;
+  fingerprint?: string | null;
+}
+
+/** Per-rule false-positive rate (pilot metric). */
+export interface RuleQuality {
+  ruleId: string;
+  alerts: number;
+  falsePositives: number;
+  confirmed: number;
+  falsePositiveRate: number | null;
+}
+
+export interface RuleQualityReport {
+  days: number;
+  alerts: number;
+  reviewed: number;
+  falsePositives: number;
+  falsePositiveRate: number | null;
+  rules: RuleQuality[];
 }
 
 export interface SecretFinding {
