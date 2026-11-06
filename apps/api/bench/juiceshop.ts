@@ -100,10 +100,16 @@ interface VulnLine {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const jsonAt = args.indexOf("--json");
-  const root = args.find((a, i) => !a.startsWith("--") && (jsonAt === -1 || i !== jsonAt + 1));
-  if (!root) throw new Error("usage: juiceshop.ts <juice-shop checkout> [--rust] [--json out.json]");
+  const excludeAt = args.indexOf("--exclude");
+  const root = args.find(
+    (a, i) => !a.startsWith("--") && (jsonAt === -1 || i !== jsonAt + 1) && (excludeAt === -1 || i !== excludeAt + 1),
+  );
+  if (!root) throw new Error("usage: juiceshop.ts <checkout> [--rust] [--per-file] [--json out.json] [--exclude dir1,dir2]");
   const useRust = args.includes("--rust");
   const jsonOut = jsonAt === -1 ? undefined : args[jsonAt + 1];
+  // Top-level folders left out of a run without touching the checkout
+  // (e.g. a repository's deliberately vulnerable training targets).
+  const excluded = excludeAt === -1 ? [] : args[excludeAt + 1]!.split(",").map((d) => d.replace(/\/+$/, "") + "/");
 
   const vulnLines: VulnLine[] = [];
   const parts: string[] = [];
@@ -111,7 +117,8 @@ async function main(): Promise<void> {
   // The repository's own exclusions, as the bot applies them.
   const ignoreAt = join(root, IGNORE_FILE);
   const isIgnored = existsSync(ignoreAt) ? parseIgnoreFile(readFileSync(ignoreAt, "utf8")) : () => false;
-  const files = sourceFiles(root).filter((f) => !isIgnored(relative(root, f).split("\\").join("/")));
+  const rel = (f: string) => relative(root, f).split("\\").join("/");
+  const files = sourceFiles(root).filter((f) => !isIgnored(rel(f)) && !excluded.some((d) => rel(f).startsWith(d)));
   for (const full of files) {
     const path = relative(root, full).split("\\").join("/");
     const lines = readFileSync(full, "utf8").replace(/\r\n/g, "\n").split("\n");
