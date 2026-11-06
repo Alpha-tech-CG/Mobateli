@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
-import type { PullRequestDetail } from "@/lib/types";
+import type { Finding, PullRequestDetail } from "@/lib/types";
 
 export default function PullRequestDetailPage() {
   return (
@@ -36,6 +36,31 @@ function Detail() {
       .catch(() => setError("PR introuvable."));
   }
   useEffect(load, [id]);
+
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+
+  // Team verdict on an alert (pilot false-positive tracking). A false
+  // positive stops counting in later verdicts for the same code on this repo.
+  async function giveFeedback(f: Finding, verdict: "false_positive" | "confirmed" | null) {
+    setFeedbackError(null);
+    try {
+      if (verdict) {
+        await api(`/api/v1/findings/${f.id}/feedback`, { method: "PUT", body: JSON.stringify({ verdict }) });
+      } else {
+        await api(`/api/v1/findings/${f.id}/feedback`, { method: "DELETE", body: "{}" });
+      }
+      load();
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : "";
+      setFeedbackError(
+        code === "forbidden"
+          ? "Seuls les rôles owner, admin et security_manager peuvent qualifier une alerte."
+          : code === "rescan_required"
+            ? "Alerte antérieure au suivi : relancez l'analyse de la PR puis réessayez."
+            : "Impossible d'enregistrer le retour.",
+      );
+    }
+  }
 
   async function rescan() {
     setRescanning(true);
@@ -130,13 +155,19 @@ function Detail() {
       </Section>
 
       <Section title={`🔎 Problèmes de code (${pr.findings.length})`}>
+        {feedbackError ? <p className="px-4 pt-3 text-sm text-destructive">{feedbackError}</p> : null}
         {pr.findings.length ? (
           <ul className="divide-y divide-border">
             {pr.findings.map((f) => (
-              <li key={f.id} className="px-4 py-3 text-sm">
+              <li key={f.id} className={`px-4 py-3 text-sm ${f.status === "false_positive" ? "opacity-60" : ""}`}>
                 <div className="flex items-center gap-2">
                   <SeverityBadge severity={f.severity} />
-                  <span className="font-medium">{f.title}</span>
+                  <span className={`font-medium ${f.status === "false_positive" ? "line-through" : ""}`}>{f.title}</span>
+                  {f.status === "false_positive" ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs">fausse alerte</span>
+                  ) : f.status === "acknowledged" ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs">confirmée</span>
+                  ) : null}
                   {f.filePath ? (
                     <span className="font-mono text-xs text-muted-foreground">
                       {f.filePath}
@@ -150,6 +181,34 @@ function Detail() {
                     <span className="font-medium">Correctif :</span> {f.remediation}
                   </p>
                 ) : null}
+                <div className="mt-2 flex gap-2 text-xs">
+                  {f.status === "open" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => giveFeedback(f, "false_positive")}
+                        className="rounded border border-border px-2 py-0.5 hover:bg-muted"
+                      >
+                        Fausse alerte
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => giveFeedback(f, "confirmed")}
+                        className="rounded border border-border px-2 py-0.5 hover:bg-muted"
+                      >
+                        Confirmée
+                      </button>
+                    </>
+                  ) : f.status === "false_positive" || f.status === "acknowledged" ? (
+                    <button
+                      type="button"
+                      onClick={() => giveFeedback(f, null)}
+                      className="rounded border border-border px-2 py-0.5 hover:bg-muted"
+                    >
+                      Annuler le retour
+                    </button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>

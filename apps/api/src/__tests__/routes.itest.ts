@@ -181,6 +181,52 @@ test("github webhook: bad signature 401, signed PR 202 and persisted", async () 
   assert.ok(repoId);
 });
 
+test("finding feedback: mark false positive, propagate by fingerprint, metrics, clear", async () => {
+  const mkPr = (n: number) =>
+    prisma.pullRequest.create({
+      data: { repositoryId: repoId, externalId: `fb-${n}`, number: 900 + n, title: "t", author: "a" },
+    });
+  const [pr1, pr2] = [await mkPr(1), await mkPr(2)];
+  const base = { type: "sast" as const, severity: "medium" as const, title: "Hash", description: "d", ruleId: "WEAK_HASH" };
+  const f1 = await prisma.finding.create({ data: { ...base, pullRequestId: pr1.id, filePath: "a.ts", line: 3, fingerprint: "fp-hash" } });
+  const f2 = await prisma.finding.create({ data: { ...base, pullRequestId: pr2.id, filePath: "a.ts", line: 9, fingerprint: "fp-hash" } });
+  const legacy = await prisma.finding.create({ data: { ...base, pullRequestId: pr1.id, fingerprint: null } });
+
+  const bad = await app.inject({ method: "PUT", url: `/api/v1/findings/${f1.id}/feedback`, headers: auth(), payload: { verdict: "maybe" } });
+  assert.equal(bad.statusCode, 400);
+  const noFp = await app.inject({ method: "PUT", url: `/api/v1/findings/${legacy.id}/feedback`, headers: auth(), payload: { verdict: "false_positive" } });
+  assert.equal(noFp.statusCode, 409);
+  const unknown = await app.inject({ method: "PUT", url: `/api/v1/findings/${randomUUID()}/feedback`, headers: auth(), payload: { verdict: "false_positive" } });
+  assert.equal(unknown.statusCode, 404);
+
+  const ok = await app.inject({
+    method: "PUT",
+    url: `/api/v1/findings/${f1.id}/feedback`,
+    headers: auth(),
+    payload: { verdict: "false_positive", note: "checksum, not a password" },
+  });
+  assert.equal(ok.statusCode, 200);
+  // Same fingerprint in another PR of the repo gets the verdict too.
+  assert.equal((await prisma.finding.findUnique({ where: { id: f2.id } }))!.status, "false_positive");
+  const stored = await prisma.findingFeedback.findMany({ where: { repositoryId: repoId } });
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0]!.note, "checksum, not a password");
+
+  const metrics = await app.inject({ method: "GET", url: "/api/v1/metrics/rule-quality?days=30", headers: auth() });
+  assert.equal(metrics.statusCode, 200);
+  const weak = metrics.json().rules.find((r: { ruleId: string }) => r.ruleId === "WEAK_HASH");
+  assert.equal(weak.falsePositives, 2);
+  assert.equal(weak.falsePositiveRate, 1);
+
+  const audit = await prisma.auditEvent.findFirst({ where: { action: "finding.feedback" } });
+  assert.ok(audit, "verdict audited");
+
+  const cleared = await app.inject({ method: "DELETE", url: `/api/v1/findings/${f1.id}/feedback`, headers: auth() });
+  assert.equal(cleared.statusCode, 204);
+  assert.equal((await prisma.finding.findUnique({ where: { id: f2.id } }))!.status, "open");
+  assert.equal(await prisma.findingFeedback.count({ where: { repositoryId: repoId } }), 0);
+});
+
 test("agent guard: secrets locked, allowlist governs network", async () => {
   const secret = await app.inject({
     method: "POST",

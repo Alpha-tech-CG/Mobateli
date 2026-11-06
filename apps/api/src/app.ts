@@ -9,6 +9,7 @@ import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { organizationRoutes } from "./routes/organizations.js";
 import { policyRoutes } from "./routes/policies.js";
+import { findingRoutes } from "./routes/findings.js";
 import { pullRequestRoutes } from "./routes/pull-requests.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { auditRoutes } from "./routes/audit.js";
@@ -77,6 +78,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   });
   await app.register(organizationRoutes);
   await app.register(policyRoutes);
+  await app.register(findingRoutes);
   await app.register(async (instance) => {
     await pullRequestRoutes(instance, connection);
   });

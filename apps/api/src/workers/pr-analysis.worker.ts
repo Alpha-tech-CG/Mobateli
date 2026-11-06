@@ -6,6 +6,8 @@ import { fetchDefaultBranchFile, fetchPrDiff } from "../lib/github-diff.js";
 import { IGNORE_FILE, parseIgnoreFile } from "../analysis/ignore.js";
 import { analyzeDiffWithIntel } from "../analysis/analyzer.js";
 import { buildPrComment } from "../analysis/explainer.js";
+import { applyFeedback, fingerprintAll, type FeedbackVerdict } from "../analysis/feedback.js";
+import { parseUnifiedDiff } from "../analysis/diff.js";
 import { resolveEnforcement } from "../analysis/policy.js";
 import { createCheckRun, upsertPrComment } from "../lib/github-feedback.js";
 import {
@@ -61,10 +63,27 @@ export function createPrAnalysisWorker(
       }
 
       // Deterministic core + OSV known-vulnerability enrichment (fails open).
-      const result = await analyzeDiffWithIntel(
+      const analyzed = await analyzeDiffWithIntel(
         diff,
         ignoreFile ? { isIgnored: parseIgnoreFile(ignoreFile) } : {},
       );
+
+      // The team's stored verdicts (pilot false-positive tracking): an alert
+      // already marked as a false positive on this repo no longer weighs on
+      // the decision; it is still stored, for the per-rule metrics.
+      const fingerprints = fingerprintAll(analyzed, parseUnifiedDiff(diff));
+      const stored = fingerprints.length
+        ? await prisma.findingFeedback.findMany({
+            where: { repositoryId: pr.repository.id, fingerprint: { in: fingerprints } },
+            select: { fingerprint: true, verdict: true },
+          })
+        : [];
+      const feedback = applyFeedback(
+        analyzed,
+        fingerprints,
+        new Map(stored.map((s) => [s.fingerprint, s.verdict as FeedbackVerdict])),
+      );
+      const result = feedback.result;
 
       // Replace previous findings for this PR (idempotent re-analysis), then
       // persist the new set and the decision — atomically, with retry on a
@@ -75,7 +94,7 @@ export function createPrAnalysisWorker(
         prisma.dependency.deleteMany({ where: { pullRequestId: pr.id } }),
         prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
         prisma.finding.createMany({
-          data: result.findings.map((f) => {
+          data: analyzed.findings.map((f, i) => {
             // Fold the CWE/OWASP/confidence references into the stored
             // description so the audit trail keeps them without a schema change.
             const refs = [f.cwe, f.owasp, f.confidence ? `confiance: ${f.confidence}` : null]
@@ -91,6 +110,8 @@ export function createPrAnalysisWorker(
               line: f.line ?? null,
               ruleId: f.ruleId ?? null,
               remediation: f.remediation ?? null,
+              status: feedback.statuses[i]!.status,
+              fingerprint: feedback.statuses[i]!.fingerprint,
             };
           }),
         }),
@@ -268,7 +289,7 @@ export function createPrAnalysisWorker(
         pr.repository.protectionLevel,
         policies,
       );
-      const comment = buildPrComment(result);
+      const comment = buildPrComment(result, { suppressed: feedback.suppressed });
       const installationId = Number(pr.repository.installationId);
 
       try {

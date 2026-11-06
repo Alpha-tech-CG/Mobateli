@@ -45,6 +45,8 @@ await build({
 });
 
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
+// Migrations are applied by the Vercel build (see `scripts.build` below).
+cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), { recursive: true });
 
 // The Rust taint engine. Without it the deployed bot runs the regex rules
 // only — far lower recall (0/5 of Juice Shop's SQL injections) and no
@@ -74,7 +76,17 @@ writeFileSync(
       private: true,
       type: "module",
       engines: { node: "22.x" },
-      scripts: { build: "prisma generate" },
+      // The build applies pending migrations BEFORE the new code goes live:
+      // the production database URL is a sensitive variable only Vercel's
+      // build/runtime can read. A failing migration fails the build, and the
+      // previous deployment stays in production. Neon's pooled URL does not
+      // suit migrations, hence the unpooled one when present.
+      scripts: {
+        // Production builds only: a preview must never migrate a database
+        // that production may share.
+        build:
+          'if [ "$VERCEL_ENV" = "production" ]; then DATABASE_URL="${DATABASE_URL_UNPOOLED:-$DATABASE_URL}" prisma migrate deploy || exit 1; fi; prisma generate',
+      },
       dependencies: deps,
     },
     null,
