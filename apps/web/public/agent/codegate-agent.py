@@ -42,18 +42,22 @@ import urllib.error
 import urllib.request
 import warnings
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 DEFAULT_URL = "https://codegate-api.vercel.app"
 
 # Commands that need root; with --sudo they run through `sudo -n` (P2-6).
 PRIVILEGED = {"sshd", "ufw", "nft", "iptables", "docker"}
 USE_SUDO = False
+SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def run(cmd, timeout=20):
     """Run a command; return stdout, or None if unavailable / failed."""
-    # cron's PATH lacks the sbin directories where sshd, ufw, nft and iptables live.
-    exe = shutil.which(cmd[0], path=os.environ.get("PATH", "") + os.pathsep + "/usr/local/sbin:/usr/sbin:/sbin")
+    # A fixed system PATH, never the inherited one: the agent may run as root
+    # (cron, sudo), and a writable directory early in $PATH would let anyone
+    # substitute `docker` or `sshd`. It also covers the sbin directories that
+    # cron's PATH lacks (sshd, ufw, nft, iptables).
+    exe = shutil.which(cmd[0], path=SYSTEM_PATH)
     if not exe:
         return None
     cmd = [exe] + list(cmd[1:])

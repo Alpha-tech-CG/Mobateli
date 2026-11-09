@@ -66,16 +66,13 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: |
-            services/scan-engine
-            services/taint-engine
+          workspaces: services/scan-engine
       - name: Scan engine (cargo test + wasm build)
         working-directory: services/scan-engine
         run: sh build-wasm.sh
-      # Native taint engine (tree-sitter, JS/TS/Python) run by the worker.
-      - name: Taint engine (cargo test)
-        working-directory: services/taint-engine
-        run: cargo test --locked
+      # The native taint engine (tree-sitter, JS/TS/Python) is tested by the
+      # "rust" job below, in release mode: its robustness suite measures time
+      # budgets that a debug build does not meet.
 
       - name: Prisma client + migrations
         working-directory: packages/db

@@ -91,12 +91,13 @@ test("monorepo duplicates are evaluated once", () => {
 test("secrets from any engine: examples dropped, test files become notes, live keys stay", () => {
   // Built at runtime so this test file never contains a live-shaped key.
   const live = ["sk", "live", "51HxYzAbCdEfGhIjKlMnOpQr"].join("_");
+  const awsKey = ["AKIA", "Z7Q3LMNPRT5VWX2Y"].join("");
   const lines: Record<string, string> = {
     "src/a.ts:1": 'const k = "AKIAIOSFODNN7EXAMPLE";',
     "src/a.ts:2": 'const db = "postgres://user:pw@localhost:5432/app";',
     "src/a.ts:3": 'const token = "changeme";',
-    "src/b.ts:1": 'const k = "AKIAZ7Q3LMNPRT5VWX2Y";',
-    "src/x.test.ts:1": 'const k = "AKIAZ7Q3LMNPRT5VWX2Y";',
+    "src/b.ts:1": `const k = "${awsKey}";`,
+    "src/x.test.ts:1": `const k = "${awsKey}";`,
     "src/x.test.ts:2": 'const t = "aG7xK2pQ9rT4vW8yB3nB8d";',
     "test/stripe.ts:1": `const live = "${live}";`,
   };

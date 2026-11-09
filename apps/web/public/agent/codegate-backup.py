@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,7 @@ import time
 import urllib.error
 import urllib.request
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DEFAULT_URL = "https://codegate-api.vercel.app"
 
 
@@ -159,8 +160,13 @@ def prepare_dump(args, workdir):
     if args.decrypt_cmd:
         out = os.path.join(workdir, "decrypted")
         with open(current, "rb") as src, open(out, "wb") as dst:
-            r = subprocess.run(args.decrypt_cmd, shell=True, stdin=src, stdout=dst,
-                               stderr=subprocess.PIPE, check=False)
+            # One command and its arguments (`age -d -i key.txt`), no shell:
+            # nothing in the value is interpreted (`;`, `$(…)`, redirections).
+            try:
+                r = subprocess.run(shlex.split(args.decrypt_cmd), stdin=src, stdout=dst,
+                                   stderr=subprocess.PIPE, check=False)
+            except (ValueError, OSError) as e:  # bad quoting, command not found
+                raise RuntimeError("déchiffrement impossible : " + str(e)[:200]) from e
         if r.returncode != 0:
             raise RuntimeError("déchiffrement impossible : " + r.stderr.decode("utf-8", "replace")[:200])
         current = out
