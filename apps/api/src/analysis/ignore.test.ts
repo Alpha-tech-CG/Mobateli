@@ -64,7 +64,7 @@ test("analyzeDiff: ignored paths skip SAST and dependencies but not secrets", ()
   const without = analyzeDiff(diff);
   assert.equal(without.findings.filter((f) => f.ruleId === "SQL_STRING_CONCAT").length, 2);
 
-  const res = analyzeDiff(diff, { isIgnored });
+  const res = analyzeDiff(diff, new Set(), undefined, isIgnored);
   const sql = res.findings.filter((f) => f.ruleId === "SQL_STRING_CONCAT");
   assert.deepEqual(sql.map((f) => f.filePath), ["src/app.ts"]);
   assert.equal(res.dependencies.length, 0, "dependencies under an ignored path are skipped");

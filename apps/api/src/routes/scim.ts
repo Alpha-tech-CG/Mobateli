@@ -76,10 +76,11 @@ export async function scimRoutes(app: FastifyInstance) {
     const email = body.userName?.toLowerCase().trim();
     if (!email) return scimError(reply, 400, "userName is required");
 
+    // `||` not `??`: the joined given/family name is "" (not nullish) when absent.
     const name =
-      body.displayName ??
-      body.name?.formatted ??
-      [body.name?.givenName, body.name?.familyName].filter(Boolean).join(" ") ??
+      body.displayName ||
+      body.name?.formatted ||
+      [body.name?.givenName, body.name?.familyName].filter(Boolean).join(" ") ||
       email.split("@")[0]!;
 
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -144,7 +145,7 @@ export async function scimRoutes(app: FastifyInstance) {
     const body = req.body as { Operations?: { op: string; path?: string; value?: unknown }[] };
     let active = user.active;
     for (const op of body.Operations ?? []) {
-      if (op.op.toLowerCase() !== "replace") continue;
+      if (typeof op?.op !== "string" || op.op.toLowerCase() !== "replace") continue;
       if (op.path === "active") active = Boolean(op.value);
       else if (op.value && typeof op.value === "object" && "active" in op.value) {
         active = Boolean((op.value as { active: unknown }).active);

@@ -1,132 +1,82 @@
-import { parseUnifiedDiff } from "./diff.js";
-import { scanSecrets } from "./secret-scanner.js";
-import { scanDependencies } from "./dependency-scanner.js";
-import { runSastRules, flagSensitiveFiles } from "./sast.js";
-import { decide } from "./risk.js";
-import { withoutIgnored } from "./ignore.js";
-import { enrichDependenciesWithOsv, type OsvOptions } from "./osv.js";
-import { scanSemgrep, type SemgrepOptions } from "./semgrep.js";
-import { runSca, mergeScaIntoDependencies, type ScaOptions } from "./sca.js";
-import {
-  runRustEngineDetailed,
-  filesFromDiff,
-  mergeRustFindings,
-  corroborate,
-  type RustEngineOptions,
-} from "./rust-engine.js";
-import type { AnalysisResult, FindingResult } from "./types.js";
+import type { AnalysisSettings } from "@codegate/shared";
+import type { ParsedDiff, NewSideLine } from "./diff.js";
+import type { EngineRuntimeOptions } from "./engines/engine.js";
+import { runAnalysis, runCoreAnalysis, type PipelineResult } from "./engines/pipeline.js";
 
 /**
- * Options for the network/subprocess-backed intelligence passes. OSV fields
- * stay at the top level for backward compatibility; Semgrep (semantic SAST),
- * the full-tree SCA scan (Trivy/Grype over lockfiles and container images) and
- * the Rust taint engine are opt-in and only run when their inputs/tools are
- * available.
+ * Analysis entry points. The pipeline itself — engines, merge order, status
+ * reporting, parameters, human false-positive verdicts — lives in ./engines
+ * (see engines/engine.ts to add an engine, and @codegate/shared
+ * analysis-settings.ts for parameters; docs/ARCHITECTURE-ANALYSE.md).
  */
-export interface AnalyzeOptions {
-  /**
-   * Paths excluded by the repository's `.codegateignore` (see ignore.ts):
-   * skipped by SAST, dependency and Semgrep/Rust passes — but NOT by the
-   * secret scanner, nor by the sensitive-file notice.
-   */
-  isIgnored?: (path: string) => boolean;
-}
 
-export interface IntelOptions extends OsvOptions, AnalyzeOptions {
-  semgrep?: SemgrepOptions;
-  sca?: ScaOptions;
-  rust?: RustEngineOptions;
-}
+export { findingFingerprint } from "./fingerprint.js";
+export type { PipelineResult } from "./engines/pipeline.js";
+
+/** Runtime options for the network/binary engines. Historical name. */
+export type IntelOptions = EngineRuntimeOptions;
 
 /**
- * Identity of a finding for deduplication: same file and line, and the same
- * rule or the same weakness (CWE). Semgrep and the regex rules often flag the
- * same line under different rule ids, so matching on CWE too avoids reporting
- * one issue twice while keeping genuinely distinct findings.
+ * Offline, synchronous analysis of a diff: the core engines only (Rust
+ * WebAssembly engine + TypeScript rules, dependency trust, configuration,
+ * prompt injection) — deterministic, no network.
+ * `suppressed`: fingerprints a human marked as false positives.
  */
-function isDuplicateFinding(candidate: FindingResult, existing: FindingResult[]): boolean {
-  return existing.some(
-    (f) =>
-      f.filePath === candidate.filePath &&
-      f.line === candidate.line &&
-      ((f.ruleId !== undefined && f.ruleId === candidate.ruleId) ||
-        (f.cwe !== undefined && f.cwe === candidate.cwe)),
-  );
+export function analyzeDiff(
+  diff: string,
+  suppressed: ReadonlySet<string> = new Set(),
+  settings?: AnalysisSettings,
+  /** Paths from the repository's .codegateignore (see ignore.ts). */
+  isIgnored?: (path: string) => boolean,
+): PipelineResult {
+  return runCoreAnalysis(diff, settings, suppressed, undefined, isIgnored);
+}
+
+/** Whole files of a repository snapshot, analysed as if every line were added. */
+export function analyzeFiles(
+  files: { path: string; content: string }[],
+  suppressed: ReadonlySet<string> = new Set(),
+  settings?: AnalysisSettings,
+  isIgnored?: (path: string) => boolean,
+): PipelineResult {
+  const parsed: ParsedDiff = {
+    snapshot: true,
+    files: [],
+    addedLines: [],
+    addedByFile: new Map(),
+    newSideByFile: new Map(),
+  };
+  for (const f of files) {
+    parsed.files.push(f.path);
+    parsed.addedByFile.set(f.path, f.content);
+    const side: NewSideLine[] = [];
+    f.content.split("\n").forEach((raw, i) => {
+      const content = raw.replace(/\r$/, "");
+      parsed.addedLines.push({ file: f.path, line: i + 1, content });
+      side.push({ content, added: true, hunkStart: i === 0 });
+    });
+    parsed.newSideByFile.set(f.path, side);
+  }
+  return runCoreAnalysis(parsed, settings, suppressed, undefined, isIgnored);
 }
 
 /**
- * Analysis pipeline entry point. Deterministic and pure: given a unified
- * diff, produce findings, secrets, dependencies, a risk score and a decision.
- * This is the offline, synchronous core — fully testable without network.
- */
-export function analyzeDiff(diff: string, opts: AnalyzeOptions = {}): AnalysisResult {
-  const parsed = parseUnifiedDiff(diff);
-  const scoped = opts.isIgnored ? withoutIgnored(parsed, opts.isIgnored) : parsed;
-
-  const secrets = scanSecrets(parsed.addedLines);
-  const dependencies = scanDependencies(scoped);
-  const findings = [
-    ...runSastRules(scoped.addedLines),
-    ...flagSensitiveFiles(parsed.files),
-  ];
-
-  const { riskScore, decision, status } = decide({ findings, secrets, dependencies });
-
-  return { findings, secrets, dependencies, riskScore, decision, status };
-}
-
-/**
- * Full analysis: the deterministic core plus out-of-core intelligence that
- * does I/O and therefore fails open — all four passes run concurrently and
- * never block a PR on their own failure:
- *  - OSV known-vulnerability lookup on the dependencies added in the diff;
- *  - a full-tree SCA scan (Trivy/Grype over lockfiles and container images),
- *    merged into the dependencies without duplicating a CVE;
- *  - Semgrep semantic SAST, merged into the findings without duplicating a
- *    regex-rule hit on (rule|CWE, file, line);
- *  - the Rust taint engine (services/scan-engine), whose richer finding
- *    supersedes a regex finding for the same issue.
- * The decision is recomputed afterwards so a freshly discovered CVE,
- * restrictive license, Semgrep finding or confirmed injection can change the
- * verdict. With no external pass available the result equals `analyzeDiff`.
+ * Full analysis: core engines, then every enabled network/binary engine
+ * (dependency intelligence, Trivy/Grype, Semgrep, native taint engine), which
+ * fail open and report their status. Binary engines need a worker
+ * (`opts.worker === false` in serverless mode reports them as skipped).
  */
 export async function analyzeDiffWithIntel(
   diff: string,
   opts: IntelOptions = {},
-): Promise<AnalysisResult> {
-  const base = analyzeDiff(diff, opts);
-  const full = parseUnifiedDiff(diff);
-  const parsed = opts.isIgnored ? withoutIgnored(full, opts.isIgnored) : full;
-
-  const [osvEnriched, scaDeps, semgrepFindings, rustRun] = await Promise.all([
-    enrichDependenciesWithOsv(base.dependencies, opts),
-    runSca(opts.sca ?? {}),
-    scanSemgrep(parsed.files, opts.semgrep),
-    runRustEngineDetailed(filesFromDiff(parsed), opts.rust ?? {}),
-  ]);
-
-  const dependencies = mergeScaIntoDependencies(osvEnriched, scaDeps);
-
-  // The Rust engine's richer finding supersedes a regex finding for the same
-  // issue; then Semgrep findings are added unless they duplicate an existing
-  // one on (rule|CWE, file, line).
-  // A regex finding the engine did not confirm is downgraded — only after a
-  // complete engine run (see corroborate).
-  const findings = corroborate(
-    mergeRustFindings(base.findings, rustRun.findings),
-    rustRun.findings,
-    rustRun.ran,
-  );
-  for (const finding of semgrepFindings) {
-    if (!isDuplicateFinding(finding, findings)) findings.push(finding);
-  }
-
-  const { riskScore, decision, status } = decide({
-    findings,
-    secrets: base.secrets,
-    dependencies,
+  settings?: AnalysisSettings,
+  suppressed?: ReadonlySet<string>,
+): Promise<PipelineResult> {
+  return runAnalysis(diff, {
+    runtime: opts,
+    ...(settings ? { settings } : {}),
+    ...(suppressed ? { suppressed } : {}),
   });
-  return { ...base, findings, dependencies, riskScore, decision, status };
 }
 
 export * from "./types.js";

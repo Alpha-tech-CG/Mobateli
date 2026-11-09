@@ -56,8 +56,10 @@ export function resolveEnforcement(
   policies: PolicyRule[],
 ): Enforcement {
   const worst = worstSeverity(result);
+  // Informational notes (test fixtures, review reminders) are not findings.
   const hasFindings =
-    result.findings.some((f) => f.confidence !== "low") ||
+    // Low-confidence signals are "to review" and do not fail the check alone.
+    result.findings.some((f) => f.severity !== "info" && f.confidence !== "low") ||
     result.secrets.some((s) => s.confidence !== "low") ||
     result.dependencies.some((d) => d.riskLevel !== "low");
 

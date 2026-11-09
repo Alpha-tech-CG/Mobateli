@@ -1,4 +1,5 @@
-import { isCommentLine, type AddedLine } from "./diff.js";
+import type { AddedLine } from "./diff.js";
+import { htmlSinkIsSafe } from "./html-sink.js";
 import type { Confidence, FindingResult } from "./types.js";
 import type { Severity } from "@codegate/shared";
 
@@ -15,6 +16,8 @@ export interface LineContext {
   file: string;
   /** Name of the enclosing function, or "" at top level / unknown. */
   fn: string;
+  /** The line with string and regex literal contents blanked. */
+  code: string;
 }
 
 interface Rule {
@@ -27,9 +30,29 @@ interface Rule {
   title: string;
   description: string;
   remediation: string;
+  /** `line` is the raw text; `ctx.code` the same line with string contents blanked. */
   test: (line: string, ctx: LineContext) => boolean;
   /** Per-hit confidence when it depends on context (defaults to `confidence`). */
   confidenceFor?: (line: string, ctx: LineContext) => Confidence;
+}
+
+/**
+ * `x.innerHTML = '…'` / `= ""` with no interpolation writes fixed markup the
+ * author controls (or clears the element) — nothing to inject.
+ */
+function assignsLiteralOnly(line: string): boolean {
+  const rhs = line.split(/\.innerHTML\s*=/)[1]?.trim().replace(/;\s*$/, "") ?? "";
+  return (
+    /^(['"])(?:(?!\1)[^\\]|\\.)*\1$/.test(rhs) ||
+    /^`[^`$]*`$/.test(rhs) ||
+    // An UPPER_CASE constant is markup fixed at build time (`= HTML`).
+    /^[A-Z][A-Z0-9_]*$/.test(rhs)
+  );
+}
+
+/** `dangerouslySetInnerHTML={{ __html: SOME_CONSTANT }}` — same reasoning. */
+function dangerousHtmlFromConstant(line: string): boolean {
+  return /__html\s*:\s*[A-Z][A-Z0-9_]*\s*\}/.test(line);
 }
 
 const isPython = (file: string) => /\.pyi?$/.test(file);
@@ -100,7 +123,7 @@ const RULES: Rule[] = [
     description:
       "eval() ou new Function() exécute du code arbitraire ; combiné à une entrée externe, c'est une exécution de code à distance.",
     remediation: "Supprimez eval. Utilisez JSON.parse pour des données, ou une logique explicite.",
-    test: (l) => /\beval\s*\(/.test(l) || /\bnew\s+Function\s*\(/.test(l),
+    test: (_l, ctx) => /\beval\s*\(/.test(ctx.code) || /\bnew\s+Function\s*\(/.test(ctx.code),
   },
   {
     id: "CHILD_PROCESS_INJECTION",
@@ -112,7 +135,8 @@ const RULES: Rule[] = [
     description:
       "exec() avec une chaîne interpolée permet l'injection de commandes. L'agent ne doit jamais exécuter de shell non maîtrisé (cahier §5.4).",
     remediation: "Utilisez execFile/spawn avec un tableau d'arguments, jamais une chaîne shell concaténée.",
-    test: (l) => {
+    test: (l, ctx) => {
+      if (!/\b(exec|execSync)\s*\(/.test(ctx.code)) return false;
       if (!/\b(exec|execSync)\s*\(\s*[`'"].*\$\{/.test(l)) return false;
       // Only constants interpolated (`git log ${BRANCH}`): nothing injectable.
       const parts = [...l.matchAll(/\$\{\s*([^}]*?)\s*\}/g)].map((m) => m[1]!);
@@ -161,10 +185,12 @@ const RULES: Rule[] = [
     description:
       "Affecter une donnée à innerHTML sans échappement permet l'injection de JavaScript (XSS).",
     remediation: "Utilisez textContent, ou un rendu qui échappe automatiquement (React, etc.).",
-    test: (l) =>
-      // A fixed literal (`el.innerHTML = ""`, static markup) carries no input.
-      (/\.innerHTML\s*\+?=(?!=)/.test(l) && !/\.innerHTML\s*=\s*(["'`])[^"'`$]*\1\s*;?\s*$/.test(l)) ||
-      /dangerouslySetInnerHTML/.test(l),
+    // Matched on the code (strings blanked): the real assignment / JSX prop,
+    // not the word quoted in docs or rule sources; a literal or an
+    // UPPER_CASE constant on the right-hand side carries no input.
+    test: (l, ctx) =>
+      (/\.innerHTML\s*\+?=(?!=)/.test(ctx.code) && !assignsLiteralOnly(l)) ||
+      (/\bdangerouslySetInnerHTML\s*[=:]/.test(ctx.code) && !dangerousHtmlFromConstant(l)),
   },
   {
     id: "PATH_TRAVERSAL",
@@ -209,7 +235,9 @@ const RULES: Rule[] = [
     title: "Algorithme de hachage faible",
     description: "MD5 et SHA-1 sont cassés pour un usage de sécurité.",
     remediation: "Utilisez SHA-256+ pour l'intégrité, et argon2/bcrypt/scrypt pour les mots de passe.",
-    test: (l) => /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l) || /\bhashlib\.(md5|sha1)\s*\(/.test(l),
+    test: (l, ctx) =>
+      (/createHash\(/.test(ctx.code) && /createHash\(\s*['"](md5|sha1)['"]\s*\)/i.test(l)) ||
+      /\bhashlib\.(md5|sha1)\s*\(/.test(ctx.code),
     // Broken for passwords/tokens; a checksum, cache key or HMAC digest
     // (`hashlib.sha1` as itsdangerous' default) is a much weaker signal.
     confidenceFor: (l, ctx) => (SENSITIVE_NAME.test(l) || SENSITIVE_NAME.test(ctx.fn) ? "high" : "low"),
@@ -367,23 +395,46 @@ const RULES: Rule[] = [
   },
 ];
 
-/** Config/sensitive-file awareness (cahier §5.1 — .env, workflows, vercel.json). */
-const SENSITIVE_FILES = [
-  ".env",
-  "docker-compose.yml",
-  "vercel.json",
-  "Dockerfile",
-  // Widening it would silently exempt code from analysis.
-  ".codegateignore",
-];
+/**
+ * Languages these line rules are written for. Docs (.md), config and other
+ * languages (Rust, Go…) are skipped: matching JavaScript API names in them
+ * only produces noise.
+ */
+const CODE_FILE = /\.(m?[jt]sx?|cjs|cts|mts|py|php|rb|html?|vue|svelte)$/i;
+const HASH_COMMENT_FILE = /\.(py|rb|php)$/i;
+
+/** A line that is only a comment cannot execute anything. */
+function isCommentLine(file: string, content: string): boolean {
+  const t = content.trimStart();
+  return t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") ||
+    (HASH_COMMENT_FILE.test(file) && t.startsWith("#"));
+}
+
+/**
+ * Blank the contents of string literals: "eval(" quoted in a string (a test
+ * fixture, a message) is data, not a call. Rules that need the text of a
+ * string (SQL, hash names) still read the raw line.
+ */
+export function blankStrings(line: string): string {
+  return (
+    line
+      .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, '""')
+      // Regex literals (after an operator, bracket or keyword) are data too.
+      .replace(
+        /(^|[=(,:!&|?{};[]|\breturn)(\s*)\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+\/[dgimsuy]*/g,
+        "$1$2/r/",
+      )
+  );
+}
 
 /** Function name declared on this line, if any (JS/TS/Python, best effort). */
 const FN_DECL =
   /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)|\bdef\s+([A-Za-z_]\w*)|\b([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)|^\s*(?:(?:public|private|protected|static|async)\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\{/;
 const NOT_A_FUNCTION = new Set(["if", "for", "while", "switch", "catch", "return", "function"]);
 
-export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
+export function runSastRules(addedLines: AddedLine[], completeFiles = false): FindingResult[] {
   const findings: FindingResult[] = [];
+  const fileText = textByFile(addedLines);
   let currentFile = "";
   let currentFn = "";
   let inBlockComment = false;
@@ -425,11 +476,14 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
     const decl = content.match(FN_DECL);
     const declared = decl && (decl[1] ?? decl[2] ?? decl[3] ?? decl[4]);
     if (declared && !NOT_A_FUNCTION.has(declared)) currentFn = declared;
+    // Docs, config and other languages: the line rules are not written for them.
+    if (!CODE_FILE.test(file)) continue;
     // A rule example written in a comment is not a vulnerability.
-    if (isCommentLine(content)) continue;
-    const ctx: LineContext = { file, fn: currentFn };
+    if (isCommentLine(file, content)) continue;
+    const ctx: LineContext = { file, fn: currentFn, code: blankStrings(content) };
     for (const rule of RULES) {
       if (rule.test(content, ctx)) {
+        if (rule.id === "XSS_INNERHTML" && htmlSinkIsSafe(content, fileText.get(file) ?? "", file, completeFiles)) continue;
         findings.push({
           type: "sast",
           severity: rule.severity,
@@ -450,29 +504,66 @@ export function runSastRules(addedLines: AddedLine[]): FindingResult[] {
   return findings;
 }
 
-/** Flags added lines inside sensitive config files for reviewer attention. */
-export function flagSensitiveFiles(files: string[]): FindingResult[] {
-  const findings: FindingResult[] = [];
-  for (const file of files) {
-    const base = file.split("/").pop() ?? file;
-    if (
-      SENSITIVE_FILES.includes(base) ||
-      file.includes(".github/workflows/")
-    ) {
-      findings.push({
-        type: "config",
-        severity: "low",
-        confidence: "high",
-        cwe: "CWE-732",
-        owasp: "A05:2021-Security Misconfiguration",
-        title: `Fichier sensible modifié : ${base}`,
-        description:
-          "Une modification touche un fichier de configuration sensible (secrets, CI/CD ou déploiement).",
-        filePath: file,
-        ruleId: "SENSITIVE_FILE_CHANGED",
-        remediation: "Vérifiez qu'aucun secret ni affaiblissement de configuration n'est introduit.",
-      });
-    }
+/**
+ * Context exclusions shared by every code engine. The Rust engine reads the
+ * syntax tree but not these proofs of safety, so its findings get the same
+ * second look as the line rules: a comment, a literal or an UPPER_CASE
+ * constant written to innerHTML carries no attacker input.
+ */
+export function refutedByContext(
+  finding: { ruleId?: string; filePath?: string },
+  line: string | undefined,
+  fileText = "",
+  completeFile = false,
+): boolean {
+  if (line === undefined || !finding.filePath) return false;
+  if (isCommentLine(finding.filePath, line)) return true;
+  // Only UPPER_CASE constants concatenated or interpolated (a table name, a
+  // branch): nothing an attacker controls.
+  if (finding.ruleId === "SQL_STRING_CONCAT" && !/\$\{/.test(line)) {
+    const operands = concatOperands(line);
+    if (operands.length > 0 && operands.every(isConstantName)) return true;
   }
-  return findings;
+  if (finding.ruleId === "CHILD_PROCESS_INJECTION") {
+    const parts = [...line.matchAll(/\$\{\s*([^}]*?)\s*\}/g)].map((m) => m[1]!);
+    if (parts.length > 0 && parts.every(isConstantName) && !/["'`]\s*\+|\+\s*["'`]/.test(line)) return true;
+  }
+  if (finding.ruleId === "XSS_INNERHTML") {
+    return (
+      (/\.innerHTML\s*=/.test(line) && assignsLiteralOnly(line)) ||
+      dangerousHtmlFromConstant(line) ||
+      htmlSinkIsSafe(line, fileText, finding.filePath, completeFile)
+    );
+  }
+  return false;
+}
+
+/**
+ * The references (CWE, OWASP) and confidence of a line rule, applied to a
+ * finding of the same rule from the syntax-tree engine, which reports the rule
+ * id only. Per-hit confidence (WEAK_HASH on a checksum…) is computed on the
+ * flagged line, as for a line-rule hit. Findings of other rules are unchanged.
+ */
+export function withRuleReferences<F extends FindingResult>(f: F, line: string | undefined, fn = ""): F {
+  const rule = RULES.find((r) => r.id === f.ruleId);
+  if (!rule) return f;
+  const ctx: LineContext = { file: f.filePath ?? "", fn, code: blankStrings(line ?? "") };
+  return {
+    ...f,
+    cwe: f.cwe ?? rule.cwe,
+    owasp: f.owasp ?? rule.owasp,
+    confidence: f.confidence ?? (rule.confidenceFor && line !== undefined ? rule.confidenceFor(line, ctx) : rule.confidence),
+    remediation: f.remediation ?? rule.remediation,
+  };
+}
+
+/** The analysed text of each file (whole file in a repository scan). */
+export function textByFile(addedLines: AddedLine[]): Map<string, string> {
+  const parts = new Map<string, string[]>();
+  for (const l of addedLines) {
+    let list = parts.get(l.file);
+    if (!list) parts.set(l.file, (list = []));
+    list.push(l.content);
+  }
+  return new Map([...parts].map(([f, lines]) => [f, lines.join("\n")]));
 }

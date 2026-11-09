@@ -138,6 +138,9 @@ export interface Alert {
 export function alertsFrom(result: AnalysisResult): Alert[] {
   const alerts: Alert[] = [];
   for (const f of result.findings) {
+    // Informational notes (sample values in a test file…) carry no risk and
+    // no score: not alerts.
+    if (f.severity === "info") continue;
     const cwe = f.cwe?.match(/CWE-\d+/)?.[0];
     alerts.push({
       // Semgrep reports native (backslash) paths on Windows.
@@ -266,7 +269,7 @@ async function analyze(files: GoldenFile[], engines: Set<string>): Promise<Analy
       // OSV is network-bound: disabled so the benchmark is reproducible.
       fetchImpl: () => Promise.reject(new Error("offline")),
       rust: engines.has("rust")
-        ? { binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/scan-engine/target/release", exe), timeoutMs: 30_000 }
+        ? { binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/taint-engine/target/release", exe), timeoutMs: 30_000 }
         : { enabled: false },
       semgrep: engines.has("semgrep")
         ? { cwd: work, timeoutMs: 300_000, ...(process.env.SEMGREP_CONFIG ? { config: process.env.SEMGREP_CONFIG } : {}) }

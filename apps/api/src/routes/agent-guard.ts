@@ -7,6 +7,8 @@ import {
   type AgentPermission,
 } from "@codegate/shared";
 import { recordAudit } from "../lib/audit.js";
+import { requestApproval } from "../lib/approvals.js";
+import type { AppConfig } from "../config.js";
 import {
   AGENT_DEFAULTS,
   evaluateAgentAction,
@@ -17,7 +19,7 @@ import {
 /**
  * Agent Guard management + enforcement (cahier §5.4, US06).
  */
-export async function agentGuardRoutes(app: FastifyInstance) {
+export async function agentGuardRoutes(app: FastifyInstance, config: AppConfig) {
   async function assertRepo(organizationId: string, repositoryId: string) {
     return prisma.repository.findFirst({
       where: { id: repositoryId, organizationId },
@@ -137,11 +139,36 @@ export async function agentGuardRoutes(app: FastifyInstance) {
       }
 
       const rule = resolveRule(body.permission, orgRule, repoRule);
-      const result = evaluateAgentAction({
+      const evaluated = evaluateAgentAction({
         permission: body.permission,
         rule,
         ...(body.target ? { target: body.target } : {}),
       });
+
+      // require_approval ⇒ a human decides (US06). An approval granted for
+      // this exact action stays valid for 24 h.
+      let result: typeof evaluated & { approvalId?: string } = evaluated;
+      if (evaluated.decision === "require_approval") {
+        const repoName = await prisma.repository.findUnique({
+          where: { id: body.repositoryId },
+          select: { name: true },
+        });
+        const approval = await requestApproval({
+          organizationId: req.principal.organizationId,
+          encryptionKey: config.ENCRYPTION_KEY,
+          kind: "agent_action",
+          dedupeKey: `agent:${body.repositoryId}:${body.permission}:${body.target ?? ""}:${body.agentId ?? ""}`,
+          title: `Agent ${body.agentId ?? "IA"} : ${body.permission}${body.target ? ` « ${body.target} »` : ""}`,
+          detail: { permission: body.permission, target: body.target ?? null, agentId: body.agentId ?? null },
+          repositoryId: body.repositoryId,
+          repositoryName: repoName?.name ?? "dépôt",
+          requestedById: req.principal.userId,
+        });
+        result =
+          approval.status === "approved"
+            ? { decision: "allow", reason: "Approuvé par un humain.", approvalId: approval.id }
+            : { ...evaluated, approvalId: approval.id };
+      }
 
       await recordAudit({
         organizationId: req.principal.organizationId,

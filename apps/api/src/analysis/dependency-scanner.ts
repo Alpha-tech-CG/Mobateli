@@ -4,9 +4,8 @@ import type { DependencyResult } from "./types.js";
 /**
  * Dependency Trust Score (cahier §5.3). Deterministic first pass:
  * typosquatting against popular packages, suspicious-name heuristics, and a
- * trust score. OSV / registry-age lookups (network) plug in later via
- * `enrichWithOsv` — kept out of the synchronous path so analysis stays fast
- * and offline-testable.
+ * trust score, for npm, PyPI and Go. Network lookups (OSV, registries) live in
+ * dependency-intel.ts, outside this synchronous, offline-testable path.
  */
 
 // A small curated set of very popular npm packages for typosquat detection.
@@ -39,105 +38,178 @@ const KNOWN_LEGIT = new Set([
 ]);
 
 /**
- * Edit distance where swapping two adjacent letters counts as ONE edit
- * (optimal string alignment): `lodahs` is 1 away from `lodash`, the most
- * common typo, where plain Levenshtein says 2.
+ * Edit distance where swapping two adjacent letters counts as one typo
+ * (optimal string alignment): "lodahs" is 1 away from "lodash".
  */
-export function editDistance(a: string, b: string): number {
+export function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
-  const d: number[][] = Array.from({ length: m + 1 }, (_, i) => {
-    const row = new Array<number>(n + 1).fill(0);
-    row[0] = i;
-    return row;
-  });
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const d: number[][] = Array.from({ length: m + 1 }, (_, i) => [i, ...new Array<number>(n).fill(0)]);
   for (let j = 0; j <= n; j++) d[0]![j] = j;
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
       let v = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
-      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
-        v = Math.min(v, d[i - 2]![j - 2]! + 1);
-      }
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, d[i - 2]![j - 2]! + 1);
       d[i]![j] = v;
     }
   }
   return d[m]![n]!;
 }
 
+/** Same edit distance under main's name (benchmarks and tests use it). */
+export const editDistance = levenshtein;
+
 /** Name with separators dropped: `crossenv` and `cross-env` collide. */
 const squash = (name: string) => name.replace(/[-_.]/g, "");
 
-export function levenshtein(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  if (m === 0) return n;
-  if (n === 0) return m;
-  const prev = new Array<number>(n + 1);
-  const curr = new Array<number>(n + 1);
-  for (let j = 0; j <= n; j++) prev[j] = j;
-  for (let i = 1; i <= m; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(prev[j]! + 1, curr[j - 1]! + 1, prev[j - 1]! + cost);
-    }
-    for (let j = 0; j <= n; j++) prev[j] = curr[j]!;
-  }
-  return prev[n]!;
-}
-
-/**
- * Closest popular package within a small edit distance (a typosquat target).
- *
- * The edit-distance threshold scales with name length: a distance of 2 between
- * two 3–5 letter names (knex/next, yup/vue, redux/redis) is coincidence, not a
- * squat. We require `min(len) >= 4 * distance`, so distance 1 needs ≥4 shared
- * length and distance 2 needs ≥8 — long enough that the resemblance is real
- * (react-router-dom vs react-router-domm) rather than two unrelated short
- * names colliding. Known-legitimate packages are never flagged.
- */
-export function nearestPopular(name: string): { target: string; distance: number } | null {
-  if (KNOWN_LEGIT.has(name)) return null;
+/** Closest popular package within a small edit distance (a typosquat target). */
+export function nearestPopular(
+  name: string,
+  ecosystem: DepEntry["ecosystem"] = "npm",
+): { target: string; distance: number } | null {
+  if (ecosystem === "Go") return null; // module paths are host-qualified
+  if (ecosystem === "npm" && KNOWN_LEGIT.has(name)) return null; // preact, redux, knex…
+  const popular = ecosystem === "PyPI" ? POPULAR_PYPI : POPULAR_NPM;
+  const normalized = ecosystem === "PyPI" ? name.toLowerCase().replace(/[_.]/g, "-") : name;
   let best: { target: string; distance: number } | null = null;
-  for (const pkg of POPULAR_NPM) {
-    if (pkg === name) return null; // exact match ⇒ legitimate, not a squat
+  for (const pkg of popular) {
+    if (pkg === normalized) return null; // exact match ⇒ legitimate, not a squat
   }
-  for (const pkg of POPULAR_NPM) {
+  for (const pkg of popular) {
     // Same name once separators are dropped (`crossenv` vs `cross-env`): the
     // classic squat of a hyphenated package — one edit, whatever the length.
-    if (squash(pkg) === squash(name) && pkg.length >= 5) {
+    if (squash(pkg) === squash(normalized) && pkg.length >= 5) {
       return { target: pkg, distance: 1 };
     }
-    const d = editDistance(name, pkg);
-    const minLen = Math.min(name.length, pkg.length);
-    if (d >= 1 && d <= 2 && minLen >= 4 * d && (!best || d < best.distance)) {
+    const d = levenshtein(normalized, pkg);
+    const shortest = Math.min(normalized.length, pkg.length);
+    // ≤ 4 letters: any two names are a couple of edits apart — no signal.
+    const allowed = shortest <= 4 ? 0 : shortest <= 7 ? 1 : 2;
+    if (d >= 1 && d <= allowed && (!best || d < best.distance)) {
       best = { target: pkg, distance: d };
     }
   }
   return best;
 }
 
+// Popular PyPI packages: the usual typosquatting targets (requests → reqeusts).
+const POPULAR_PYPI = [
+  "requests", "numpy", "pandas", "django", "flask", "fastapi", "pydantic", "urllib3",
+  "boto3", "setuptools", "pytest", "sqlalchemy", "cryptography", "pillow", "scipy",
+  "matplotlib", "openai", "anthropic", "langchain", "httpx", "uvicorn", "celery", "redis",
+];
+
 interface DepEntry {
   name: string;
   version: string;
+  ecosystem: "npm" | "PyPI" | "Go";
+  /** Declared in devDependencies: tooling, not shipped to production. */
+  dev?: boolean;
 }
 
-/** Extract dependency entries from the added lines of any package.json. */
+/**
+ * The package.json section of each ADDED line of a diff, in order (a hunk
+ * that starts inside a section without its header gives "" — treated as
+ * production, the cautious reading).
+ */
+function npmSectionsOfAddedLines(diff: ParsedDiff, file: string): string[] {
+  const out: string[] = [];
+  let section = "";
+  for (const l of diff.newSideByFile.get(file) ?? []) {
+    if (l.hunkStart) section = "";
+    const header = l.content.match(/^\s*"(\w+)"\s*:\s*\{/);
+    if (header) section = header[1]!;
+    else if (/^\s*\}/.test(l.content)) section = "";
+    if (l.added) out.push(section);
+  }
+  return out;
+}
+
+const NOT_DEPENDENCIES = new Set([
+  "name", "version", "description", "license", "main", "module", "type", "python",
+  "readme", "authors", "homepage", "repository", "documentation", "requires-python",
+  // package.json keys whose values look like versions but are not packages.
+  "node", "npm", "pnpm", "yarn", "bun", "packageManager", "url", "funding", "bugs", "types",
+]);
+
+const NPM_SECTIONS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
+
+/** "^1.2.3", ">= 2 < 3", "*", "latest", "workspace:*", "npm:x@1", git/url/file specs. */
+export function looksLikeVersionSpec(v: string): boolean {
+  const t = v.trim();
+  if (/^(workspace:|npm:|git\+|git:|github:|https?:|file:|link:)/.test(t)) return true;
+  if (t === "*" || t === "latest" || t === "next" || t === "x") return true;
+  return /^[\^~<>=v]*\s*\d/.test(t) && /^[\w\s.^~<>=|*+-]+$/.test(t) && !/\s[a-z]{3,}/i.test(t);
+}
+
+/**
+ * Dependencies added in the diff, per manifest: package.json (npm),
+ * requirements*.txt / pyproject.toml (PyPI), go.mod (Go).
+ */
 export function extractAddedDependencies(diff: ParsedDiff): DepEntry[] {
   const deps: DepEntry[] = [];
-  const entry = /^\s*"([^"]+)"\s*:\s*"([^"]+)"\s*,?\s*$/;
-  for (const line of diff.addedLines) {
-    if (!line.file.endsWith("package.json")) continue;
-    const m = line.content.match(entry);
-    if (!m) continue;
-    const name = m[1]!;
-    const version = m[2]!;
-    // Skip non-dependency fields that also look like "k": "v".
-    if (["name", "version", "description", "license", "main", "module", "type"].includes(name)) {
-      continue;
+  const npmEntry = /^\s*"([^"]+)"\s*:\s*"([^"]+)"\s*,?\s*$/;
+  const reqEntry = /^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]*\])?\s*(?:(==|>=|~=|<=|>|<|!=)\s*([^\s;#,]+))?\s*(?:[;#].*)?$/;
+  const pepEntry = /^\s*"([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]*\])?\s*(?:(==|>=|~=|<=|>|<|!=)\s*([^";,]+))?[^"]*"\s*,?\s*$/;
+  const poetryEntry = /^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*=\s*"([^"]+)"\s*$/;
+  const goEntry = /^\s*(?:require\s+)?([a-z0-9.-]+\.[a-z]{2,}\/[^\s]+)\s+(v[0-9][^\s]*)/;
+
+  // Whole package.json available (repository scans): read the real sections.
+  const parsedManifests = new Set<string>();
+  for (const [file, text] of diff.addedByFile) {
+    if ((file.split("/").pop() ?? file) !== "package.json") continue;
+    try {
+      const pkg = JSON.parse(text) as Record<string, unknown>;
+      for (const section of NPM_SECTIONS) {
+        const block = pkg[section];
+        if (!block || typeof block !== "object") continue;
+        for (const [name, version] of Object.entries(block as Record<string, unknown>)) {
+          if (typeof version === "string") {
+            deps.push({ name, version, ecosystem: "npm", ...(section === "devDependencies" ? { dev: true } : {}) });
+          }
+        }
+      }
+      parsedManifests.add(file);
+    } catch {
+      /* only added lines (a PR diff): fall back to the line heuristic */
     }
-    deps.push({ name, version });
+  }
+
+  const sections = new Map<string, string[]>();
+  const seenInFile = new Map<string, number>();
+  for (const { file, content } of diff.addedLines) {
+    const base = file.split("/").pop() ?? file;
+    if (base === "package.json") {
+      if (parsedManifests.has(file)) continue;
+      if (!sections.has(file)) sections.set(file, npmSectionsOfAddedLines(diff, file));
+      const index = seenInFile.get(file) ?? 0;
+      seenInFile.set(file, index + 1);
+      const section = sections.get(file)![index] ?? "";
+      const m = content.match(npmEntry);
+      // Scripts ("test": "mocha …"), engines and URLs are not dependencies:
+      // keep entries whose value looks like a version specifier.
+      if (m && !NOT_DEPENDENCIES.has(m[1]!) && looksLikeVersionSpec(m[2]!)) {
+        deps.push({ name: m[1]!, version: m[2]!, ecosystem: "npm", ...(section === "devDependencies" ? { dev: true } : {}) });
+      }
+    } else if (/^requirements.*\.txt$/.test(base)) {
+      if (/^\s*(-|#|$)/.test(content) || content.includes("://")) continue;
+      const m = content.match(reqEntry);
+      if (m) deps.push({ name: m[1]!, version: m[3] ?? "*", ecosystem: "PyPI" });
+    } else if (base === "pyproject.toml") {
+      const pep = content.match(pepEntry);
+      const poetry = pep ? null : content.match(poetryEntry);
+      if (pep && !NOT_DEPENDENCIES.has(pep[1]!.toLowerCase())) {
+        deps.push({ name: pep[1]!, version: pep[3]?.trim() ?? "*", ecosystem: "PyPI" });
+      } else if (poetry && !NOT_DEPENDENCIES.has(poetry[1]!.toLowerCase())) {
+        deps.push({ name: poetry[1]!, version: poetry[2]!, ecosystem: "PyPI" });
+      }
+    } else if (base === "go.mod") {
+      const m = content.match(goEntry);
+      if (m) deps.push({ name: m[1]!, version: m[2]!, ecosystem: "Go" });
+    }
   }
   return deps;
 }
@@ -147,23 +219,28 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   let trust = 80;
   let risk: DependencyResult["riskLevel"] = "low";
 
-  // Known-legitimate packages short-circuit every name heuristic (avoids e.g.
-  // flagging "bootstrap" as an install-script bait).
-  if (KNOWN_LEGIT.has(dep.name)) {
-    return { ecosystem: "npm", name: dep.name, version: dep.version, trustScore: trust, riskLevel: "low" };
+  // Known-legitimate npm packages skip every name heuristic (e.g. "bootstrap"
+  // read as an install-script bait, "preact" as a squat of "react").
+  if (dep.ecosystem === "npm" && KNOWN_LEGIT.has(dep.name)) {
+    return { ecosystem: dep.ecosystem, name: dep.name, version: dep.version, trustScore: trust, riskLevel: "low" };
   }
 
-  const squat = nearestPopular(dep.name);
+  // A name close to a popular package is a strong hint, never a proof on its
+  // own: "high" (human review). It becomes critical only together with
+  // another critical signal (install scripts, unknown or brand-new package…)
+  // — see dependency-intel.
+  const squat = nearestPopular(dep.name, dep.ecosystem);
   if (squat) {
     trust -= 60;
-    risk = "critical";
+    risk = "high";
     reasons.push(
-      `Nom très proche de "${squat.target}" (distance ${squat.distance}) — typosquatting probable.`,
+      `Nom très proche de "${squat.target}" (distance ${squat.distance}) — typosquatting possible, à vérifier.`,
     );
   }
 
   // Pinned to a brand-new-looking 0.0.x or using a URL/git spec.
-  if (/^(git\+|https?:|file:|github:)/.test(dep.version)) {
+  // Remote, unpinned sources (git / URL); local file: paths are the user's own code.
+  if (/^(git\+|git:|https?:|github:)/.test(dep.version)) {
     trust -= 25;
     if (risk === "low") risk = "medium";
     reasons.push("Source non-registre (git/url) — contenu non vérifié par le registre.");
@@ -180,11 +257,13 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
   if (risk === "low" && trust < 50) risk = "medium";
 
   return {
-    ecosystem: "npm",
+    ecosystem: dep.ecosystem,
     name: dep.name,
     version: dep.version,
     trustScore: trust,
     riskLevel: risk,
+    ...(squat ? { typosquatOf: squat.target } : {}),
+    ...(dep.dev ? { dev: true } : {}),
     ...(reasons.length ? { reason: reasons.join(" ") } : {}),
   };
 }

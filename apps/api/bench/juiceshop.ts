@@ -107,7 +107,7 @@ async function main(): Promise<void> {
           fetchImpl: () => Promise.reject(new Error("offline")),
           semgrep: { runner: async () => "{}" },
           rust: {
-            binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/scan-engine/target/release", exe),
+            binaryPath: process.env.CODEGATE_SCAN_BIN ?? join(REPO, "services/taint-engine/target/release", exe),
             timeoutMs: 120_000,
           },
         })

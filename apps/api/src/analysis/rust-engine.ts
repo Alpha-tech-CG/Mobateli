@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import type { ParsedDiff } from "./diff.js";
 import { isMinified } from "./sast.js";
-import type { Confidence, FindingResult } from "./types.js";
+import { describeFailure, type Confidence, type EngineStatusFn, type FindingResult } from "./types.js";
 import type { FindingType, Severity } from "@codegate/shared";
 
 /**
- * Adapter for the Rust semantic scan engine (services/scan-engine).
+ * Adapter for the native Rust taint engine (services/taint-engine), run as a
+ * subprocess by the worker. Not to be confused with services/scan-engine, the
+ * WebAssembly engine run in-process (analysis/engine).
  *
  * The engine is a separate process — a Rust binary (`codegate-scan`) that does
  * tree-sitter parsing + taint analysis, far beyond the line-by-line regex rules
@@ -42,9 +44,13 @@ export interface RustEngineOptions {
   runner?: EngineRunner;
   /** Explicit on/off. Defaults to enabled unless CODEGATE_SCAN_DISABLE is set. */
   enabled?: boolean;
+  /** Receives whether the engine ran, was skipped, or failed (and why). */
+  onStatus?: EngineStatusFn;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+// Measured: a 1 900-file / 20 MB PR takes ~7 s with the release binary (25 s
+// in debug). 5 s silently dropped the engine on every large PR.
+const DEFAULT_TIMEOUT_MS = 60_000;
 const VALID_SEVERITIES: ReadonlySet<string> = new Set([
   "info",
   "low",
@@ -65,10 +71,8 @@ function isEnabled(opts: RustEngineOptions): boolean {
 
 /**
  * Default runner: spawn `codegate-scan --stdin`, write the manifest, collect
- * stdout. Rejects on ANY failure (missing binary, non-zero exit, timeout);
- * `runRustEngineDetailed` turns that into `ran: false` — the fail-open
- * boundary — so "the engine found nothing" and "the engine did not run" stay
- * distinguishable.
+ * stdout. Rejects with the reason on any failure (missing binary, non-zero
+ * exit, timeout); `runRustEngine` is the fail-open boundary and reports it.
  */
 const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
   new Promise((resolve, reject) => {
@@ -80,30 +84,37 @@ const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
         else resolve(out);
       }
     };
+    const fail = (err: unknown) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    };
 
     let child;
     try {
       child = spawn(binaryPath, ["--stdin"], { stdio: ["pipe", "pipe", "ignore"] });
-    } catch {
-      return done(null);
+    } catch (err) {
+      return fail(err);
     }
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      done(null);
+      fail(Object.assign(new Error("timeout"), { killed: true }));
     }, timeoutMs);
 
     let stdout = "";
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
-    child.on("error", () => {
+    child.on("error", (err) => {
       clearTimeout(timer);
-      done(null);
+      fail(err);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      done(code === 0 ? stdout : null);
+      if (code === 0) done(stdout);
+      else fail(new Error(`code de sortie ${code}`));
     });
 
     child.stdin.on("error", () => {
@@ -191,7 +202,14 @@ export async function runRustEngineDetailed(
   files: EngineFile[],
   opts: RustEngineOptions = {},
 ): Promise<RustRun> {
-  if (!isEnabled(opts) || files.length === 0) return { findings: [], ran: false };
+  if (!isEnabled(opts)) {
+    opts.onStatus?.("skipped", "désactivé");
+    return { findings: [], ran: false };
+  }
+  if (files.length === 0) {
+    opts.onStatus?.("skipped", "aucun fichier");
+    return { findings: [], ran: false };
+  }
   const runner = opts.runner ?? spawnRunner;
   const manifest = JSON.stringify({ files });
   try {
@@ -200,8 +218,14 @@ export async function runRustEngineDetailed(
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
     const findings = parseOutput(stdout);
-    return findings === null ? { findings: [], ran: false } : { findings, ran: true };
-  } catch {
+    if (findings === null) {
+      opts.onStatus?.("failed", "sortie illisible");
+      return { findings: [], ran: false };
+    }
+    opts.onStatus?.("ok");
+    return { findings, ran: true };
+  } catch (err) {
+    opts.onStatus?.("failed", describeFailure(err));
     return { findings: [], ran: false };
   }
 }
@@ -213,7 +237,7 @@ export async function runRustEngine(
   return (await runRustEngineDetailed(files, opts)).findings;
 }
 
-/** Languages the engine parses (keep in sync with services/scan-engine/src/lang.rs). */
+/** Languages the engine parses (keep in sync with services/taint-engine/src/lang.rs). */
 const ENGINE_LANGUAGE = /\.(js|jsx|mjs|cjs|ts|mts|cts|tsx|py|pyi)$/i;
 
 /**

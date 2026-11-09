@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import type { ParsedDiff } from "./diff.js";
+import { findingFingerprint } from "./fingerprint.js";
 import { decide } from "./risk.js";
-import type { AnalysisResult, FindingResult } from "./types.js";
+import type { AnalysisResult } from "./types.js";
 
 /**
  * Pilot false-positive tracking (cahier §13.1 — taux de faux positifs).
@@ -14,14 +14,7 @@ import type { AnalysisResult, FindingResult } from "./types.js";
 
 export type FeedbackVerdict = "false_positive" | "confirmed";
 
-/** Stable identity of an alert. */
-export function findingFingerprint(f: FindingResult, lineContent: string | undefined): string {
-  const content = (lineContent ?? "").trim().replace(/\s+/g, " ");
-  return createHash("sha256")
-    .update([f.ruleId ?? f.title, f.filePath ?? "", content || `line:${f.line ?? ""}`].join("\u0000"))
-    .digest("hex")
-    .slice(0, 32);
-}
+export { findingFingerprint };
 
 /** Fingerprints for every finding of a result, from the diff's added lines. */
 export function fingerprintAll(result: AnalysisResult, diff: ParsedDiff): string[] {

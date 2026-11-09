@@ -76,6 +76,20 @@ pnpm --filter @codegate/web dev        # dashboard Next.js     → :3000
 
 Le worker et l'API démarrent un **keep-alive** de la connexion Postgres (ping toutes les 30 s) ; voir la note Docker ci-dessous.
 
+### Worker en production
+
+Le worker est un processus long (BullMQ) : il ne tourne pas dans une fonction serverless. L'image `infra/docker/worker.Dockerfile` embarque tout ce qu'il appelle, pour qu'aucune analyse ne soit sautée en silence :
+
+```bash
+docker build -f infra/docker/worker.Dockerfile -t codegate-worker .
+docker run --env-file .env codegate-worker
+```
+
+- `codegate-scan` (moteur Rust, release) → `CODEGATE_SCAN_BIN`
+- Semgrep 1.178 avec le ruleset `p/ci` figé dans l'image → `CODEGATE_SEMGREP_CONFIG` (pas de téléchargement à chaque analyse)
+
+Hors image, renseignez ces deux variables vous-même ; sinon le moteur concerné apparaît « échec » dans le commentaire de PR et sur la page de la PR (couverture de l'analyse).
+
 ## 7. Tests
 
 ```bash

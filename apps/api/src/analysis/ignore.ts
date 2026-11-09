@@ -1,5 +1,3 @@
-import type { ParsedDiff } from "./diff.js";
-
 /**
  * `.codegateignore` — paths the code analysis must skip (intentionally
  * vulnerable test corpora, vendored code, generated files…).
@@ -85,13 +83,5 @@ export function parseIgnoreFile(content: string): (path: string) => boolean {
   };
 }
 
-/** The diff restricted to non-ignored files (used by every pass but secrets). */
-export function withoutIgnored(parsed: ParsedDiff, isIgnored: (path: string) => boolean): ParsedDiff {
-  const addedByFile = new Map<string, string>();
-  for (const [file, content] of parsed.addedByFile) if (!isIgnored(file)) addedByFile.set(file, content);
-  return {
-    files: parsed.files.filter((f) => !isIgnored(f)),
-    addedLines: parsed.addedLines.filter((l) => !isIgnored(l.file)),
-    addedByFile,
-  };
-}
+// The analysis pipeline applies the predicate (engines/pipeline.ts): every
+// engine skips the ignored paths except the secret scanner.

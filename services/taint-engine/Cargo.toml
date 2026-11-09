@@ -1,0 +1,52 @@
+[package]
+name = "codegate-scan-engine"
+version = "0.1.0"
+edition = "2021"
+description = "CodeGate semantic static-analysis engine (tree-sitter + taint rules)"
+license = "MIT"
+repository = "https://github.com/codegate"
+default-run = "codegate-scan"
+
+# The CLI consumed by the TypeScript API (apps/api/src/analysis/rust-engine.ts).
+[[bin]]
+name = "codegate-scan"
+path = "src/main.rs"
+
+# Optional Axum HTTP service, compiled only with `--features server`.
+[[bin]]
+name = "codegate-scan-server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[lib]
+name = "codegate_scan_engine"
+path = "src/lib.rs"
+
+[features]
+default = []
+# HTTP exposure for a future always-on service; off by default so the CLI
+# build stays lean and dependency-light.
+server = ["axum", "tokio", "tower-http"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+walkdir = "2.5"
+
+tree-sitter = "0.22"
+tree-sitter-javascript = "0.21"
+tree-sitter-typescript = "0.21"
+tree-sitter-python = "0.21"
+
+# server feature only
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tower-http = { version = "0.5", features = ["limit"], optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dev-dependencies]
+proptest = "1"

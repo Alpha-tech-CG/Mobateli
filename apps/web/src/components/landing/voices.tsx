@@ -17,14 +17,14 @@ const VOICES = [
     role: "Profil type",
     initials: "ST",
     quote:
-      "« Toutes nos pull requests générées par IA sont analysées, priorisées et tracées avant la production. »",
+      "« Toutes nos pull requests, écrites par l'équipe ou par nos agents IA, sont analysées, priorisées et tracées avant la production. »",
   },
   {
     who: "Agence web",
     role: "Profil type",
     initials: "AG",
     quote:
-      "« Nous livrons nos projets clients avec une politique de sécurité vérifiable, même quand le code est généré par IA. »",
+      "« Nous remettons à chaque client un rapport d'audit signé : code, serveurs et sauvegardes vérifiés avant la livraison. »",
   },
 ];
 

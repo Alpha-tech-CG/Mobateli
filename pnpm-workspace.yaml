@@ -33,16 +33,11 @@ onlyBuiltDependencies:
   - prisma
   - sharp
 
-# Security overrides for vulnerable transitive dependencies (pnpm audit).
-# next@15 pins postcss 8.4.31 (path traversal / file read via sourceMap,
-# XSS in stringify — GHSA-6g55-p6wh-862q and follow-ups).
+# Security: transitive zod < 4.6.6 is vulnerable (GHSA-mrhx-c7xc-m3w5),
+# pulled by @vercel/functions → @vercel/oidc → @vercel/cli-config.
 overrides:
-  postcss: ^8.5.23
-
-# Advisories reviewed and accepted (CI runs `pnpm audit --prod --audit-level=high`;
-# anything new fails it). Revisit on each entry's next release.
-auditConfig:
-  ignoreGhsas:
-    # deepmerge-ts <8 — stack exhaustion on recursive object graphs. Only
-    # reached by the Prisma CLI loading its own config, never by request data.
-    - GHSA-ggr8-5vv4-36mx
+  zod: ^4.6.7
+  # GHSA-ggr8-5vv4-36mx (stack exhaustion) — via prisma → @prisma/config.
+  deepmerge-ts: ^8.0.2
+  # GHSA-qx2v-qp2m-jg93 & co. (XSS in stringify) — next pins postcss 8.4.31.
+  postcss: ^8.5.32

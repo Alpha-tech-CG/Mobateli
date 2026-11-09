@@ -2,6 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runSca, mergeScaIntoDependencies, type ScaProcessResult } from "./sca.js";
 import { analyzeDiffWithIntel } from "./analyzer.js";
+
+/** Keep these unit tests hermetic: no real Semgrep or Rust subprocess. */
+const OFFLINE = {
+  semgrep: { runner: async () => JSON.stringify({ results: [] }) },
+  rust: { enabled: false },
+};
 import type { DependencyResult } from "./types.js";
 
 /**
@@ -195,7 +201,7 @@ test("mergeScaIntoDependencies appends a new full-tree package", () => {
 
 test("analyzeDiffWithIntel merges SCA findings and escalates the decision", async () => {
   // OSV finds nothing; the SCA scan of the full tree finds a critical CVE.
-  const osvFetch = async () => ({ ok: true, status: 200, json: async () => ({ vulns: [] }) });
+  const osvFetch = (async () => new Response("{}", { status: 503 })) as typeof fetch;
   const critical = JSON.stringify({
     Results: [
       {
@@ -225,6 +231,7 @@ test("analyzeDiffWithIntel merges SCA findings and escalates the decision", asyn
   const r = await analyzeDiffWithIntel(diff, {
     fetchImpl: osvFetch,
     sca: { runner, workspaceDir: "/repo" },
+    ...OFFLINE,
   });
 
   const evil = r.dependencies.find((d) => d.name === "evil-transitive");
@@ -235,7 +242,7 @@ test("analyzeDiffWithIntel merges SCA findings and escalates the decision", asyn
 });
 
 test("analyzeDiffWithIntel without SCA options equals the OSV-only pipeline", async () => {
-  const osvFetch = async () => ({ ok: true, status: 200, json: async () => ({ vulns: [] }) });
+  const osvFetch = (async () => new Response("{}", { status: 503 })) as typeof fetch;
   const diff = [
     "diff --git a/package.json b/package.json",
     "--- a/package.json",
@@ -243,7 +250,7 @@ test("analyzeDiffWithIntel without SCA options equals the OSV-only pipeline", as
     "@@ -0,0 +1,1 @@",
     '+    "left-pad": "1.3.0",',
   ].join("\n");
-  const r = await analyzeDiffWithIntel(diff, { fetchImpl: osvFetch });
+  const r = await analyzeDiffWithIntel(diff, { fetchImpl: osvFetch, ...OFFLINE });
   // No SCA target → no extra dependencies, clean decision.
   assert.equal(r.dependencies.length, 1);
   assert.equal(r.dependencies[0]!.name, "left-pad");

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import fastifyJwt from "@fastify/jwt";
 import fp from "fastify-plugin";
+import { prisma } from "@codegate/db";
 import type { Role } from "@codegate/shared";
 
 /** JWT payload carried in the bearer token. */
@@ -8,7 +9,16 @@ export interface AuthPrincipal {
   userId: string;
   organizationId: string;
   role: Role;
+  /** True when this session passed a second factor (TOTP or the SSO IdP). */
+  mfa?: boolean;
+  /** Issued-at (seconds), set by @fastify/jwt. */
+  iat?: number;
 }
+
+/** Roles that must use MFA before any administrative action (cahier §10.2). */
+const MFA_ROLES: ReadonlySet<Role> = new Set(["owner", "admin"]);
+/** Sessions expire (cahier §10.2). */
+export const SESSION_TTL = "12h";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -31,22 +41,59 @@ declare module "@fastify/jwt" {
   }
 }
 
-async function authPlugin(app: FastifyInstance, opts: { jwtSecret: string }) {
+/** The account behind a session, as stored now (not as the token says). */
+export interface SessionAccount {
+  active: boolean;
+  role: Role;
+  organizationId: string;
+  /** Sessions issued before this instant are void (password reset). */
+  sessionsRevokedAt?: Date | null;
+}
+
+const loadAccountFromDb = (p: AuthPrincipal): Promise<SessionAccount | null> =>
+  prisma.user.findUnique({
+    where: { id: p.userId },
+    select: { active: true, role: true, organizationId: true, sessionsRevokedAt: true },
+  });
+
+async function authPlugin(
+  app: FastifyInstance,
+  opts: {
+    jwtSecret: string;
+    mfaRequiredForAdmins: boolean;
+    /** Account lookup (database by default; injectable for unit tests). */
+    loadAccount?: (principal: AuthPrincipal) => Promise<SessionAccount | null>;
+  },
+) {
   // Pin the algorithm on both sides: tokens are only ever HS256-signed by
   // this API, so nothing else (`none`, RS*/ES* key confusion) is accepted.
   await app.register(fastifyJwt, {
     secret: opts.jwtSecret,
-    sign: { algorithm: "HS256" },
+    sign: { algorithm: "HS256", expiresIn: SESSION_TTL },
     verify: { algorithms: ["HS256"] },
   });
+  const loadAccount = opts.loadAccount ?? loadAccountFromDb;
 
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       await req.jwtVerify();
-      req.principal = req.user;
     } catch {
       await reply.code(401).send({ error: "unauthorized" });
+      return;
     }
+    // Re-check the account on every request: a deprovisioned (SCIM) or
+    // deactivated user is locked out immediately, and a role change takes
+    // effect without waiting for the token to expire.
+    const user = await loadAccount(req.user);
+    if (!user || !user.active || user.organizationId !== req.user.organizationId) {
+      await reply.code(401).send({ error: "unauthorized" });
+      return;
+    }
+    if (user.sessionsRevokedAt && (req.user.iat ?? 0) * 1000 < user.sessionsRevokedAt.getTime()) {
+      await reply.code(401).send({ error: "unauthorized" });
+      return;
+    }
+    req.principal = { ...req.user, role: user.role };
   });
 
   app.decorate("requireRole", (...roles: Role[]) => {
@@ -57,6 +104,10 @@ async function authPlugin(app: FastifyInstance, opts: { jwtSecret: string }) {
       }
       if (!roles.includes(req.principal.role)) {
         await reply.code(403).send({ error: "forbidden" });
+        return;
+      }
+      if (opts.mfaRequiredForAdmins && MFA_ROLES.has(req.principal.role) && !req.principal.mfa) {
+        await reply.code(403).send({ error: "mfa_enrollment_required" });
       }
     };
   });

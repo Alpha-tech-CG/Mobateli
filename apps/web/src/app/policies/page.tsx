@@ -113,6 +113,7 @@ function Policies() {
       </Card>
 
       <Card>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -144,6 +145,7 @@ function Policies() {
             ) : null}
           </tbody>
         </table>
+        </div>
       </Card>
     </div>
   );
