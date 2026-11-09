@@ -1,4 +1,5 @@
-import type { Decision, PullRequestStatus, Severity } from "@codegate/shared";
+import type { Severity } from "@codegate/shared";
+import { dependencyAssurance, findingAssurance, secretAssurance, type Assurance } from "./assurance.js";
 import type { AnalysisResult, DependencyResult, FindingResult, SecretResult } from "./types.js";
 
 /** Risk weight per severity — tuned so a single critical dominates. */
@@ -18,108 +19,68 @@ export const DEP_RISK_WEIGHT: Record<DependencyResult["riskLevel"], number> = {
   low: 0,
 };
 
-/**
- * Confidence scales a finding's contribution to the score — a low-confidence
- * heuristic should not inflate the risk like a confirmed issue (cahier §13.1,
- * taux de faux positifs < 15 %). Absent confidence is treated as full weight
- * for backward compatibility.
- */
-const CONFIDENCE_FACTOR = { high: 1, medium: 0.8, low: 0.5 } as const;
-function confidenceFactor(c: FindingResult["confidence"] | SecretResult["confidence"]): number {
-  return c ? CONFIDENCE_FACTOR[c] : 1;
-}
-
-/** Low-confidence signals alone warn only once they add up to this score. */
-const LOW_SIGNAL_THRESHOLD = 20;
-
 export interface DecisionInput {
   findings: FindingResult[];
   secrets: SecretResult[];
   dependencies: DependencyResult[];
 }
 
+/** How much a signal weighs in the score, by how well it is proven. */
+const ASSURANCE_FACTOR: Record<Assurance, number> = { verified: 1, likely: 0.8, uncertain: 0.5, information: 0 };
+
 /**
- * Risk Decision Engine (cahier §1, §4). Deterministic scoring → decision.
- * A secret, a critical finding/dependency or a confirmed high-severity
- * finding always blocks.
+ * Risk Decision Engine (cahier §1, §4) — deterministic. The score measures how
+ * much risk the change carries; the DECISION follows the assurance rule only,
+ * so a pile of unproven signals can never block:
+ *
+ *  - block    a `verified` critical/high finding (a proven injection, a
+ *             near-certain pattern), a `verified` secret, a `verified`
+ *             dependency risk (critical CVE, unknown package, several
+ *             critical signals together);
+ *  - warning  any `verified` or `likely` finding, a `likely` dependency or
+ *             secret — a likely high/critical one also asks for a human
+ *             review (needsHumanReview);
+ *  - passed   `uncertain` alerts stay in observation, `information` is shown
+ *             in the dashboard only.
  */
 export function decide(input: DecisionInput): Pick<
   AnalysisResult,
   "riskScore" | "decision" | "status"
 > {
-  // A low-confidence signal is reported "to review" but never decides on its
-  // own: only firm (medium/high) findings set the verdict, unless many weak
-  // signals add up (LOW_SIGNAL_THRESHOLD). Otherwise a clean PR would be
-  // warned for a checksum MD5 or an eval the taint engine cleared.
-  const firm = (c: FindingResult["confidence"] | SecretResult["confidence"]) => c !== "low";
-  const firmFindings = input.findings.filter((f) => firm(f.confidence));
+  const findings = input.findings.map((f) => ({ f, level: findingAssurance(f) }));
+  const secrets = input.secrets.map((s) => ({ s, level: secretAssurance(s) }));
+  const deps = input.dependencies.map((d) => ({ d, level: dependencyAssurance(d) }));
 
   let score = 0;
-  let firmScore = 0;
   // Repeats of the same rule are one weakness to fix, not N independent risks:
   // the first hit counts in full, each repeat a quarter, capped at 2× a single
   // hit. Linear summing pushed whole codebases to 100 on hygiene warnings
   // (e.g. 8 unpinned GitHub Actions = 64 points).
-  const perRule = new Map<string, { weight: number; repeats: number; firm: boolean }>();
-  for (const f of input.findings) {
-    const w = SEVERITY_WEIGHT[f.severity] * confidenceFactor(f.confidence);
-    const key = `${f.ruleId ?? f.title}:${f.severity}:${firm(f.confidence)}`;
+  const perRule = new Map<string, { weight: number; repeats: number }>();
+  for (const { f, level } of findings) {
+    const w = SEVERITY_WEIGHT[f.severity] * ASSURANCE_FACTOR[level];
+    const key = `${f.ruleId ?? f.title}:${f.severity}:${level}`;
     const seen = perRule.get(key);
-    if (!seen) perRule.set(key, { weight: w, repeats: 0, firm: firm(f.confidence) });
+    if (!seen) perRule.set(key, { weight: w, repeats: 0 });
     else seen.repeats++;
   }
-  for (const { weight, repeats, firm: isFirm } of perRule.values()) {
-    const w = Math.min(weight * (1 + 0.25 * repeats), weight * 2);
-    score += w;
-    if (isFirm) firmScore += w;
-  }
-  for (const s of input.secrets) {
-    const w = (SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity]) * confidenceFactor(s.confidence);
-    score += w;
-    if (firm(s.confidence)) firmScore += w;
-  }
-  for (const d of input.dependencies) {
-    score += DEP_RISK_WEIGHT[d.riskLevel];
-    firmScore += DEP_RISK_WEIGHT[d.riskLevel];
-  }
+  for (const { weight, repeats } of perRule.values()) score += Math.min(weight * (1 + 0.25 * repeats), weight * 2);
+  for (const { s, level } of secrets) score += (SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity]) * ASSURANCE_FACTOR[level];
+  for (const { d } of deps) score += DEP_RISK_WEIGHT[d.riskLevel];
   score = Math.round(Math.min(100, score));
 
-  // A low-confidence secret (e.g. a provider-shaped value in a sample file) is
-  // reported and scored, but only a confirmed secret forces a block.
-  const hasSecret = input.secrets.some((s) => s.confidence !== "low");
-  const hasCritical =
-    input.findings.some((f) => f.severity === "critical") ||
-    input.dependencies.some((d) => d.riskLevel === "critical");
-  // A high-severity issue that is CONFIRMED — a near-certain match (high
-  // confidence) or a source→sink path proven by the taint engine — blocks:
-  // a proven SQL/command/code injection must not merely warn. An unconfirmed
-  // regex hit of the same severity still only warns.
-  const hasConfirmedHigh = firmFindings.some(
-    (f) => f.severity === "high" && (f.confidence === "high" || (f.ruleId ?? "").startsWith("RUST-")),
-  );
-  const hasHigh =
-    firmFindings.some((f) => f.severity === "high") ||
-    input.dependencies.some((d) => d.riskLevel === "high");
-  const hasMedium =
-    firmFindings.some((f) => f.severity === "medium") ||
-    input.dependencies.some((d) => d.riskLevel === "medium");
+  const proven = (l: Assurance) => l === "verified";
+  const firm = (l: Assurance) => l === "verified" || l === "likely";
+  const blocks =
+    findings.some(({ f, level }) => proven(level) && (f.severity === "critical" || f.severity === "high")) ||
+    secrets.some(({ level }) => proven(level)) ||
+    deps.some(({ level }) => proven(level));
+  const warns =
+    findings.some(({ level }) => firm(level)) ||
+    secrets.some(({ level }) => firm(level)) ||
+    deps.some(({ level }) => firm(level));
 
-  let decision: Decision;
-  let status: PullRequestStatus;
-
-  if (hasSecret || hasCritical || hasConfirmedHigh || score >= 70) {
-    decision = "block";
-    status = "blocked";
-  } else if (hasHigh || score >= 40) {
-    decision = "fix";
-    status = "warning";
-  } else if (hasMedium || firmScore > 0 || score >= LOW_SIGNAL_THRESHOLD) {
-    decision = "fix";
-    status = "warning";
-  } else {
-    decision = "allow";
-    status = "passed";
-  }
-
-  return { riskScore: score, decision, status };
+  if (blocks) return { riskScore: score, decision: "block", status: "blocked" };
+  if (warns) return { riskScore: score, decision: "fix", status: "warning" };
+  return { riskScore: score, decision: "allow", status: "passed" };
 }

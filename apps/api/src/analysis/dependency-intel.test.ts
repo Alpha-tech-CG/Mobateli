@@ -46,13 +46,13 @@ test("known critical vulnerability raises risk to critical", async () => {
   assert.match(out[0]!.reason!, /GHSA-p6mc-m468-83gw/);
 });
 
-test("non-existent package (hallucinated name) is critical", async () => {
+test("non-existent package (hallucinated name) is high: a human checks it", async () => {
   const out = await enrichDependencies(
     [dep("react-super-auth-helperz")],
     fakeFetch({ querybatch: () => json({ results: [{}] }) }),
     now,
   );
-  assert.equal(out[0]!.riskLevel, "critical");
+  assert.equal(out[0]!.riskLevel, "high");
   assert.equal(out[0]!.trustScore, 0);
   assert.match(out[0]!.reason!, /n'existe pas/);
 });
@@ -112,7 +112,7 @@ test("network failure leaves the deterministic result unchanged", async () => {
   assert.deepEqual(await enrichDependencies(input, boom, now), input);
 });
 
-test("PyPI: non-existent package is critical; Go: missing module too", async () => {
+test("PyPI: non-existent package is high; Go: missing module too", async () => {
   const out = await enrichDependencies(
     [
       { ecosystem: "PyPI", name: "fastapi-securitee-helper", version: "*", trustScore: 80, riskLevel: "low" },
@@ -121,9 +121,9 @@ test("PyPI: non-existent package is critical; Go: missing module too", async () 
     fakeFetch({ querybatch: () => json({ results: [{}, {}] }) }),
     now,
   );
-  assert.equal(out[0]!.riskLevel, "critical");
+  assert.equal(out[0]!.riskLevel, "high");
   assert.match(out[0]!.reason!, /PyPI/);
-  assert.equal(out[1]!.riskLevel, "critical");
+  assert.equal(out[1]!.riskLevel, "high");
 });
 
 test("local workspace packages are not looked up on a registry", async () => {
@@ -156,4 +156,41 @@ test("established package: single maintainer / native install step are not risks
   );
   assert.equal(out[0]!.riskLevel, "low");
   assert.equal(out[0]!.trustScore, 80);
+});
+
+test("several critical signals together: an imitation that runs code at install ⇒ critical", async () => {
+  const squat: DependencyResult = { ...dep("lodahs"), riskLevel: "high", typosquatOf: "lodash" };
+  const routes = (installScript: boolean) =>
+    fakeFetch({
+      querybatch: () => json({ results: [{}] }),
+      "registry.npmjs.org/lodahs": () =>
+        json({
+          time: { created: "2020-01-01T00:00:00Z" },
+          maintainers: [{}, {}],
+          "dist-tags": { latest: "1.0.0" },
+          versions: { "1.0.0": { scripts: installScript ? { postinstall: "node steal.js" } : {} } },
+        }),
+      "last-week/lodahs": () => json({ downloads: 5_000 }),
+    });
+  const alone = await enrichDependencies([squat], routes(false), now);
+  assert.equal(alone[0]!.riskLevel, "high", "the name alone never blocks");
+  const together = await enrichDependencies([squat], routes(true), now);
+  assert.equal(together[0]!.riskLevel, "critical");
+  assert.match(together[0]!.reason!, /Plusieurs signaux critiques/);
+});
+
+test("a development dependency's known vulnerability is not a production risk", async () => {
+  const out = await enrichDependencies(
+    [{ ...dep("lodash", "^4.17.10"), dev: true }],
+    fakeFetch({
+      querybatch: () => json({ results: [{ vulns: [{ id: "GHSA-p6mc-m468-83gw" }] }] }),
+      "vulns/GHSA": () => json({ id: "GHSA-p6mc-m468-83gw", database_specific: { severity: "CRITICAL" } }),
+      "registry.npmjs.org/lodash": () =>
+        json({ time: { created: "2012-04-23T00:00:00Z" }, maintainers: [{}, {}], license: "MIT" }),
+      "last-week/lodash": () => json({ downloads: 50_000_000 }),
+    }),
+    now,
+  );
+  assert.equal(out[0]!.riskLevel, "medium");
+  assert.match(out[0]!.reason!, /GHSA-p6mc-m468-83gw/);
 });

@@ -78,6 +78,6 @@ test("analyzeFiles: whole files are analysed like added lines", () => {
   ]);
   assert.deepEqual(r.secrets.map((s) => s.location), ["src/config.ts:1"]);
   assert.ok(r.findings.some((f) => f.ruleId === "CHILD_PROCESS_INJECTION" && f.line === 2));
-  assert.equal(r.dependencies[0]?.riskLevel, "critical");
+  assert.equal(r.dependencies[0]?.riskLevel, "high", "a typosquat alone is reviewed, not blocked");
   assert.equal(r.status, "blocked");
 });

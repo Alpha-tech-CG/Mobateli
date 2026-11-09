@@ -28,18 +28,34 @@ test("decision: low-confidence findings alone do not warn", () => {
   assert.ok(r.riskScore > 0, "still scored");
 });
 
-test("decision: many weak signals add up to a warning", () => {
-  // Distinct weaknesses: repeats of ONE rule count as one weakness (risk.ts).
-  const weak = Array.from({ length: 3 }, (_, i) => finding({ line: i, ruleId: `R${i}`, confidence: "low" }));
-  assert.equal(decide({ findings: weak, secrets: [], dependencies: [] }).status, "warning");
+test("decision: uncertain alerts stay in observation, however many there are", () => {
+  // An alert without proof never decides: ten weak signals are still ten
+  // signals to review, not a reason to warn or block.
+  const weak = Array.from({ length: 10 }, (_, i) => finding({ line: i, ruleId: `R${i}`, confidence: "low" }));
+  const r = decide({ findings: weak, secrets: [], dependencies: [] });
+  assert.equal(r.status, "passed");
+  assert.ok(r.riskScore > 0, "still scored");
 });
 
-test("decision: a firm finding still warns, a critical still blocks", () => {
+test("decision: a likely finding warns; a critical blocks only when verified", () => {
   assert.equal(decide({ findings: [finding({ confidence: "medium" })], secrets: [], dependencies: [] }).status, "warning");
-  assert.equal(
-    decide({ findings: [finding({ severity: "critical", confidence: "low" })], secrets: [], dependencies: [] }).status,
-    "blocked",
-  );
+  const at = (confidence: "low" | "medium" | "high") =>
+    decide({ findings: [finding({ severity: "critical", confidence })], secrets: [], dependencies: [] }).status;
+  assert.equal(at("low"), "passed", "uncertain: observation");
+  assert.equal(at("medium"), "warning", "likely: warning + human review");
+  assert.equal(at("high"), "blocked", "verified: block");
+});
+
+test("decision: an alert without a reliable location never blocks", () => {
+  const unlocated: FindingResult = { type: "sast", severity: "critical", title: "t", description: "d", ruleId: "R", confidence: "high" };
+  assert.equal(decide({ findings: [unlocated], secrets: [], dependencies: [] }).status, "warning");
+});
+
+test("decision: one weak dependency signal never blocks; several critical ones do", () => {
+  const dep = (riskLevel: "critical" | "high" | "medium") => ({ ecosystem: "npm", name: "x", version: "1", trustScore: 10, riskLevel });
+  assert.equal(decide({ findings: [], secrets: [], dependencies: [dep("medium")] }).status, "passed");
+  assert.equal(decide({ findings: [], secrets: [], dependencies: [dep("high")] }).status, "warning");
+  assert.equal(decide({ findings: [], secrets: [], dependencies: [dep("critical")] }).status, "blocked");
 });
 
 test("policy: a low-confidence high finding does not trip a high threshold", () => {
@@ -53,11 +69,11 @@ test("policy: a low-confidence high finding does not trip a high threshold", () 
   assert.equal(resolveEnforcement(r2, "block", [{ action: "block", severityThreshold: "high" }]).blocked, true);
 });
 
-test("comment: weak signals are listed apart, as 'to review'", () => {
+test("comment: uncertain signals are listed apart, in observation", () => {
   const findings = [finding({ title: "ferme", confidence: "high" }), finding({ title: "faible", confidence: "low", line: 2 })];
   const md = buildPrComment({ findings, secrets: [], dependencies: [], ...decide({ findings, secrets: [], dependencies: [] }) });
   assert.match(md, /Problèmes de code \(1\)/);
-  assert.match(md, /À vérifier — confiance basse \(1\)/);
+  assert.match(md, /En observation[^(]*\(1\)/);
 });
 
 test("decision: a confirmed high-severity finding blocks, an unconfirmed one warns", () => {

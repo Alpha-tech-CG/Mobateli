@@ -1,3 +1,4 @@
+import { findingAssurance, needsHumanReview } from "./assurance.js";
 import { ENGINE_CATALOG } from "@codegate/shared";
 import type {
   AnalysisResult,
@@ -110,17 +111,28 @@ export function buildPrComment(
   }
   const risks = result.findings.filter((f) => f.severity !== "info");
   const notes = result.findings.filter((f) => f.severity === "info");
-  const firm = risks.filter((f) => f.confidence !== "low");
-  const toReview = risks.filter((f) => f.confidence === "low");
+  const level = (f: FindingResult) => findingAssurance(f);
+  const firm = risks.filter((f) => level(f) === "verified" || level(f) === "likely");
+  const toReview = risks.filter((f) => level(f) === "uncertain");
+  const proofLine = (f: FindingResult) => {
+    const tag = level(f) === "verified" ? "prouvée" : needsHumanReview(f) ? "probable — validation humaine requise" : "probable";
+    const evidence = f.details?.evidence ? `\n  \`${f.details.evidence.replace(/`/g, "'")}\`` : "";
+    const scenario = f.details?.scenario ? `\n  <sub>Scénario : ${f.details.scenario}</sub>` : "";
+    return `- **[${f.severity} · ${tag}]** ${explainFinding(f)}${evidence}${scenario}`;
+  };
   if (firm.length) {
     lines.push(`### 🔎 Problèmes de code (${firm.length})`);
-    for (const f of firm) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+    for (const f of firm) lines.push(proofLine(f));
     lines.push("");
   }
   if (toReview.length) {
-    // Weak signals: listed for a human look, they do not drive the verdict.
-    lines.push(`### 🔍 À vérifier — confiance basse (${toReview.length})`);
-    for (const f of toReview) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+    // Uncertain signals are in observation: listed for a human look, they
+    // never drive the verdict.
+    lines.push(`### 🔍 En observation — preuve insuffisante, sans effet sur la décision (${toReview.length})`);
+    for (const f of toReview) {
+      const why = f.details?.observationReason ? ` _(${f.details.observationReason})_` : "";
+      lines.push(`- **[${f.severity}]** ${explainFinding(f)}${why}`);
+    }
     lines.push("");
   }
   const failed = failedEngines(result.engines);

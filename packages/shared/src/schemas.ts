@@ -194,9 +194,12 @@ export const findingsQuerySchema = z.object({
 });
 
 export const updateFindingSchema = z.object({
-  status: z.enum(FINDING_STATUSES),
+  // "suppressed" is set by an approved exception, never by hand.
+  status: z.enum(["open", "acknowledged", "resolved", "false_positive", "accepted_risk"]),
   /** Why it is a false positive / accepted — kept in the audit trail. */
   reason: z.string().max(500).optional(),
+  category: z.enum(["wrong_file", "wrong_line", "wrong_framework", "wrong_rule", "wrong_context", "duplicate", "too_vague"]).optional(),
+  expiresAt: z.string().datetime().optional(),
 });
 export type UpdateFindingInput = z.infer<typeof updateFindingSchema>;
 
@@ -511,3 +514,124 @@ export const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });
 export type PaginationInput = z.infer<typeof paginationSchema>;
+
+// ─── Anti-noise governance: verdicts, exceptions, rules, contests ─────────
+
+/** Why a team says an alert is wrong — feeds the rule's improvement. */
+export const FALSE_POSITIVE_CATEGORIES = [
+  "wrong_file",
+  "wrong_line",
+  "wrong_framework",
+  "wrong_rule",
+  "wrong_context",
+  "duplicate",
+  "too_vague",
+] as const;
+export type FalsePositiveCategory = (typeof FALSE_POSITIVE_CATEGORIES)[number];
+
+/** A verdict never lasts forever: at most a year, then the alert comes back. */
+const MAX_VERDICT_DAYS = 365;
+const futureDate = z
+  .string()
+  .datetime()
+  .refine((d) => new Date(d).getTime() > Date.now(), "La date d'expiration doit être dans le futur")
+  .refine(
+    (d) => new Date(d).getTime() <= Date.now() + MAX_VERDICT_DAYS * 86_400_000,
+    `Au plus ${MAX_VERDICT_DAYS} jours`,
+  );
+
+/**
+ * The team's verdict on one alert. A false positive needs a category and a
+ * reason; an accepted risk a reason and an expiry date. Both lapse (a false
+ * positive after 90 days by default).
+ */
+export const findingFeedbackSchema = z
+  .object({
+    verdict: z.enum(["false_positive", "confirmed", "accepted_risk"]),
+    note: z.string().trim().max(500).optional(),
+    category: z.enum(FALSE_POSITIVE_CATEGORIES).optional(),
+    expiresAt: futureDate.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.verdict !== "confirmed" && (v.note ?? "").length < 5) {
+      ctx.addIssue({ code: "custom", path: ["note"], message: "Raison obligatoire (5 caractères minimum)" });
+    }
+    if (v.verdict === "false_positive" && !v.category) {
+      ctx.addIssue({ code: "custom", path: ["category"], message: "Catégorie de faux positif obligatoire" });
+    }
+    if (v.verdict === "accepted_risk" && !v.expiresAt) {
+      ctx.addIssue({ code: "custom", path: ["expiresAt"], message: "Date d'échéance obligatoire pour un risque accepté" });
+    }
+  });
+export type FindingFeedbackInput = z.infer<typeof findingFeedbackSchema>;
+
+/**
+ * A controlled exception. Never global by default: it targets a repository
+ * unless `orgWide` is set, and it must name what it covers. An expiry date is
+ * required unless `permanent` (Security Manager approval only).
+ */
+export const createExceptionSchema = z
+  .object({
+    repositoryId: z.string().uuid().optional(),
+    orgWide: z.boolean().default(false),
+    ruleId: z.string().trim().min(1).max(120).optional(),
+    pathGlob: z.string().trim().min(1).max(300).optional(),
+    riskType: z.string().trim().min(1).max(40).optional(),
+    dependency: z.string().trim().min(1).max(214).optional(),
+    dependencyVersion: z.string().trim().min(1).max(100).optional(),
+    branch: z.string().trim().min(1).max(200).optional(),
+    environment: z.enum(["production", "staging", "development"]).optional(),
+    reason: z.string().trim().min(10).max(1000),
+    ticketUrl: z.string().url().max(500).optional(),
+    expiresAt: futureDate.optional(),
+    permanent: z.boolean().default(false),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.ruleId && !v.pathGlob && !v.riskType && !v.dependency) {
+      ctx.addIssue({ code: "custom", path: ["ruleId"], message: "Précisez ce que couvre l'exception (règle, chemin, type de risque ou dépendance)" });
+    }
+    if (!v.repositoryId && !v.orgWide) {
+      ctx.addIssue({ code: "custom", path: ["repositoryId"], message: "Dépôt obligatoire (ou exception explicitement à l'échelle de l'organisation)" });
+    }
+    if (v.dependencyVersion && !v.dependency) {
+      ctx.addIssue({ code: "custom", path: ["dependencyVersion"], message: "Une version suppose une dépendance" });
+    }
+    if (!v.permanent && !v.expiresAt) {
+      ctx.addIssue({ code: "custom", path: ["expiresAt"], message: "Date d'expiration obligatoire" });
+    }
+    if (v.permanent && v.expiresAt) {
+      ctx.addIssue({ code: "custom", path: ["permanent"], message: "Une exception permanente n'a pas de date d'expiration" });
+    }
+  });
+export type CreateExceptionInput = z.infer<typeof createExceptionSchema>;
+
+export const RULE_FEEDBACK_KINDS = [
+  "noisy",
+  "useless",
+  "improve",
+  "disable",
+  "restrict",
+  "raise_severity",
+  "lower_severity",
+] as const;
+export type RuleFeedbackKind = (typeof RULE_FEEDBACK_KINDS)[number];
+
+export const ruleFeedbackSchema = z.object({
+  kind: z.enum(RULE_FEEDBACK_KINDS),
+  note: z.string().trim().max(1000).optional(),
+  findingId: z.string().uuid().optional(),
+});
+
+export const ruleSettingSchema = z.object({
+  mode: z.enum(["active", "observation"]),
+  reason: z.string().trim().min(5).max(500),
+});
+
+export const contestBlockSchema = z.object({
+  reason: z.string().trim().min(10).max(1000),
+});
+
+export const resolveContestSchema = z.object({
+  decision: z.enum(["upheld", "overturned"]),
+  resolution: z.string().trim().min(5).max(1000),
+});

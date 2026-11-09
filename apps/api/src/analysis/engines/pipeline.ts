@@ -10,8 +10,10 @@ import { parseUnifiedDiff, type ParsedDiff } from "../diff.js";
 import { filesFromDiff } from "../rust-engine.js";
 import { scanWithEngine, type EngineOutput } from "../engine/index.js";
 import { fingerprintFindings } from "../fingerprint.js";
+import { findingAssurance } from "../assurance.js";
+import { detailsFor } from "../alert-details.js";
 import { decide } from "../risk.js";
-import type { AnalysisResult, EngineReport, EngineStatusFn, FindingResult } from "../types.js";
+import type { AnalysisResult, DependencyResult, EngineReport, EngineStatusFn, FindingResult } from "../types.js";
 import type {
   AnalysisEngine,
   AnalysisTotals,
@@ -45,12 +47,18 @@ export interface RunAnalysisOptions {
    * default branch, see ignore.ts), on top of the configured ignorePaths.
    */
   isIgnored?: (path: string) => boolean;
+  /** Rules in observation and approved exceptions (see Judgement). */
+  judge?: Judgement;
 }
 
 /** Analysis result, plus what the dashboard and the audit trail record. */
 export type PipelineResult = AnalysisResult & {
   /** Findings matching a human "false positive" verdict — not scored. */
   suppressed: FindingResult[];
+  /** Findings covered by an approved exception — not scored, kept for the record. */
+  excepted: (FindingResult & { exceptionId: string })[];
+  /** Dependencies covered by an approved exception. */
+  exceptedDependencies: (DependencyResult & { exceptionId: string })[];
   /** Which code analyzer ran: "rust-wasm <version>" or "typescript". */
   engine: string;
 };
@@ -100,7 +108,20 @@ function astMemo(parsed: ParsedDiff): () => EngineOutput | null {
   };
 }
 
-/** Severity floor, human verdicts, then the risk decision. */
+/**
+ * How human decisions and rule health shape a result, on top of the engines:
+ *  - `observedRules`: rules in observation (too noisy, or set so by a
+ *    reviewer) — their alerts are shown as `uncertain` and never decide;
+ *  - `exceptionFor` / `dependencyExceptionFor`: an approved, unexpired
+ *    exception covering the alert (owner, reason, expiry — see exceptions.ts).
+ */
+export interface Judgement {
+  observedRules?: ReadonlyMap<string, string>;
+  exceptionFor?: (f: FindingResult) => string | null;
+  dependencyExceptionFor?: (d: DependencyResult) => string | null;
+}
+
+/** Severity floor, assurance, human verdicts and exceptions, then the decision. */
 function finish(
   totals: AnalysisTotals,
   settings: AnalysisSettings,
@@ -109,19 +130,49 @@ function finish(
   ast: () => EngineOutput | null,
   astUsed: boolean,
   unfiltered: ParsedDiff,
+  judge: Judgement = {},
 ): PipelineResult {
   const kept = aboveMinSeverity(totals, settings.minSeverity);
+  const lineOf = new Map(unfiltered.addedLines.map((l) => [`${l.file}:${l.line}`, l.content]));
   // Each finding carries its fingerprint (rule, file, flagged code): the key of
-  // a human verdict, stable when the line moves.
-  const all = fingerprintFindings(kept.findings, unfiltered);
-  const findings = all.filter((f) => !suppressedSet.has(f.fingerprint!));
-  const suppressed = all.filter((f) => suppressedSet.has(f.fingerprint!));
-  const { riskScore, decision, status } = decide({ ...kept, findings });
+  // a human verdict, stable when the line moves — then its assurance and the
+  // proof/guidance shown with it.
+  const all = fingerprintFindings(kept.findings, unfiltered).map((f) => {
+    const details = detailsFor(f, lineOf.get(`${f.filePath}:${f.line}`));
+    const observed = f.ruleId ? judge.observedRules?.get(f.ruleId) : undefined;
+    if (observed && f.severity !== "info") {
+      return { ...f, assurance: "uncertain" as const, details: { ...details, observationReason: observed } };
+    }
+    return { ...f, assurance: findingAssurance(f), details };
+  });
+  const excepted: (FindingResult & { exceptionId: string })[] = [];
+  const findings: FindingResult[] = [];
+  const suppressed: FindingResult[] = [];
+  for (const f of all) {
+    if (suppressedSet.has(f.fingerprint!)) {
+      suppressed.push(f);
+      continue;
+    }
+    const exceptionId = judge.exceptionFor?.(f) ?? null;
+    if (exceptionId) excepted.push({ ...f, exceptionId });
+    else findings.push(f);
+  }
+  const exceptedDependencies: (DependencyResult & { exceptionId: string })[] = [];
+  const dependencies: DependencyResult[] = [];
+  for (const d of kept.dependencies) {
+    const exceptionId = judge.dependencyExceptionFor?.(d) ?? null;
+    if (exceptionId) exceptedDependencies.push({ ...d, exceptionId });
+    else dependencies.push(d);
+  }
+  const { riskScore, decision, status } = decide({ ...kept, findings, dependencies });
   const wasm = astUsed ? ast() : null;
   return {
     ...kept,
     findings,
+    dependencies,
     suppressed,
+    excepted,
+    exceptedDependencies,
     riskScore,
     decision,
     status,
@@ -161,6 +212,7 @@ export function runCoreAnalysis(
   suppressedSet: ReadonlySet<string> = new Set(),
   registry: readonly AnalysisEngine[] = ENGINES,
   isIgnored?: (path: string) => boolean,
+  judge?: Judgement,
 ): PipelineResult {
   const { parsed, unfiltered } = toParsed(input, settings, isIgnored);
   const files = filesFromDiff(parsed);
@@ -182,7 +234,7 @@ export function runCoreAnalysis(
     totals = contribution(totals);
     statuses[engine.id] ??= { status: "ok" };
   }
-  return finish(totals, settings, suppressedSet, statuses, ast, astUsed, unfiltered);
+  return finish(totals, settings, suppressedSet, statuses, ast, astUsed, unfiltered, judge);
 }
 
 /**
@@ -288,5 +340,5 @@ export async function runAnalysis(
     }
   }
 
-  return finish(totals, settings, opts.suppressed ?? new Set(), statuses, ast, astUsed, unfiltered);
+  return finish(totals, settings, opts.suppressed ?? new Set(), statuses, ast, astUsed, unfiltered, opts.judge);
 }

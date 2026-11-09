@@ -120,9 +120,27 @@ export interface Finding {
   line: number | null;
   ruleId: string | null;
   remediation: string | null;
-  /** open | acknowledged (confirmed by the team) | false_positive | resolved */
+  /** open | acknowledged | false_positive | accepted_risk | suppressed | resolved */
   status: string;
   fingerprint?: string | null;
+  /** high | medium | low — how sure the match is, separate from severity. */
+  confidence?: string | null;
+  /** verified | likely | uncertain | information — how well it is proven. */
+  assurance?: string | null;
+  /** Evidence (masked), attack scenario, conditions, reproduction, CWE/OWASP. */
+  details?: FindingDetails | null;
+  /** When covered by an exception (status suppressed). */
+  exceptionId?: string | null;
+}
+
+export interface FindingDetails {
+  evidence?: string;
+  scenario?: string;
+  conditions?: string[];
+  reproduction?: string;
+  observationReason?: string;
+  cwe?: string;
+  owasp?: string;
 }
 
 /** Per-rule false-positive rate (pilot metric). */

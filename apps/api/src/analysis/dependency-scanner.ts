@@ -106,6 +106,26 @@ interface DepEntry {
   name: string;
   version: string;
   ecosystem: "npm" | "PyPI" | "Go";
+  /** Declared in devDependencies: tooling, not shipped to production. */
+  dev?: boolean;
+}
+
+/**
+ * The package.json section of each ADDED line of a diff, in order (a hunk
+ * that starts inside a section without its header gives "" — treated as
+ * production, the cautious reading).
+ */
+function npmSectionsOfAddedLines(diff: ParsedDiff, file: string): string[] {
+  const out: string[] = [];
+  let section = "";
+  for (const l of diff.newSideByFile.get(file) ?? []) {
+    if (l.hunkStart) section = "";
+    const header = l.content.match(/^\s*"(\w+)"\s*:\s*\{/);
+    if (header) section = header[1]!;
+    else if (/^\s*\}/.test(l.content)) section = "";
+    if (l.added) out.push(section);
+  }
+  return out;
 }
 
 const NOT_DEPENDENCIES = new Set([
@@ -147,7 +167,9 @@ export function extractAddedDependencies(diff: ParsedDiff): DepEntry[] {
         const block = pkg[section];
         if (!block || typeof block !== "object") continue;
         for (const [name, version] of Object.entries(block as Record<string, unknown>)) {
-          if (typeof version === "string") deps.push({ name, version, ecosystem: "npm" });
+          if (typeof version === "string") {
+            deps.push({ name, version, ecosystem: "npm", ...(section === "devDependencies" ? { dev: true } : {}) });
+          }
         }
       }
       parsedManifests.add(file);
@@ -156,15 +178,21 @@ export function extractAddedDependencies(diff: ParsedDiff): DepEntry[] {
     }
   }
 
+  const sections = new Map<string, string[]>();
+  const seenInFile = new Map<string, number>();
   for (const { file, content } of diff.addedLines) {
     const base = file.split("/").pop() ?? file;
     if (base === "package.json") {
       if (parsedManifests.has(file)) continue;
+      if (!sections.has(file)) sections.set(file, npmSectionsOfAddedLines(diff, file));
+      const index = seenInFile.get(file) ?? 0;
+      seenInFile.set(file, index + 1);
+      const section = sections.get(file)![index] ?? "";
       const m = content.match(npmEntry);
       // Scripts ("test": "mocha …"), engines and URLs are not dependencies:
       // keep entries whose value looks like a version specifier.
       if (m && !NOT_DEPENDENCIES.has(m[1]!) && looksLikeVersionSpec(m[2]!)) {
-        deps.push({ name: m[1]!, version: m[2]!, ecosystem: "npm" });
+        deps.push({ name: m[1]!, version: m[2]!, ecosystem: "npm", ...(section === "devDependencies" ? { dev: true } : {}) });
       }
     } else if (/^requirements.*\.txt$/.test(base)) {
       if (/^\s*(-|#|$)/.test(content) || content.includes("://")) continue;
@@ -197,12 +225,16 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
     return { ecosystem: dep.ecosystem, name: dep.name, version: dep.version, trustScore: trust, riskLevel: "low" };
   }
 
+  // A name close to a popular package is a strong hint, never a proof on its
+  // own: "high" (human review). It becomes critical only together with
+  // another critical signal (install scripts, unknown or brand-new package…)
+  // — see dependency-intel.
   const squat = nearestPopular(dep.name, dep.ecosystem);
   if (squat) {
     trust -= 60;
-    risk = "critical";
+    risk = "high";
     reasons.push(
-      `Nom très proche de "${squat.target}" (distance ${squat.distance}) — typosquatting probable.`,
+      `Nom très proche de "${squat.target}" (distance ${squat.distance}) — typosquatting possible, à vérifier.`,
     );
   }
 
@@ -230,6 +262,8 @@ export function scoreDependency(dep: DepEntry): DependencyResult {
     version: dep.version,
     trustScore: trust,
     riskLevel: risk,
+    ...(squat ? { typosquatOf: squat.target } : {}),
+    ...(dep.dev ? { dev: true } : {}),
     ...(reasons.length ? { reason: reasons.join(" ") } : {}),
   };
 }

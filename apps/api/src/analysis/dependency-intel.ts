@@ -192,7 +192,10 @@ export async function enrichDependencies(
         );
         let worst: DependencyRisk = "medium";
         for (const d of details) if (d.body) worst = raise(worst, osvSeverity(d.body));
-        risk = raise(risk, worst);
+        // A development dependency is not shipped: its known vulnerabilities
+        // are not a production risk (observation). Malicious-package signals
+        // below still count — install scripts run on CI and dev machines.
+        risk = raise(risk, dep.dev ? "medium" : worst);
         trust -= worst === "critical" ? 50 : worst === "high" ? 35 : 20;
         reasons.push(
           `${ids.length} vulnérabilité(s) connue(s) pour ${dep.name}@${versions[i] ?? dep.version} : ${ids
@@ -204,10 +207,13 @@ export async function enrichDependencies(
       // ── Registry metadata ──
       const registry = await registryFacts(fetchImpl, dep);
       if (registry.missing) {
+        // Unknown to the registry: probably a name invented by an AI agent,
+        // which an attacker could publish. Not proven malicious — a human
+        // checks it before anyone installs it.
         return {
           ...dep,
           trustScore: 0,
-          riskLevel: "critical" as const,
+          riskLevel: "high" as const,
           reason: [
             ...reasons,
             `Ce paquet n'existe pas sur ${REGISTRY_NAME[dep.ecosystem] ?? dep.ecosystem} : nom probablement inventé par l'IA (un attaquant peut le publier).`,
@@ -241,6 +247,15 @@ export async function enrichDependencies(
         trust -= 15;
         risk = raise(risk, "medium");
         reasons.push(`Très peu utilisé (${registry.weeklyDownloads} téléchargements / semaine).`);
+      }
+      // Several critical signals together: a name imitating a popular
+      // package AND code run at install time, or AND a brand-new / barely
+      // used package. Each alone only warns; together they block.
+      const fresh = registry.created !== undefined && now.getTime() - registry.created.getTime() < 30 * DAY;
+      const unused = registry.weeklyDownloads !== undefined && registry.weeklyDownloads < 100;
+      if (dep.typosquatOf && (registry.installHooks.length > 0 || fresh || unused)) {
+        risk = "critical";
+        reasons.push(`Plusieurs signaux critiques réunis : imitation de "${dep.typosquatOf}" et paquet ${registry.installHooks.length ? "exécutant du code à l'installation" : fresh ? "publié très récemment" : "presque inutilisé"}.`);
       }
 
       trust = Math.max(0, Math.min(100, trust));

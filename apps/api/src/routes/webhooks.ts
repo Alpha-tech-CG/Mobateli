@@ -118,12 +118,14 @@ async function handlePullRequest(
       author: pr.user?.login ?? "unknown",
       aiGenerated,
       headSha: pr.head?.sha ?? null,
+      baseBranch: pr.base?.ref ?? null,
       status: "pending",
     },
     update: {
       title: pr.title ?? "",
       aiGenerated,
       headSha: pr.head?.sha ?? null,
+      baseBranch: pr.base?.ref ?? null,
       status: "pending",
     },
     select: { id: true },
@@ -215,9 +217,16 @@ async function handleGitlabMergeRequest(
       author,
       aiGenerated,
       headSha: attrs.last_commit?.id ?? null,
+      baseBranch: attrs.target_branch ?? null,
       status: "pending",
     },
-    update: { title, aiGenerated, headSha: attrs.last_commit?.id ?? null, status: "pending" },
+    update: {
+      title,
+      aiGenerated,
+      headSha: attrs.last_commit?.id ?? null,
+      baseBranch: attrs.target_branch ?? null,
+      status: "pending",
+    },
     select: { id: true },
   });
 

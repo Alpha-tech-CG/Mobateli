@@ -10,6 +10,7 @@ import { authRoutes } from "./routes/auth.js";
 import { organizationRoutes } from "./routes/organizations.js";
 import { policyRoutes } from "./routes/policies.js";
 import { findingRoutes } from "./routes/findings.js";
+import { governanceRoutes } from "./routes/governance.js";
 import { pullRequestRoutes } from "./routes/pull-requests.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -109,6 +110,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     await integrationRoutes(instance, config);
   });
   await app.register(findingRoutes);
+  await app.register(governanceRoutes);
   await app.register(settingsRoutes);
   await app.register(privacyRoutes);
   await app.register(approvalRoutes);

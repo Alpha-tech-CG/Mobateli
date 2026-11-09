@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, getSession } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { ReportButton } from "@/components/report-button";
-import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
+import { FindingCard, type FindingVerdict } from "@/components/finding-card";
+import { Card, StatusBadge } from "@/components/ui";
 import type { Finding, LastAnalysis, PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
 
 export default function PullRequestDetailPage() {
@@ -45,36 +46,67 @@ function Detail() {
   useEffect(load, [id]);
 
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const canReview = ["owner", "admin", "security_manager"].includes(getSession()?.role ?? "");
 
-  // Team verdict on an alert (pilot false-positive tracking). A false
-  // positive stops counting in later verdicts for the same code on this repo.
-  async function giveFeedback(f: Finding, verdict: "false_positive" | "confirmed" | null) {
+  function onError(e: unknown) {
+    const code = e instanceof ApiError ? e.code : "";
+    setFeedbackError(
+      code === "forbidden"
+        ? "Seuls les rôles owner, admin et security_manager peuvent qualifier une alerte."
+        : code === "rescan_required"
+          ? "Alerte antérieure au suivi : relancez l'analyse de la PR puis réessayez."
+          : "Impossible d'enregistrer le retour.",
+    );
+  }
+
+  // Team verdict on an alert: true positive, false positive (with a category)
+  // or accepted risk (with an expiry). It carries to the same alert everywhere
+  // on this repository and rescores the PR.
+  async function giveVerdict(f: Finding, v: FindingVerdict) {
     setFeedbackError(null);
-    // Dismissing an alert is a security decision: its reason goes to the audit trail.
-    const note =
-      verdict === "false_positive"
-        ? prompt("Pourquoi est-ce une fausse alerte ? (conservé dans le journal d'audit)")
-        : undefined;
-    if (verdict === "false_positive" && note === null) return;
     try {
-      if (verdict) {
-        await api(`/api/v1/findings/${f.id}/feedback`, {
-          method: "PUT",
-          body: JSON.stringify({ verdict, ...(note ? { note } : {}) }),
-        });
-      } else {
-        await api(`/api/v1/findings/${f.id}/feedback`, { method: "DELETE", body: "{}" });
-      }
+      await api(`/api/v1/findings/${f.id}/feedback`, { method: "PUT", body: JSON.stringify(v) });
+      load();
+    } catch (e) {
+      onError(e);
+    }
+  }
+
+  async function clearVerdict(f: Finding) {
+    setFeedbackError(null);
+    try {
+      await api(`/api/v1/findings/${f.id}/feedback`, { method: "DELETE", body: "{}" });
+      load();
+    } catch (e) {
+      onError(e);
+    }
+  }
+
+  // Feedback on the RULE itself (too noisy, to disable, to restrict…): feeds
+  // the rule's improvement and the auto-observation of noisy rules.
+  async function ruleFeedback(f: Finding, kind: string) {
+    if (!f.ruleId) return;
+    setFeedbackError(null);
+    try {
+      await api(`/api/v1/rules/${encodeURIComponent(f.ruleId)}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({ kind, findingId: f.id }),
+      });
+    } catch (e) {
+      onError(e);
+    }
+  }
+
+  // Contest a block: a reviewer then upholds or overturns it.
+  async function contest() {
+    const reason = prompt("Pourquoi contester ce blocage ? (au moins 10 caractères)");
+    if (!reason || reason.trim().length < 10) return;
+    try {
+      await api(`/api/v1/pull-requests/${id}/contest`, { method: "POST", body: JSON.stringify({ reason }) });
       load();
     } catch (e) {
       const code = e instanceof ApiError ? e.code : "";
-      setFeedbackError(
-        code === "forbidden"
-          ? "Seuls les rôles owner, admin et security_manager peuvent qualifier une alerte."
-          : code === "rescan_required"
-            ? "Alerte antérieure au suivi : relancez l'analyse de la PR puis réessayez."
-            : "Impossible d'enregistrer le retour.",
-      );
+      setFeedbackError(code === "already_contested" ? "Ce blocage est déjà contesté." : "Contestation impossible.");
     }
   }
 
@@ -180,65 +212,28 @@ function Detail() {
         )}
       </Section>
 
+      {pr.status === "blocked" ? (
+        <div className="mb-6 flex items-center justify-between gap-3 rounded border border-destructive/40 bg-destructive/5 px-4 py-2 text-sm">
+          <span>Ce blocage repose sur des alertes prouvées. Vous le jugez erroné ?</span>
+          <button type="button" onClick={contest} className="rounded border border-border px-2 py-1 text-xs hover:bg-muted">
+            Contester le blocage
+          </button>
+        </div>
+      ) : null}
+
       <Section title={`🔎 Problèmes de code (${pr.findings.length})`}>
         {feedbackError ? <p className="px-4 pt-3 text-sm text-destructive">{feedbackError}</p> : null}
         {pr.findings.length ? (
           <ul className="divide-y divide-border">
             {pr.findings.map((f) => (
-              <li
+              <FindingCard
                 key={f.id}
-                className={`px-4 py-3 text-sm ${f.status === "false_positive" ? "opacity-60" : ""}`}
-              >
-                <div className="flex items-center gap-2">
-                  <SeverityBadge severity={f.severity} />
-                  <span className={`font-medium ${f.status === "false_positive" ? "line-through" : ""}`}>{f.title}</span>
-                  {f.status === "false_positive" ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs">fausse alerte</span>
-                  ) : f.status === "acknowledged" ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs">confirmée</span>
-                  ) : null}
-                  {f.filePath ? (
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {f.filePath}
-                      {f.line ? `:${f.line}` : ""}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="mt-1 text-muted-foreground">{f.description}</p>
-                {f.remediation ? (
-                  <p className="mt-1 text-xs">
-                    <span className="font-medium">Correctif :</span> {f.remediation}
-                  </p>
-                ) : null}
-                <div className="mt-2 flex gap-2 text-xs">
-                  {f.status === "open" ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => giveFeedback(f, "false_positive")}
-                        className="rounded border border-border px-2 py-0.5 hover:bg-muted"
-                      >
-                        Fausse alerte
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => giveFeedback(f, "confirmed")}
-                        className="rounded border border-border px-2 py-0.5 hover:bg-muted"
-                      >
-                        Confirmée
-                      </button>
-                    </>
-                  ) : f.status === "false_positive" || f.status === "acknowledged" ? (
-                    <button
-                      type="button"
-                      onClick={() => giveFeedback(f, null)}
-                      className="rounded border border-border px-2 py-0.5 hover:bg-muted"
-                    >
-                      Annuler le retour
-                    </button>
-                  ) : null}
-                </div>
-              </li>
+                finding={f}
+                canReview={canReview}
+                onVerdict={giveVerdict}
+                onClear={clearVerdict}
+                onRuleFeedback={ruleFeedback}
+              />
             ))}
           </ul>
         ) : (

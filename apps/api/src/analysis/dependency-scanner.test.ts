@@ -17,7 +17,7 @@ test("requirements.txt: pinned, ranged, extras; comments and options skipped", (
     ["PyPI", "uvicorn", "0.30"],
     ["PyPI", "reqeusts", "*"],
   ]);
-  assert.equal(deps[2]!.riskLevel, "critical", "typosquat of requests");
+  assert.equal(deps[2]!.riskLevel, "high", "typosquat of requests: a hint to review, not a proof");
 });
 
 test("pyproject.toml: PEP 621 and Poetry entries, metadata keys ignored", () => {
@@ -50,7 +50,7 @@ test("package.json in a PR diff: scripts, engines and URLs are not dependencies"
   );
   assert.deepEqual(deps.map((d) => [d.name, d.riskLevel]), [
     ["qs", "low"],
-    ["lodahs", "critical"],
+    ["lodahs", "high"],
   ]);
 });
 
@@ -70,4 +70,22 @@ test("whole package.json (repository scan): only dependency sections are read", 
   ]);
   assert.deepEqual(r.dependencies.map((d) => d.name).sort(), ["express", "mocha"]);
   assert.equal(r.riskScore, 0);
+});
+
+test("package.json in a PR diff: devDependencies are marked as such", () => {
+  const diff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1,3 +1,7 @@",
+    " {",
+    '   "dependencies": {',
+    '+    "express": "^4.19.2"',
+    "   },",
+    '   "devDependencies": {',
+    '+    "vitest": "^2.0.0"',
+    "   }",
+  ].join("\n");
+  const deps = scanDependencies(parseUnifiedDiff(diff));
+  assert.deepEqual(deps.map((d) => [d.name, d.dev ?? false]), [["express", false], ["vitest", true]]);
 });

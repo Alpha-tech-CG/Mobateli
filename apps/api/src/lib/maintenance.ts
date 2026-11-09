@@ -2,6 +2,7 @@ import { prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
 import { recordAudit } from "./audit.js";
 import { notifySlack } from "./notify.js";
+import { remindExpiringExceptions } from "./exceptions.js";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -17,7 +18,7 @@ export interface MaintenanceSummary {
     throttles: number;
     deliveries: number;
   };
-  alerts: { missingBackups: number; silentAgents: number };
+  alerts: { missingBackups: number; silentAgents: number; expiringExceptions: number };
 }
 
 /**
@@ -99,6 +100,9 @@ export async function runMaintenance(config: AppConfig, now = new Date()): Promi
     });
   }
 
+  // Exceptions about to lapse: their owners renew them or let the alerts back.
+  const expiring = await remindExpiringExceptions(config.ENCRYPTION_KEY, now);
+
   return {
     purged: {
       pullRequests: pullRequests.count,
@@ -108,6 +112,6 @@ export async function runMaintenance(config: AppConfig, now = new Date()): Promi
       throttles: throttles.count,
       deliveries: deliveries.count,
     },
-    alerts: { missingBackups, silentAgents },
+    alerts: { missingBackups, silentAgents, expiringExceptions: expiring.reminded },
   };
 }

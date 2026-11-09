@@ -32,6 +32,28 @@ export interface FindingResult {
   confidence?: Confidence;
   /** Identity of the alert for human verdicts (see fingerprint.ts). */
   fingerprint?: string;
+  /** How well the alert is proven (assurance.ts) — set by the pipeline. */
+  assurance?: "verified" | "likely" | "uncertain" | "information";
+  /** Proof and guidance shown with the alert (evidence.ts). */
+  details?: FindingDetails;
+}
+
+/**
+ * What makes an alert actionable and checkable: the code it points at (any
+ * secret masked), how it would be exploited, what must hold for that, and
+ * how to reproduce it.
+ */
+export interface FindingDetails {
+  /** The flagged line, trimmed, secrets masked. */
+  evidence?: string;
+  /** A concrete attack, in plain words. */
+  scenario: string;
+  /** What must be true for the attack to work. */
+  conditions: string[];
+  /** How to check it (a test to write or a command to run). */
+  reproduction: string;
+  /** Why the alert is in observation instead of deciding (noisy rule…). */
+  observationReason?: string;
 }
 
 /** A detected secret, with its value masked. */
@@ -71,6 +93,10 @@ export interface DependencyResult {
    * (Trivy/Grype) full-tree scan. Restrictive licenses raise the risk level.
    */
   license?: string;
+  /** Declared as a development dependency (not shipped to production). */
+  dev?: boolean;
+  /** Popular package whose name this one imitates, if any. */
+  typosquatOf?: string;
 }
 
 /**

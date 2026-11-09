@@ -49,6 +49,10 @@ export const FINDING_STATUSES = [
   "acknowledged",
   "resolved",
   "false_positive",
+  // Risk consciously accepted, with a reason and an expiry date.
+  "accepted_risk",
+  // Covered by an approved exception (set by the analysis, not by hand).
+  "suppressed",
 ] as const;
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
 

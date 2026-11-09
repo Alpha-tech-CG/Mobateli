@@ -159,11 +159,12 @@ test("dependency scanner: scripts/engines are not dependencies (section-aware)",
   assert.deepEqual(names(blind), ["left-pad"]);
 });
 
-test("dependency scanner scores a typosquat as critical", () => {
+test("dependency scanner: a typosquat alone is high (review), never a block on its own", () => {
   const d = diffFor("package.json", ['    "react-router-domm": "1.0.0",']);
   const deps = scanDependencies(parseUnifiedDiff(d));
   assert.equal(deps.length, 1);
-  assert.equal(deps[0]!.riskLevel, "critical");
+  assert.equal(deps[0]!.riskLevel, "high");
+  assert.equal(deps[0]!.typosquatOf, "react-router-dom");
   assert.ok(deps[0]!.trustScore < 40);
 });
 
@@ -265,16 +266,18 @@ test("score: repeats of one rule have diminishing weight; distinct rules add up"
     secrets: [],
     dependencies: [],
   });
-  assert.equal(repeated.riskScore, 16); // 8 × min(1 + 0.25·7, 2)
+  // 8 × min(1 + 0.25·7, 2) × 0.8 (likely: no confidence label, no proof)
+  assert.equal(repeated.riskScore, 13);
   assert.notEqual(repeated.decision, "block");
-  // Distinct medium rules still accumulate.
+  // Distinct medium rules still accumulate in the score…
   const distinct = decide({
     findings: ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map(f),
     secrets: [],
     dependencies: [],
   });
-  assert.equal(distinct.riskScore, 72);
-  assert.equal(distinct.decision, "block");
+  assert.equal(distinct.riskScore, 58);
+  // …but a score is not a proof: nine unproven medium alerts warn, never block.
+  assert.equal(distinct.decision, "fix");
 });
 
 test("decision: secret ⇒ blocked, high ⇒ warning, clean ⇒ passed", () => {
@@ -308,7 +311,8 @@ test("analyzeDiff: end-to-end on a risky diff ⇒ blocked", () => {
   assert.equal(r.status, "blocked");
   assert.equal(r.decision, "block");
   assert.ok(r.secrets.length >= 1);
-  assert.ok(r.dependencies.some((d) => d.riskLevel === "critical"));
+  // The live key decides; the typosquat alone is a high signal to review.
+  assert.ok(r.dependencies.some((d) => d.riskLevel === "high" && d.typosquatOf === "react-router-dom"));
   assert.ok(r.findings.some((f) => f.ruleId === "SQL_STRING_CONCAT"));
   assert.ok(r.riskScore >= 70);
 });

@@ -1,6 +1,9 @@
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
 import { fetchDefaultBranchFile, fetchPrDiff } from "../lib/github-diff.js";
+import { judgementFor } from "../lib/exceptions.js";
+import { dependencyRow, findingRow } from "../lib/finding-rows.js";
+import { decisionTrace } from "../analysis/decision-trace.js";
 import { IGNORE_FILE, parseIgnoreFile } from "../analysis/ignore.js";
 import { resolveAnalysisSettings } from "@codegate/shared";
 import { runAnalysis } from "../analysis/engines/pipeline.js";
@@ -103,12 +106,17 @@ export async function processPrAnalysis(
 
   // The team's verdicts on this repository (false positive / confirmed),
   // keyed by alert fingerprint: they survive a re-analysis.
+  // A verdict lapses at its expiry date: the alert then comes back.
+  const now = new Date();
   const verdicts = await prisma.findingFeedback.findMany({
-    where: { repositoryId: pr.repository.id },
+    where: { repositoryId: pr.repository.id, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
     select: { fingerprint: true, verdict: true },
   });
-  const dismissed = new Set(verdicts.filter((v) => v.verdict === "false_positive").map((v) => v.fingerprint));
-  const confirmed = new Set(verdicts.filter((v) => v.verdict === "confirmed").map((v) => v.fingerprint));
+  const verdictOf = new Map(verdicts.map((v) => [v.fingerprint, v.verdict]));
+  // False positives and accepted risks are kept for the record, not scored.
+  const dismissed = new Set(verdicts.filter((v) => v.verdict !== "confirmed").map((v) => v.fingerprint));
+  // Approved exceptions and rules in observation (noisy or set by a reviewer).
+  const judge = await judgementFor(pr.repository.organizationId, pr.repository.id, pr.baseBranch, now);
   // .codegateignore is read from the default branch, never from the PR head:
   // a PR must not be able to exempt itself (see ignore.ts).
   let ignoreFile: string | null = null;
@@ -134,6 +142,7 @@ export async function processPrAnalysis(
       pr.repository.analysisSettings,
     ),
     suppressed: dismissed,
+    judge,
     ...(ignoreFile ? { isIgnored: parseIgnoreFile(ignoreFile) } : {}),
     runtime: { worker: config.ANALYSIS_MODE === "queue" },
   });
@@ -148,36 +157,19 @@ export async function processPrAnalysis(
       prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
       prisma.finding.createMany({
         data: [
-          ...result.findings.map((f) => ({
-            f,
-            status: confirmed.has(f.fingerprint ?? "") ? ("acknowledged" as const) : ("open" as const),
-          })),
-          // Human-confirmed false positives: kept for the record, not scored.
-          ...result.suppressed.map((f) => ({ f, status: "false_positive" as const })),
-        ].map(({ f, status }) => ({
-          pullRequestId: pr.id,
-          type: f.type,
-          severity: f.severity,
-          title: f.title,
-          description: f.description,
-          filePath: f.filePath ?? null,
-          line: f.line ?? null,
-          ruleId: f.ruleId ?? null,
-          remediation: f.remediation ?? null,
-          status,
-          fingerprint: f.fingerprint ?? null,
-        })),
+          ...result.findings.map((f) =>
+            findingRow(pr.id, f, verdictOf.get(f.fingerprint ?? "") === "confirmed" ? "acknowledged" : "open"),
+          ),
+          // Team verdicts (false positive, accepted risk) and approved
+          // exceptions: kept for the record and the metrics, not scored.
+          ...result.suppressed.map((f) =>
+            findingRow(pr.id, f, verdictOf.get(f.fingerprint ?? "") === "accepted_risk" ? "accepted_risk" : "false_positive"),
+          ),
+          ...result.excepted.map((f) => findingRow(pr.id, f, "suppressed")),
+        ],
       }),
       prisma.dependency.createMany({
-        data: result.dependencies.map((d) => ({
-          pullRequestId: pr.id,
-          ecosystem: d.ecosystem,
-          name: d.name,
-          version: d.version,
-          trustScore: d.trustScore,
-          riskLevel: d.riskLevel,
-          reason: d.reason ?? null,
-        })),
+        data: [...result.dependencies, ...result.exceptedDependencies].map((d) => dependencyRow(pr.id, d)),
       }),
       prisma.secretFinding.createMany({
         data: result.secrets.map((s) => ({
@@ -206,6 +198,12 @@ export async function processPrAnalysis(
       decision: result.decision,
       status: result.status,
       engine: result.engine,
+      // Traceability of a block: which proven alert decided it (rule, place,
+      // proof level, fingerprint). The policy applied is recorded with the
+      // GitHub/GitLab feedback (pr.feedback_posted).
+      decidedBy: JSON.parse(JSON.stringify(decisionTrace(result))),
+      inObservation: result.findings.filter((f) => f.details?.observationReason).length,
+      excepted: result.excepted.length + result.exceptedDependencies.length,
       // Which engines ran / were skipped / failed — shown on the PR page.
       engines: JSON.parse(JSON.stringify(result.engines ?? {})),
       counts: {

@@ -16,6 +16,7 @@ interface OpenPr {
   author: string;
   body: string;
   headSha: string | null;
+  baseBranch: string | null;
   url: string;
   updatedAt: string;
 }
@@ -40,6 +41,7 @@ async function listOpen(config: AppConfig, repo: RepoRow): Promise<OpenPr[]> {
       author: p.user?.login ?? "unknown",
       body: p.body ?? "",
       headSha: p.head?.sha ?? null,
+      baseBranch: p.base?.ref ?? null,
       url: p.html_url,
       updatedAt: p.updated_at,
     }));
@@ -47,7 +49,7 @@ async function listOpen(config: AppConfig, repo: RepoRow): Promise<OpenPr[]> {
   const api = await gitlabForOrg(repo.organizationId, config.ENCRYPTION_KEY);
   if (!api) throw new Error("gitlab_api_not_configured");
   const mrs = await api.request<
-    { iid: number; title: string; description: string | null; sha: string; web_url: string; updated_at: string; author?: { username?: string } }[]
+    { iid: number; title: string; description: string | null; sha: string; target_branch?: string; web_url: string; updated_at: string; author?: { username?: string } }[]
   >(`/projects/${encodeURIComponent(repo.externalId)}/merge_requests?state=opened&per_page=50&order_by=updated_at`);
   return mrs.map((m) => ({
     number: m.iid,
@@ -56,6 +58,7 @@ async function listOpen(config: AppConfig, repo: RepoRow): Promise<OpenPr[]> {
     author: m.author?.username ?? "unknown",
     body: m.description ?? "",
     headSha: m.sha,
+    baseBranch: m.target_branch ?? null,
     url: m.web_url,
     updatedAt: m.updated_at,
   }));
@@ -150,9 +153,10 @@ export async function prImportRoutes(app: FastifyInstance, config: AppConfig, jo
           author: p.author,
           aiGenerated,
           headSha: p.headSha,
+          baseBranch: p.baseBranch,
           status: "pending",
         },
-        update: { title: p.title, aiGenerated, headSha: p.headSha, status: "pending" },
+        update: { title: p.title, aiGenerated, headSha: p.headSha, baseBranch: p.baseBranch, status: "pending" },
         select: { id: true },
       });
       await recordAudit({

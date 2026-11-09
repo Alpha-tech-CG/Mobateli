@@ -1,66 +1,33 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { z } from "zod";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { prisma } from "@codegate/db";
-import { findingsQuerySchema, updateFindingSchema } from "@codegate/shared";
+import {
+  findingFeedbackSchema,
+  findingsQuerySchema,
+  updateFindingSchema,
+  type FindingFeedbackInput,
+} from "@codegate/shared";
 import { recordAudit } from "../lib/audit.js";
-import { decide } from "../analysis/risk.js";
-import { ruleQuality } from "../analysis/feedback.js";
+import { rescorePullRequest } from "../lib/rescore.js";
 import { revocationGuide } from "../analysis/revocation.js";
 
 /**
- * Findings triage and the team's verdicts (cahier §13.1, §13.3, US02 "les
- * faux positifs peuvent être marqués").
+ * Findings triage and the team's verdicts (cahier §13.1, §13.3, US02; anti-
+ * noise rules).
  *
- * A verdict — "false positive" or "confirmed" — is stored per repository and
- * alert fingerprint (rule + file + flagged code, see analysis/fingerprint.ts),
- * so it survives re-analysis and applies to the same alert in every PR of the
- * repository. A false positive stops weighing on the score; it stays stored,
- * with its status, for the per-rule false-positive rate. Dismissing an alert
- * is a security decision: only reviewers may do it, and it is audited.
+ * A verdict is stored per repository and alert fingerprint (rule + file +
+ * flagged code, see analysis/fingerprint.ts), so it survives re-analysis and
+ * applies to the same alert in every PR of the repository:
+ *  - "false positive": a category and a reason are required; it lapses after
+ *    90 days by default (the alert then comes back for a fresh look);
+ *  - "accepted risk": a reason and an expiry date are required;
+ *  - "confirmed" (true positive): anyone in the team may say so.
+ * Dismissing or accepting an alert is a security decision: reviewers only,
+ * always audited.
  */
 
-/** Who may give a verdict: a false positive removes an alert from the score. */
 const REVIEWERS = ["owner", "admin", "security_manager"] as const;
 const IS_REVIEWER = new Set<string>(REVIEWERS);
-
-const feedbackSchema = z.object({
-  verdict: z.enum(["false_positive", "confirmed"]),
-  note: z.string().trim().max(500).optional(),
-});
-type Verdict = z.infer<typeof feedbackSchema>["verdict"];
-
-/** Recompute a PR's score/status from what is still open (after triage). */
-async function rescorePullRequest(pullRequestId: string) {
-  const [findings, secrets, dependencies] = await Promise.all([
-    prisma.finding.findMany({ where: { pullRequestId, status: { not: "false_positive" } } }),
-    prisma.secretFinding.findMany({ where: { pullRequestId, status: { notIn: ["false_positive", "resolved"] } } }),
-    prisma.dependency.findMany({ where: { pullRequestId } }),
-  ]);
-  const { riskScore, status } = decide({
-    findings: findings.map((f) => ({
-      type: f.type,
-      severity: f.severity,
-      title: f.title,
-      description: f.description,
-      ...(f.ruleId ? { ruleId: f.ruleId } : {}),
-    })),
-    secrets: secrets.map((s) => ({
-      secretType: s.secretType,
-      location: s.location,
-      maskedPreview: s.maskedPreview,
-      severity: s.severity,
-    })),
-    dependencies: dependencies.map((d) => ({
-      ecosystem: d.ecosystem,
-      name: d.name,
-      version: d.version,
-      trustScore: d.trustScore ?? 0,
-      riskLevel: d.riskLevel,
-    })),
-  });
-  await prisma.pullRequest.update({ where: { id: pullRequestId }, data: { riskScore, status } });
-  return { riskScore, status };
-}
+const DEFAULT_FP_DAYS = 90;
 
 async function findOwnedFinding(id: string, organizationId: string) {
   return prisma.finding.findFirst({
@@ -78,39 +45,46 @@ async function findOwnedFinding(id: string, organizationId: string) {
 }
 type OwnedFinding = NonNullable<Awaited<ReturnType<typeof findOwnedFinding>>>;
 
+const STATUS_OF = {
+  false_positive: "false_positive",
+  accepted_risk: "accepted_risk",
+  confirmed: "acknowledged",
+} as const;
+
 /**
- * Store (or clear, with `verdict: null`) the repository's verdict on this
+ * Store (or clear, with `input: null`) the repository's verdict on this
  * alert, apply it to the same alert in every PR of the repository, and
  * rescore the PRs whose open alerts changed. Returns this PR's new score.
  */
-async function applyVerdict(
-  finding: OwnedFinding & { fingerprint: string },
-  verdict: Verdict | null,
-  by: { userId: string; note?: string | null },
-) {
+async function applyVerdict(finding: OwnedFinding & { fingerprint: string }, input: FindingFeedbackInput | null, userId: string) {
   const repositoryId = finding.pullRequest.repositoryId;
   const fingerprint = finding.fingerprint;
   const sameAlert = { fingerprint, pullRequest: { repositoryId } };
   const affected = await prisma.finding.findMany({ where: sameAlert, select: { pullRequestId: true } });
-  const status = verdict === "false_positive" ? "false_positive" : verdict === "confirmed" ? "acknowledged" : "open";
+  const expiresAt = input?.expiresAt
+    ? new Date(input.expiresAt)
+    : input?.verdict === "false_positive"
+      ? new Date(Date.now() + DEFAULT_FP_DAYS * 86_400_000)
+      : null;
+  const data = input
+    ? {
+        verdict: input.verdict,
+        note: input.note ?? null,
+        category: input.verdict === "false_positive" ? (input.category ?? null) : null,
+        expiresAt,
+        userId,
+      }
+    : null;
 
   await prisma.$transaction([
-    verdict
+    data
       ? prisma.findingFeedback.upsert({
           where: { repositoryId_fingerprint: { repositoryId, fingerprint } },
-          create: {
-            repositoryId,
-            fingerprint,
-            verdict,
-            note: by.note ?? null,
-            userId: by.userId,
-            ruleId: finding.ruleId,
-            filePath: finding.filePath,
-          },
-          update: { verdict, note: by.note ?? null, userId: by.userId },
+          create: { repositoryId, fingerprint, ruleId: finding.ruleId, filePath: finding.filePath, ...data },
+          update: data,
         })
       : prisma.findingFeedback.deleteMany({ where: { repositoryId, fingerprint } }),
-    prisma.finding.updateMany({ where: sameAlert, data: { status } }),
+    prisma.finding.updateMany({ where: sameAlert, data: { status: input ? STATUS_OF[input.verdict] : "open" } }),
   ]);
 
   let current: Awaited<ReturnType<typeof rescorePullRequest>> | null = null;
@@ -118,7 +92,7 @@ async function applyVerdict(
     const rescored = await rescorePullRequest(pullRequestId);
     if (pullRequestId === finding.pullRequestId) current = rescored;
   }
-  return current;
+  return { rescored: current, expiresAt };
 }
 
 /** Findings stored before fingerprints existed get one at the next analysis. */
@@ -127,6 +101,8 @@ function needsFingerprint(finding: OwnedFinding, reply: FastifyReply) {
   void reply.code(409).send({ error: "rescan_required" });
   return true;
 }
+
+const DISMISSING = new Set(["false_positive", "accepted_risk"]);
 
 export async function findingRoutes(app: FastifyInstance) {
   app.get("/api/v1/findings", { preHandler: [app.authenticate] }, async (req) => {
@@ -153,8 +129,9 @@ export async function findingRoutes(app: FastifyInstance) {
     return { findings };
   });
 
-  // Triage status of one finding. Marking (or un-marking) a false positive is
-  // a verdict on the alert: reviewers only, applied repository-wide.
+  // Triage status of one finding. Dismissing it (false positive, accepted
+  // risk) or reopening a dismissed one is a verdict on the alert: reviewers
+  // only, with the same requirements as PUT …/feedback, applied repository-wide.
   app.patch(
     "/api/v1/findings/:id",
     {
@@ -168,21 +145,29 @@ export async function findingRoutes(app: FastifyInstance) {
       const body = updateFindingSchema.parse(req.body);
       const finding = await findOwnedFinding(id, req.principal.organizationId);
       if (!finding) return reply.code(404).send({ error: "not_found" });
+      if (finding.status === "suppressed") return reply.code(409).send({ error: "covered_by_exception" });
 
-      const touchesFp = body.status === "false_positive" || finding.status === "false_positive";
-      if (touchesFp && !IS_REVIEWER.has(req.principal.role)) {
+      const touchesVerdict = DISMISSING.has(body.status) || DISMISSING.has(finding.status);
+      if (touchesVerdict && !IS_REVIEWER.has(req.principal.role)) {
         return reply.code(403).send({ error: "forbidden" });
       }
 
       let rescored = null;
-      if (touchesFp) {
+      if (touchesVerdict) {
         if (needsFingerprint(finding, reply)) return reply;
-        rescored = await applyVerdict(
-          { ...finding, fingerprint: finding.fingerprint! },
-          body.status === "false_positive" ? "false_positive" : null,
-          { userId: req.principal.userId, note: body.reason ?? null },
-        );
-        if (body.status !== "false_positive" && body.status !== "open") {
+        let verdict: FindingFeedbackInput | null = null;
+        if (DISMISSING.has(body.status)) {
+          const parsed = findingFeedbackSchema.safeParse({
+            verdict: body.status,
+            ...(body.reason ? { note: body.reason } : {}),
+            ...(body.category ? { category: body.category } : {}),
+            ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
+          });
+          if (!parsed.success) return reply.code(400).send({ error: "validation_error", issues: parsed.error.issues });
+          verdict = parsed.data;
+        }
+        ({ rescored } = await applyVerdict({ ...finding, fingerprint: finding.fingerprint! }, verdict, req.principal.userId));
+        if (!DISMISSING.has(body.status) && body.status !== "open") {
           await prisma.finding.update({ where: { id }, data: { status: body.status } });
         }
       } else {
@@ -201,6 +186,7 @@ export async function findingRoutes(app: FastifyInstance) {
           to: body.status,
           ruleId: finding.ruleId,
           ...(body.reason ? { reason: body.reason } : {}),
+          ...(body.category ? { category: body.category } : {}),
         },
       });
 
@@ -208,21 +194,31 @@ export async function findingRoutes(app: FastifyInstance) {
     },
   );
 
-  // The team's verdict on an alert: false positive, or confirmed as real.
+  // The team's verdict on an alert: false positive, accepted risk, or
+  // confirmed as real (true positive — any team member may say so).
   app.put(
     "/api/v1/findings/:id/feedback",
-    { preHandler: [app.authenticate, app.requireRole(...REVIEWERS)] },
-    async (req: FastifyRequest, reply) => {
+    {
+      preHandler: [
+        app.authenticate,
+        app.requireRole("owner", "admin", "security_manager", "developer"),
+      ],
+    },
+    async (req, reply) => {
       const { id } = req.params as { id: string };
-      const body = feedbackSchema.parse(req.body);
+      const body = findingFeedbackSchema.parse(req.body);
+      if (body.verdict !== "confirmed" && !IS_REVIEWER.has(req.principal.role)) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
       const finding = await findOwnedFinding(id, req.principal.organizationId);
       if (!finding) return reply.code(404).send({ error: "not_found" });
       if (needsFingerprint(finding, reply)) return reply;
 
-      const rescored = await applyVerdict({ ...finding, fingerprint: finding.fingerprint! }, body.verdict, {
-        userId: req.principal.userId,
-        note: body.note ?? null,
-      });
+      const { rescored, expiresAt } = await applyVerdict(
+        { ...finding, fingerprint: finding.fingerprint! },
+        body,
+        req.principal.userId,
+      );
       await recordAudit({
         organizationId: req.principal.organizationId,
         actorType: "user",
@@ -230,9 +226,16 @@ export async function findingRoutes(app: FastifyInstance) {
         action: "finding.feedback",
         resourceType: "finding",
         resourceId: finding.id,
-        metadata: { verdict: body.verdict, ruleId: finding.ruleId, note: body.note ?? null },
+        metadata: {
+          verdict: body.verdict,
+          ruleId: finding.ruleId,
+          filePath: finding.filePath,
+          note: body.note ?? null,
+          category: body.category ?? null,
+          expiresAt: expiresAt?.toISOString() ?? null,
+        },
       });
-      return { status: "recorded", verdict: body.verdict, pullRequest: rescored };
+      return { status: "recorded", verdict: body.verdict, expiresAt, pullRequest: rescored };
     },
   );
 
@@ -243,7 +246,7 @@ export async function findingRoutes(app: FastifyInstance) {
       const { id } = req.params as { id: string };
       const finding = await findOwnedFinding(id, req.principal.organizationId);
       if (!finding?.fingerprint) return reply.code(404).send({ error: "not_found" });
-      await applyVerdict({ ...finding, fingerprint: finding.fingerprint }, null, { userId: req.principal.userId });
+      await applyVerdict({ ...finding, fingerprint: finding.fingerprint }, null, req.principal.userId);
       await recordAudit({
         organizationId: req.principal.organizationId,
         actorType: "user",
@@ -256,35 +259,6 @@ export async function findingRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     },
   );
-
-  // Per-rule false-positive rate over a window — the pilot's main metric.
-  app.get("/api/v1/metrics/rule-quality", { preHandler: [app.authenticate] }, async (req) => {
-    const { days } = z
-      .object({ days: z.coerce.number().int().min(1).max(365).default(30) })
-      .parse(req.query);
-    const since = new Date(Date.now() - days * 86_400_000);
-    const groups = await prisma.finding.groupBy({
-      by: ["ruleId", "status"],
-      where: {
-        createdAt: { gte: since },
-        pullRequest: { repository: { organizationId: req.principal.organizationId } },
-      },
-      _count: { _all: true },
-    });
-    const rules = ruleQuality(groups.map((g) => ({ ruleId: g.ruleId, status: g.status, count: g._count._all })));
-    const total = rules.reduce(
-      (acc, r) => ({ alerts: acc.alerts + r.alerts, fp: acc.fp + r.falsePositives, ok: acc.ok + r.confirmed }),
-      { alerts: 0, fp: 0, ok: 0 },
-    );
-    return {
-      days,
-      alerts: total.alerts,
-      reviewed: total.fp + total.ok,
-      falsePositives: total.fp,
-      falsePositiveRate: total.fp + total.ok ? total.fp / (total.fp + total.ok) : null,
-      rules,
-    };
-  });
 
   // US03: guided revocation of an exposed secret.
   app.get("/api/v1/secrets/:id/revocation", { preHandler: [app.authenticate] }, async (req, reply) => {

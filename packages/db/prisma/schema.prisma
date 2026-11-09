@@ -65,12 +65,15 @@ enum FindingStatus {
   acknowledged
   resolved
   false_positive
+  accepted_risk
+  suppressed
 }
 
 /// A team's verdict on one alert (pilot false-positive tracking).
 enum FeedbackVerdict {
   false_positive
   confirmed
+  accepted_risk
 }
 
 enum DependencyRisk {
@@ -146,6 +149,9 @@ model Organization {
   bruteforceTargets  BruteForceTarget[]
   backupJobs         BackupJob[]
   approvalRequests   ApprovalRequest[]
+  findingExceptions  FindingException[]
+  ruleFeedback       RuleFeedback[]
+  ruleSettings       RuleSetting[]
   auditReports       AuditReport[]
 
   @@map("organizations")
@@ -168,8 +174,8 @@ model User {
   // Sessions issued before this instant are rejected (password reset).
   sessionsRevokedAt DateTime?
   // Proof of acceptance of the terms at signup (date + version of the texts).
-  termsAcceptedAt DateTime?
-  termsVersion    String?
+  termsAcceptedAt   DateTime?
+  termsVersion      String?
   createdAt         DateTime  @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -214,13 +220,14 @@ model Repository {
   // Per-repository overrides of the organization analysis parameters.
   analysisSettings Json?
 
-  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  pullRequests  PullRequest[]
-  policies      Policy[]
-  agentPolicies AgentPolicy[]
-  deployChecks  DeployCheck[]
-  scans         RepositoryScan[]
-  findingFeedback FindingFeedback[]
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pullRequests      PullRequest[]
+  policies          Policy[]
+  agentPolicies     AgentPolicy[]
+  deployChecks      DeployCheck[]
+  scans             RepositoryScan[]
+  findingFeedback   FindingFeedback[]
+  findingExceptions FindingException[]
 
   @@unique([provider, externalId])
   @@index([organizationId])
@@ -237,6 +244,8 @@ model PullRequest {
   aiGenerated  Boolean           @default(false)
   // Head commit SHA — required to attach a GitHub Check Run.
   headSha      String?
+  /// Branch the PR targets (main, staging…): branch-scoped exceptions/policies.
+  baseBranch   String?
   riskScore    Int?
   status       PullRequestStatus @default(pending)
   createdAt    DateTime          @default(now())
@@ -247,6 +256,7 @@ model PullRequest {
   dependencies      Dependency[]
   secretFindings    SecretFinding[]
   remediationIssues RemediationIssue[]
+  contests          BlockContest[]
 
   @@unique([repositoryId, externalId])
   @@index([repositoryId])
@@ -267,6 +277,14 @@ model Finding {
   ruleId        String?
   remediation   String?
   status        FindingStatus @default(open)
+  /// Confidence the match is real (high | medium | low) — separate from severity.
+  confidence    String?
+  /// How well the alert is proven: verified | likely | uncertain | information.
+  assurance     String?
+  /// Evidence (masked code), attack scenario, conditions, reproduction, CWE/OWASP.
+  details       Json?
+  /// Approved exception that covers it (status suppressed).
+  exceptionId   String?       @db.Uuid
   /// Stable identity of the alert across re-analyses (rule + file + line
   /// content, not the line number): links it to the team's feedback.
   fingerprint   String?
@@ -291,6 +309,11 @@ model FindingFeedback {
   filePath     String?
   verdict      FeedbackVerdict
   note         String?
+  /// Why the alert is wrong: wrong_file, wrong_line, wrong_framework,
+  /// wrong_rule, wrong_context, duplicate, too_vague.
+  category     String?
+  /// The verdict lapses: the alert comes back for a fresh look.
+  expiresAt    DateTime?
   userId       String?         @db.Uuid
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
@@ -311,6 +334,8 @@ model Dependency {
   trustScore    Int?
   riskLevel     DependencyRisk @default(low)
   reason        String?
+  /// Approved exception that covers it: kept for the record, not scored.
+  exceptionId   String?        @db.Uuid
   createdAt     DateTime       @default(now())
 
   pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
@@ -585,7 +610,6 @@ model BackupRestoreTest {
   @@index([jobId, completedAt])
   @@map("backup_restore_tests")
 }
-
 
 /// A sensitive action waiting for a human decision (cahier §5.4, §5.5,
 /// §10.5, US06): an AI agent action under `require_approval`, or a
@@ -901,4 +925,112 @@ model ServerScan {
 
   @@index([serverId, createdAt])
   @@map("server_scans")
+}
+
+/// A controlled exception to the analysis (anti-noise rules): never global by
+/// default, always an owner, a reason, an approver and — unless a Security
+/// Manager approved it as permanent — an expiry date. It covers alerts that
+/// match ALL its set criteria; an alert it covers is kept with status
+/// `suppressed` and does not weigh on the decision. Secrets are never covered:
+/// a leaked key is revoked, not excepted.
+model FindingException {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @db.Uuid
+  /// Null only for an organization-wide exception (orgWide must then be true).
+  repositoryId      String?   @db.Uuid
+  orgWide           Boolean   @default(false)
+  // ── What it covers (at least one) ──
+  ruleId            String?
+  /// Glob on the file path (`src/legacy/**`, `scripts/seed.ts`).
+  pathGlob          String?
+  /// Risk type: a FindingType (sast, config, auth, prompt_injection, dependency…).
+  riskType          String?
+  dependency        String?
+  dependencyVersion String?
+  branch            String?
+  environment       String?
+  // ── Who, why, until when ──
+  reason            String
+  ticketUrl         String?
+  requestedById     String    @db.Uuid
+  approvedById      String?   @db.Uuid
+  approvedAt        DateTime?
+  expiresAt         DateTime?
+  /// Set when someone ends it early.
+  revokedAt         DateTime?
+  revokedById       String?   @db.Uuid
+  /// Last reminder sent before expiry (one per exception).
+  remindedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository   Repository?  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([repositoryId])
+  @@map("finding_exceptions")
+}
+
+/// What a team says about a RULE (not one alert): too noisy, useless, to
+/// improve, to disable, to restrict, to raise or lower in severity — with the
+/// context it was given in (language, file, PR).
+model RuleFeedback {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  ruleId         String
+  kind           String
+  note           String?
+  findingId      String?  @db.Uuid
+  pullRequestId  String?  @db.Uuid
+  repositoryId   String?  @db.Uuid
+  language       String?
+  filePath       String?
+  fileType       String?
+  userId         String   @db.Uuid
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, ruleId])
+  @@map("rule_feedback")
+}
+
+/// A reviewer's decision on a rule for the organization: `observation` (its
+/// alerts are shown but never decide) or `active` (back to normal, e.g. after
+/// it was improved). Without a row, a rule is active unless the measured
+/// false-positive rate puts it in observation automatically.
+model RuleSetting {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  ruleId         String
+  mode           String
+  reason         String
+  setById        String   @db.Uuid
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, ruleId])
+  @@map("rule_settings")
+}
+
+/// A human contesting a blocking decision. A reviewer upholds or overturns it;
+/// overturning re-evaluates the PR with the verdicts given on its alerts.
+model BlockContest {
+  id            String    @id @default(uuid()) @db.Uuid
+  pullRequestId String    @db.Uuid
+  userId        String    @db.Uuid
+  reason        String
+  status        String    @default("open")
+  resolution    String?
+  resolvedById  String?   @db.Uuid
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId])
+  @@map("block_contests")
 }

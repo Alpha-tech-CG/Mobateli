@@ -207,16 +207,19 @@ test("finding feedback: mark false positive, propagate by fingerprint, metrics, 
 
   const bad = await app.inject({ method: "PUT", url: `/api/v1/findings/${f1.id}/feedback`, headers: auth(), payload: { verdict: "maybe" } });
   assert.equal(bad.statusCode, 400);
-  const noFp = await app.inject({ method: "PUT", url: `/api/v1/findings/${legacy.id}/feedback`, headers: auth(), payload: { verdict: "false_positive" } });
+  const noCat = await app.inject({ method: "PUT", url: `/api/v1/findings/${f1.id}/feedback`, headers: auth(), payload: { verdict: "false_positive", note: "checksum" } });
+  assert.equal(noCat.statusCode, 400, "a false positive needs a category");
+  const okPayload = { verdict: "false_positive", note: "checksum, not a password", category: "wrong_context" };
+  const noFp = await app.inject({ method: "PUT", url: `/api/v1/findings/${legacy.id}/feedback`, headers: auth(), payload: okPayload });
   assert.equal(noFp.statusCode, 409);
-  const unknown = await app.inject({ method: "PUT", url: `/api/v1/findings/${randomUUID()}/feedback`, headers: auth(), payload: { verdict: "false_positive" } });
+  const unknown = await app.inject({ method: "PUT", url: `/api/v1/findings/${randomUUID()}/feedback`, headers: auth(), payload: okPayload });
   assert.equal(unknown.statusCode, 404);
 
   const ok = await app.inject({
     method: "PUT",
     url: `/api/v1/findings/${f1.id}/feedback`,
     headers: auth(),
-    payload: { verdict: "false_positive", note: "checksum, not a password" },
+    payload: okPayload,
   });
   assert.equal(ok.statusCode, 200);
   // Same fingerprint in another PR of the repo gets the verdict too.
@@ -1239,7 +1242,7 @@ test("findings: a verdict is kept per alert, survives re-analysis and rescores",
     method: "PATCH",
     url: `/api/v1/findings/${finding.id}`,
     headers: auth(),
-    payload: { status: "false_positive", reason: "eval sur une constante de test" },
+    payload: { status: "false_positive", reason: "eval sur une constante de test", category: "wrong_context" },
   });
   assert.equal(fp.statusCode, 200);
   assert.equal(fp.json().pullRequest.riskScore, 0, "a false positive no longer counts");
