@@ -9,7 +9,7 @@ import {
 import { parseUnifiedDiff, type ParsedDiff } from "../diff.js";
 import { filesFromDiff } from "../rust-engine.js";
 import { scanWithEngine, type EngineOutput } from "../engine/index.js";
-import { findingFingerprint } from "../fingerprint.js";
+import { fingerprintFindings } from "../fingerprint.js";
 import { decide } from "../risk.js";
 import type { AnalysisResult, EngineReport, EngineStatusFn, FindingResult } from "../types.js";
 import type {
@@ -40,6 +40,11 @@ export interface RunAnalysisOptions {
    * weigh on the score or the decision.
    */
   suppressed?: ReadonlySet<string>;
+  /**
+   * Paths excluded by the repository's `.codegateignore` (read from the
+   * default branch, see ignore.ts), on top of the configured ignorePaths.
+   */
+  isIgnored?: (path: string) => boolean;
 }
 
 /** Analysis result, plus what the dashboard and the audit trail record. */
@@ -50,12 +55,20 @@ export type PipelineResult = AnalysisResult & {
   engine: string;
 };
 
-/** Drop the ignored files from the diff before any engine sees it. */
-function withoutIgnored(parsed: ParsedDiff, ignorePaths: string[]): ParsedDiff {
-  if (!ignorePaths.length) return parsed;
-  const ignored = pathMatcher(ignorePaths);
-  const keep = (file: string) => !ignored(file);
+/**
+ * Drop the ignored files from the diff before the code engines see it (the
+ * secret scanner still reads the whole diff, see EngineContext.unfiltered).
+ */
+function withoutIgnored(
+  parsed: ParsedDiff,
+  ignorePaths: string[],
+  isIgnored?: (path: string) => boolean,
+): ParsedDiff {
+  if (!ignorePaths.length && !isIgnored) return parsed;
+  const ignored = ignorePaths.length ? pathMatcher(ignorePaths) : () => false;
+  const keep = (file: string) => !ignored(file) && !isIgnored?.(file);
   return {
+    ...parsed,
     files: parsed.files.filter(keep),
     addedLines: parsed.addedLines.filter((l) => keep(l.file)),
     addedByFile: new Map([...parsed.addedByFile].filter(([f]) => keep(f))),
@@ -95,10 +108,14 @@ function finish(
   statuses: Partial<Record<EngineId, EngineReport>>,
   ast: () => EngineOutput | null,
   astUsed: boolean,
+  unfiltered: ParsedDiff,
 ): PipelineResult {
   const kept = aboveMinSeverity(totals, settings.minSeverity);
-  const findings = kept.findings.filter((f) => !suppressedSet.has(findingFingerprint(f)));
-  const suppressed = kept.findings.filter((f) => suppressedSet.has(findingFingerprint(f)));
+  // Each finding carries its fingerprint (rule, file, flagged code): the key of
+  // a human verdict, stable when the line moves.
+  const all = fingerprintFindings(kept.findings, unfiltered);
+  const findings = all.filter((f) => !suppressedSet.has(f.fingerprint!));
+  const suppressed = all.filter((f) => suppressedSet.has(f.fingerprint!));
   const { riskScore, decision, status } = decide({ ...kept, findings });
   const wasm = astUsed ? ast() : null;
   return {
@@ -113,13 +130,21 @@ function finish(
   };
 }
 
-function toParsed(input: string | ParsedDiff, settings: AnalysisSettings): ParsedDiff {
-  return withoutIgnored(typeof input === "string" ? parseUnifiedDiff(input) : input, settings.ignorePaths);
+function toParsed(
+  input: string | ParsedDiff,
+  settings: AnalysisSettings,
+  isIgnored?: (path: string) => boolean,
+): { parsed: ParsedDiff; unfiltered: ParsedDiff } {
+  const unfiltered = typeof input === "string" ? parseUnifiedDiff(input) : input;
+  return { parsed: withoutIgnored(unfiltered, settings.ignorePaths, isIgnored), unfiltered };
 }
 
 /** Engines that run a binary cannot run without a worker (serverless). */
 function unavailable(e: AnalysisEngine, runtime: EngineRuntimeOptions): string | null {
-  if (ENGINE_CATALOG[e.id]?.needsWorker && runtime.worker === false) {
+  // The taint engine is a static binary: the Vercel bundle ships it
+  // (build-vercel.mjs, vercel.ts sets CODEGATE_SCAN_BIN), so it runs inline.
+  const bundled = e.id === "rust" && Boolean(runtime.rust?.binaryPath ?? process.env.CODEGATE_SCAN_BIN);
+  if (ENGINE_CATALOG[e.id]?.needsWorker && runtime.worker === false && !bundled) {
     return "indisponible sans worker (mode serverless)";
   }
   return null;
@@ -135,8 +160,9 @@ export function runCoreAnalysis(
   settings: AnalysisSettings = DEFAULT_ANALYSIS_SETTINGS,
   suppressedSet: ReadonlySet<string> = new Set(),
   registry: readonly AnalysisEngine[] = ENGINES,
+  isIgnored?: (path: string) => boolean,
 ): PipelineResult {
-  const parsed = toParsed(input, settings);
+  const { parsed, unfiltered } = toParsed(input, settings, isIgnored);
   const files = filesFromDiff(parsed);
   const ast = astMemo(parsed);
   const statuses: Partial<Record<EngineId, EngineReport>> = {};
@@ -149,14 +175,14 @@ export function runCoreAnalysis(
     }
     if (engine.id === "secrets" || engine.id === "sast") astUsed = true;
     const contribution = engine.run(
-      { parsed, files, settings, options: {}, core: totals, ast },
+      { parsed, unfiltered, files, settings, options: {}, core: totals, ast },
       (status, detail) => (statuses[engine.id] = detail ? { status, detail } : { status }),
     );
     if (contribution instanceof Promise) throw new Error(`core engine "${engine.id}" must be synchronous`);
     totals = contribution(totals);
     statuses[engine.id] ??= { status: "ok" };
   }
-  return finish(totals, settings, suppressedSet, statuses, ast, astUsed);
+  return finish(totals, settings, suppressedSet, statuses, ast, astUsed, unfiltered);
 }
 
 /**
@@ -179,7 +205,7 @@ export async function runAnalysis(
   const phases = opts.phases ?? ["core", "intel"];
   const registry = opts.engines ?? ENGINES;
 
-  const parsed = toParsed(input, settings);
+  const { parsed, unfiltered } = toParsed(input, settings, opts.isIgnored);
   const files = filesFromDiff(parsed);
   const ast = astMemo(parsed);
   const statuses: Partial<Record<EngineId, EngineReport>> = {};
@@ -201,7 +227,7 @@ export async function runAnalysis(
   }
 
   let totals: AnalysisTotals = { findings: [], secrets: [], dependencies: [] };
-  const baseCtx = { parsed, files, settings, options: runtime, ast };
+  const baseCtx = { parsed, unfiltered, files, settings, options: runtime, ast };
   let astUsed = false;
 
   // ── Core phase ───────────────────────────────────────────────────────────
@@ -262,5 +288,5 @@ export async function runAnalysis(
     }
   }
 
-  return finish(totals, settings, opts.suppressed ?? new Set(), statuses, ast, astUsed);
+  return finish(totals, settings, opts.suppressed ?? new Set(), statuses, ast, astUsed, unfiltered);
 }

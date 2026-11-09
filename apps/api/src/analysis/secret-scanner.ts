@@ -35,8 +35,11 @@ const PATTERNS: Pattern[] = [
 ];
 
 // Generic "key = 'value'" assignments where the name hints at a secret.
+// The name may carry a prefix (`signingSecret`, `db_password`, `GITHUB_TOKEN`):
+// what matters is that it ENDS with the sensitive word — `passwordField` or
+// `tokenCount` do not.
 const GENERIC_ASSIGN =
-  /\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*['"]([^'"]{8,})['"]/i;
+  /\b\w*?(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|secret[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*['"]([^'"]{8,})['"]/i;
 
 /**
  * A connection string to the machine itself, a CI service container
@@ -61,6 +64,15 @@ function looksLikePlaceholder(value: string): boolean {
   if (/\$\{|\{\{|<[^>]+>|process\.env|os\.environ|import\.meta\.env|^env\(/.test(value)) return true;
   // A run of a single repeated char (aaaa…, 0000…) is never a live secret.
   if (/^(.)\1{7,}$/.test(value)) return true;
+  // An identifier-like word sequence (`password_confirmation_input`,
+  // `user-api-token`) is a field name or label, not a credential.
+  if (/^[a-z]+(?:[_.-][a-z]+)+$/i.test(value)) return true;
+  // A password HASH in a standard format is not a usable credential
+  // (bcrypt $2b$…, argon2, scrypt, Django pbkdf2_sha256$…).
+  if (/^\$(2[aby]?|argon2(id|i|d)?|scrypt|s0|pbkdf2[-\w]*)\$/.test(value)) return true;
+  if (/^(pbkdf2_sha(1|256)|bcrypt(_sha256)?|argon2|scrypt)\$/.test(value)) return true;
+  // A code fragment caught between two string literals (`'KEY=' + read(…)`).
+  if (/\s/.test(value) && /[()+;=]/.test(value)) return true;
   return false;
 }
 
@@ -114,8 +126,14 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
     // A key in a sample/test/fixture file is expected and not a real exposure.
     const inSample = isTestOrExampleFile(file);
 
+    // A line already identified as a provider credential is not reported a
+    // second time by the generic "name = value" catcher.
+    let providerHit = false;
     for (const p of PATTERNS) {
       const m = content.match(p.regex);
+      // A provider *test-mode* key (sk_test_…) in a test/fixture file is the
+      // expected kind of fixture, not an exposure.
+      if (m && inSample && /_test_/.test(m[0])) continue;
       // Local/test databases are not secrets; templates, placeholders and
       // vendor doc examples are not credentials (qualifyProviderMatch).
       if (m && !(p.type === "postgres_url" && isLocalDatabaseUrl(m[0]))) {
@@ -124,6 +142,7 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
         const key = `${p.type}:${file}:${line}`;
         if (seen.has(key)) continue;
         seen.add(key);
+        providerHit = true;
         results.push({
           secretType: p.type,
           location: `${file}:${line}`,
@@ -136,7 +155,7 @@ export function scanSecrets(addedLines: AddedLine[]): SecretResult[] {
       }
     }
 
-    const g = content.match(GENERIC_ASSIGN);
+    const g = providerHit ? null : content.match(GENERIC_ASSIGN);
     if (g) {
       const value = g[2]!;
       // Only flag if the value looks random and is not an obvious placeholder.

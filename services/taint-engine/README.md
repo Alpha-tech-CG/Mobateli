@@ -1,4 +1,4 @@
-# scan-engine
+# taint-engine
 
 Moteur d'analyse statique sémantique de CodeGate, écrit en **Rust**
 (cahier §7, §8.2, §9.3, §14.4). C'est le cœur critique de l'analyse : il
@@ -17,19 +17,36 @@ pour **JavaScript / TypeScript** et **Python** :
 
 | Règle | CWE | OWASP | Description |
 |------|-----|-------|-------------|
-| `RUST-*-SQLI-TAINT` | CWE-89 | A03:2021-Injection | Entrée utilisateur atteignant une requête SQL non paramétrée |
+| `RUST-*-SQLI-TAINT` | CWE-89 | A03:2021-Injection | Entrée utilisateur atteignant une requête SQL non paramétrée (dont `$queryRawUnsafe`) |
 | `RUST-*-CMDI-*-TAINT` | CWE-78 | A03:2021-Injection | Entrée utilisateur atteignant `exec`/`os.system`/`subprocess(shell=True)` |
-| `RUST-*-CODE-INJECTION-TAINT` | CWE-94 | A03:2021-Injection | Entrée utilisateur atteignant `eval`/`new Function`/`exec` |
+| `RUST-*-CODE-INJECTION-TAINT` | CWE-94 | A03:2021-Injection | Entrée utilisateur atteignant `eval`/`new Function`/`vm.run*`/`exec` |
+| `RUST-*-PATH-TRAVERSAL-TAINT` | CWE-22 | A01:2021-Broken Access Control | Entrée de requête atteignant `fs.*`/`sendFile`/`open()` sans contrôle `startsWith` |
+| `RUST-*-SSRF-TAINT` | CWE-918 | A10:2021-SSRF | Entrée de requête déterminant l'hôte d'un appel sortant (`fetch`, `axios`, `requests`…) |
+| `RUST-JS-XSS-TAINT` | CWE-79 | A03:2021-Injection | Entrée écrite telle quelle dans `res.send/write`, `document.write` ou `insertAdjacentHTML` |
+| `RUST-*-NOSQL-INJECTION-TAINT` | CWE-943 | A03:2021-Injection | Valeur du corps/query (objet possible : `{"$ne": null}`) dans un filtre MongoDB littéral — hors `req.params`, `{ where }` ORM, `String(x)` |
+| `RUST-*-OPEN-REDIRECT-TAINT` | CWE-601 | A01:2021-Broken Access Control | Entrée de requête comme cible de `res.redirect` / `redirect()`, sauf contrôle `startsWith` |
 
 Faible taux de faux positifs par construction :
 
 - **liaison de variables** (`a = source; b = a; sink(b)` est suivi jusqu'au sink
-  par point fixe), pas de simple match ligne-à-ligne ;
+  par point fixe), y compris la **déstructuration** (`const { email } =
+  req.body`, `a, b = …`) et les propriétés raccourcies (`{ email }`) ;
 - seul le **premier argument positionnel** d'un sink est testé, donc une requête
   **paramétrée** (`execute(sql, params)`) n'est pas signalée ;
 - prise en compte des **assainisseurs** (`parseInt`, `shlex.quote`…) qui coupent
   le taint ;
-- `subprocess` n'est signalé qu'avec `shell=True`.
+- `subprocess` n'est signalé qu'avec `shell=True` ;
+- le taint est suivi **par portée de fonction** (avec capture lexicale) : une
+  variable `name` contaminée dans un handler ne contamine pas un `name` d'un
+  autre handler ;
+- un assainisseur **imbriqué** ne neutralise que ce qu'il entoure
+  (`path.join(D, path.basename(req.query.f))` est sûr, `"a" + req.query.q` non) ;
+- NoSQL utilise un profil dédié : seules les sources pouvant porter un
+  **objet** (corps JSON, query string parsée par qs) comptent, et `String(x)`
+  neutralise ;
+- PATH/SSRF/XSS/redirection n'utilisent que les sources **web** (pas `process.argv`,
+  `sys.argv`, `input()` : un CLI qui ouvre le chemin qu'on lui donne fait son
+  travail) ; SSRF ignore une URL dont le schéma et l'hôte sont fixés.
 
 La confiance (`confidence`) est `high` quand la source atteint le sink en
 ligne, `medium` quand elle y arrive via une variable.

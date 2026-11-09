@@ -1,6 +1,7 @@
 import { prisma, type Prisma } from "@codegate/db";
 import type { AppConfig } from "../config.js";
 import { analyzeFiles } from "../analysis/analyzer.js";
+import { IGNORE_FILE, parseIgnoreFile } from "../analysis/ignore.js";
 import { enrichDependencies } from "../analysis/dependency-intel.js";
 import { dedupeDependencies, lockedNpmVersions, resolveInstalledVersions } from "../analysis/lockfiles.js";
 import { decide } from "../analysis/risk.js";
@@ -102,11 +103,18 @@ export async function runScan(config: AppConfig, scanId: string): Promise<void> 
     const { files, lockfiles, skipped, truncated } = extractTarGz(snapshot.archive);
 
     await setPhase(scanId, "analysis", { filesScanned: files.length });
-    const suppressions = await prisma.findingSuppression.findMany({
-      where: { repositoryId: repo.id },
+    const dismissed = await prisma.findingFeedback.findMany({
+      where: { repositoryId: repo.id, verdict: "false_positive" },
       select: { fingerprint: true },
     });
-    const base = analyzeFiles(files, new Set(suppressions.map((s) => s.fingerprint)));
+    // The snapshot's own .codegateignore (default branch, or the ref scanned).
+    const ignoreFile = files.find((f) => f.path === IGNORE_FILE);
+    const base = analyzeFiles(
+      files,
+      new Set(dismissed.map((s) => s.fingerprint)),
+      undefined,
+      ignoreFile ? parseIgnoreFile(ignoreFile.content) : undefined,
+    );
 
     await setPhase(scanId, "dependencies");
     // Evaluate what is installed (lockfile), once per package and version.

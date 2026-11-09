@@ -77,7 +77,7 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().min(3).default("CodeGate <onboarding@resend.dev>"),
   // Public base URL of this API — used to build SAML SP entityId/ACS URLs.
-  PUBLIC_API_URL: z.string().url().default("http://localhost:4000"),
+  PUBLIC_API_URL: z.url().default("http://localhost:4000"),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

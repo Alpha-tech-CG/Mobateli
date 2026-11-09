@@ -26,8 +26,10 @@ export function analyzeDiff(
   diff: string,
   suppressed: ReadonlySet<string> = new Set(),
   settings?: AnalysisSettings,
+  /** Paths from the repository's .codegateignore (see ignore.ts). */
+  isIgnored?: (path: string) => boolean,
 ): PipelineResult {
-  return runCoreAnalysis(diff, settings, suppressed);
+  return runCoreAnalysis(diff, settings, suppressed, undefined, isIgnored);
 }
 
 /** Whole files of a repository snapshot, analysed as if every line were added. */
@@ -35,6 +37,7 @@ export function analyzeFiles(
   files: { path: string; content: string }[],
   suppressed: ReadonlySet<string> = new Set(),
   settings?: AnalysisSettings,
+  isIgnored?: (path: string) => boolean,
 ): PipelineResult {
   const parsed: ParsedDiff = {
     snapshot: true,
@@ -54,7 +57,7 @@ export function analyzeFiles(
     });
     parsed.newSideByFile.set(f.path, side);
   }
-  return runCoreAnalysis(parsed, settings, suppressed);
+  return runCoreAnalysis(parsed, settings, suppressed, undefined, isIgnored);
 }
 
 /**

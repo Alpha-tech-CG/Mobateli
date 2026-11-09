@@ -1,0 +1,23 @@
+[package]
+name = "codegate-scan-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+codegate-scan-engine = { path = ".." }
+
+# Kept out of the engine's own build (cargo-fuzz layout).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "analyze"
+path = "fuzz_targets/analyze.rs"
+test = false
+doc = false
+bench = false

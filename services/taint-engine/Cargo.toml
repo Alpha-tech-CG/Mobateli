@@ -47,3 +47,6 @@ tower-http = { version = "0.5", features = ["limit"], optional = true }
 [profile.release]
 lto = true
 codegen-units = 1
+
+[dev-dependencies]
+proptest = "1"

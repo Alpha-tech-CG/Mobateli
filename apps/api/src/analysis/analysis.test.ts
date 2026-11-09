@@ -186,10 +186,12 @@ test("sast rules catch common issues", () => {
 test("SSRF only when the URL host can come from input, not from config", () => {
   const ids = (line: string) =>
     runSastRules(parseUnifiedDiff(diffFor("a.ts", [line])).addedLines).map((f) => f.ruleId);
-  // Flagged: request input or a variable host.
+  // Flagged: server-side request input on the line.
   assert.ok(ids("await fetch(req.query.url);").includes("SSRF_REQUEST"));
-  assert.ok(ids("await fetch(`${target}/status`);").includes("SSRF_REQUEST"));
-  assert.ok(ids("axios.get(`${body.callbackUrl}`);").includes("SSRF_REQUEST"));
+  assert.ok(ids("axios.get(`${req.body.callbackUrl}`);").includes("SSRF_REQUEST"));
+  // A variable host is left to the taint engine, which follows it to its
+  // source: a browser-side `this.http.get(`${this.host}/…`)` is not SSRF.
+  assert.ok(!ids("this.http.get(`${this.host}/api/${id}`);").includes("SSRF_REQUEST"));
   // Not flagged: constant base URL or fixed origin.
   assert.ok(!ids("await fetch(`${API_URL}/api/flashcards?limit=20`);").includes("SSRF_REQUEST"));
   assert.ok(!ids("await fetch(`${process.env.API_URL}/x`);").includes("SSRF_REQUEST"));

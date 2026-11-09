@@ -67,6 +67,12 @@ enum FindingStatus {
   false_positive
 }
 
+/// A team's verdict on one alert (pilot false-positive tracking).
+enum FeedbackVerdict {
+  false_positive
+  confirmed
+}
+
 enum DependencyRisk {
   low
   medium
@@ -213,8 +219,8 @@ model Repository {
   policies      Policy[]
   agentPolicies AgentPolicy[]
   deployChecks  DeployCheck[]
-  suppressions  FindingSuppression[]
   scans         RepositoryScan[]
+  findingFeedback FindingFeedback[]
 
   @@unique([provider, externalId])
   @@index([organizationId])
@@ -261,12 +267,39 @@ model Finding {
   ruleId        String?
   remediation   String?
   status        FindingStatus @default(open)
+  /// Stable identity of the alert across re-analyses (rule + file + line
+  /// content, not the line number): links it to the team's feedback.
+  fingerprint   String?
   createdAt     DateTime      @default(now())
 
   pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
 
   @@index([pullRequestId])
+  @@index([fingerprint])
   @@map("findings")
+}
+
+/// A team's verdict on an alert, kept per repository and fingerprint so it
+/// survives re-analysis (findings are re-created on every push). A
+/// false_positive verdict suppresses the same alert from later verdicts; both
+/// verdicts feed the per-rule false-positive rate.
+model FindingFeedback {
+  id           String          @id @default(uuid()) @db.Uuid
+  repositoryId String          @db.Uuid
+  fingerprint  String
+  ruleId       String?
+  filePath     String?
+  verdict      FeedbackVerdict
+  note         String?
+  userId       String?         @db.Uuid
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, fingerprint])
+  @@index([repositoryId, ruleId])
+  @@map("finding_feedback")
 }
 
 model Dependency {
@@ -553,22 +586,6 @@ model BackupRestoreTest {
   @@map("backup_restore_tests")
 }
 
-/// A finding a human marked as false positive (US02). Matched on later
-/// re-analyses by fingerprint (rule + file, line-independent) so the verdict
-/// survives new commits; suppressed findings no longer count in the score.
-model FindingSuppression {
-  id           String   @id @default(uuid()) @db.Uuid
-  repositoryId String   @db.Uuid
-  fingerprint  String
-  reason       String?
-  createdById  String?  @db.Uuid
-  createdAt    DateTime @default(now())
-
-  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-
-  @@unique([repositoryId, fingerprint])
-  @@map("finding_suppressions")
-}
 
 /// A sensitive action waiting for a human decision (cahier §5.4, §5.5,
 /// §10.5, US06): an AI agent action under `require_approval`, or a

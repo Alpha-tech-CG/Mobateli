@@ -1,13 +1,14 @@
 import type { EngineId } from "@codegate/shared";
 import { refineSecrets, scanSecrets } from "../secret-scanner.js";
 import { scanDependencies } from "../dependency-scanner.js";
-import { refutedByContext, runSastRules, textByFile } from "../sast.js";
+import { refutedByContext, runSastRules, textByFile, withRuleReferences } from "../sast.js";
+import { AST_RULE_IDS } from "../engine/index.js";
 import { analyzeConfig } from "../config-rules.js";
 import { detectPromptInjection } from "../prompt-injection.js";
 import { enrichDependencies } from "../dependency-intel.js";
 import { runSca, mergeScaIntoDependencies } from "../sca.js";
 import { scanSemgrep } from "../semgrep.js";
-import { runRustEngine, mergeRustFindings } from "../rust-engine.js";
+import { corroborate, mergeRustFindings, runRustEngineDetailed } from "../rust-engine.js";
 import type { FindingResult } from "../types.js";
 import type { AnalysisEngine } from "./engine.js";
 import { isSafeRelativePath } from "./paths.js";
@@ -38,9 +39,22 @@ const secrets: AnalysisEngine = {
   id: "secrets",
   phase: "core",
   run: (ctx) => {
-    const raw = ctx.ast()?.secrets ?? scanSecrets(ctx.parsed.addedLines);
+    // Ignored paths are skipped by every engine but this one: a credential
+    // committed under an ignored path is leaked all the same.
+    const kept = new Set(ctx.parsed.files);
+    const ignoredLines = ctx.unfiltered.addedLines.filter((l) => !kept.has(l.file));
+    // Both scanners on the analysed code: the engine's patterns and the
+    // TypeScript ones (e.g. a prefixed name, `signingSecret = "…"`). One hit
+    // per location — the engine's when both report it.
+    const fromAst = ctx.ast()?.secrets ?? [];
+    const located = new Set(fromAst.map((s) => s.location));
+    const raw = [
+      ...fromAst,
+      ...scanSecrets(ctx.parsed.addedLines).filter((s) => !located.has(s.location)),
+      ...(ignoredLines.length ? scanSecrets(ignoredLines) : []),
+    ];
     // Same false-positive rules whichever engine found them.
-    const byLine = new Map(ctx.parsed.addedLines.map((l) => [`${l.file}:${l.line}`, l.content]));
+    const byLine = new Map(ctx.unfiltered.addedLines.map((l) => [`${l.file}:${l.line}`, l.content]));
     const { secrets: found, samples } = refineSecrets(raw, (file, line) => byLine.get(`${file}:${line}`));
     const notes: FindingResult[] = samples.map((s) => ({
       type: "secret",
@@ -81,10 +95,17 @@ const sast: AnalysisEngine = {
     const found = [
       // Same exclusions as the line rules (comments, literals, constants,
       // provenance of the HTML written to innerHTML).
-      ...(ast?.findings ?? []).filter(
-        (f) => !refutedByContext(f, byLine.get(`${f.filePath}:${f.line}`), texts.get(f.filePath ?? "") ?? "", complete),
+      ...(ast?.findings ?? [])
+        .filter(
+          (f) => !refutedByContext(f, byLine.get(`${f.filePath}:${f.line}`), texts.get(f.filePath ?? "") ?? "", complete),
+        )
+        // Same CWE/OWASP/confidence as the line rule of the same id.
+        .map((f) => withRuleReferences(f, byLine.get(`${f.filePath}:${f.line}`))),
+      // Files the engine did not parse: every line rule. Files it parsed: the
+      // line rules it does not implement (NoSQL, JWT, CORS, weak random…).
+      ...runSastRules(ctx.parsed.addedLines, complete).filter(
+        (f) => !astFiles.has(f.filePath ?? "") || !AST_RULE_IDS.has(f.ruleId ?? ""),
       ),
-      ...runSastRules(ctx.parsed.addedLines.filter((l) => !astFiles.has(l.file)), complete),
     ];
     return (t) => ({ ...t, findings: [...t.findings, ...found] });
   },
@@ -95,7 +116,9 @@ const config: AnalysisEngine = {
   id: "config",
   phase: "core",
   run: (ctx) => {
-    const found = analyzeConfig(ctx.parsed.addedLines, ctx.parsed.files);
+    // File-level notices (.env committed, .codegateignore edited) look at
+    // every file: ignoring a path must not hide that it was changed.
+    const found = analyzeConfig(ctx.parsed.addedLines, ctx.unfiltered.files);
     return (t) => ({ ...t, findings: [...t.findings, ...found] });
   },
 };
@@ -150,8 +173,13 @@ const rust: AnalysisEngine = {
   id: "rust",
   phase: "intel",
   run: async (ctx, setStatus) => {
-    const found = await runRustEngine(ctx.files, { ...ctx.options.rust, onStatus: setStatus });
-    return (t) => ({ ...t, findings: mergeRustFindings(t.findings, found) });
+    const run = await runRustEngineDetailed(ctx.files, { ...ctx.options.rust, onStatus: setStatus });
+    // After a complete run, a regex approximation the engine did not confirm
+    // drops to low confidence (still reported); never when it did not run.
+    return (t) => ({
+      ...t,
+      findings: corroborate(mergeRustFindings(t.findings, run.findings), run.findings, run.ran),
+    });
   },
 };
 

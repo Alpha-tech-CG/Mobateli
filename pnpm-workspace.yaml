@@ -2,6 +2,15 @@ packages:
   - "apps/*"
   - "packages/*"
 
+# Supply-chain hardening (flagged by Semgrep's p/ci on CodeGate itself):
+# - wait 7 days before installing a freshly published version — most
+#   malicious releases are caught and yanked within that window;
+# - refuse an update whose provenance/trust level is lower than before;
+# - transitive deps may only come from the registry (no git/tarball URLs).
+minimumReleaseAge: 10080
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+
 # Native/postinstall build scripts are blocked by default (supply-chain
 # hardening). Only the packages below — which genuinely need to compile or
 # fetch engines — are allowed to run scripts.

@@ -88,7 +88,7 @@ export const updateMemberSchema = z
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 
 export const createPolicySchema = z.object({
-  repositoryId: z.string().uuid().nullable().optional(),
+  repositoryId: z.uuid().nullable().optional(),
   rule: z.string().min(1).max(120),
   action: z.enum(["allow", "warn", "block", "require_approval"]),
   severityThreshold: z.enum(SEVERITIES),
@@ -103,7 +103,7 @@ export const setAgentPolicySchema = z.object({
 export type SetAgentPolicyInput = z.infer<typeof setAgentPolicySchema>;
 
 export const guardActionSchema = z.object({
-  repositoryId: z.string().uuid(),
+  repositoryId: z.uuid(),
   permission: z.enum(AGENT_PERMISSIONS),
   /** The package name, domain, command or path the agent wants to act on. */
   target: z.string().max(500).optional(),
@@ -112,9 +112,9 @@ export const guardActionSchema = z.object({
 export type GuardActionInput = z.infer<typeof guardActionSchema>;
 
 export const auditQuerySchema = z.object({
-  repositoryId: z.string().uuid().optional(),
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional(),
+  repositoryId: z.uuid().optional(),
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
   action: z.string().max(80).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
@@ -122,9 +122,9 @@ export type AuditQueryInput = z.infer<typeof auditQuerySchema>;
 
 export const auditExportSchema = z.object({
   format: z.enum(["json", "csv", "pdf"]).default("json"),
-  repositoryId: z.string().uuid().optional(),
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional(),
+  repositoryId: z.uuid().optional(),
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
   severityThreshold: z.enum(SEVERITIES).optional(),
 });
 export type AuditExportInput = z.infer<typeof auditExportSchema>;
@@ -154,7 +154,7 @@ export type ConnectSlackInput = z.infer<typeof connectSlackSchema>;
 
 export const connectSamlSchema = z.object({
   idpEntityId: z.string().min(1).max(300),
-  idpSsoUrl: z.string().url().max(500),
+  idpSsoUrl: z.url().max(500),
   /** IdP signing certificate (PEM body, base64) used to verify assertions. */
   idpCert: z.string().min(50).max(10000),
 });
@@ -507,7 +507,7 @@ export type RestoreTestReport = z.infer<typeof restoreTestReportSchema>;
 
 /** Pagination shared across list endpoints. */
 export const paginationSchema = z.object({
-  cursor: z.string().uuid().optional(),
+  cursor: z.uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });
 export type PaginationInput = z.infer<typeof paginationSchema>;

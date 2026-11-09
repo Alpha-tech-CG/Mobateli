@@ -56,6 +56,11 @@ export interface EngineRuntimeOptions {
 export interface EngineContext {
   /** The PR diff, minus the ignored paths. */
   parsed: ParsedDiff;
+  /**
+   * The whole diff, ignored paths included. Only the secret scanner reads it:
+   * a credential committed under an ignored path is leaked all the same.
+   */
+  unfiltered: ParsedDiff;
   /** The PR's added code, rebuilt per file at its real line numbers. */
   files: EngineFile[];
   settings: AnalysisSettings;

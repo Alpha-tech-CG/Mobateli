@@ -1,6 +1,7 @@
 import { prisma, withDbRetry } from "@codegate/db";
 import { recordAudit } from "../lib/audit.js";
-import { fetchPrDiff } from "../lib/github-diff.js";
+import { fetchDefaultBranchFile, fetchPrDiff } from "../lib/github-diff.js";
+import { IGNORE_FILE, parseIgnoreFile } from "../analysis/ignore.js";
 import { resolveAnalysisSettings } from "@codegate/shared";
 import { runAnalysis } from "../analysis/engines/pipeline.js";
 import { buildPrComment } from "../analysis/explainer.js";
@@ -100,10 +101,29 @@ export async function processPrAnalysis(
     throw new Error("diff_unavailable");
   }
 
-  const suppressions = await prisma.findingSuppression.findMany({
+  // The team's verdicts on this repository (false positive / confirmed),
+  // keyed by alert fingerprint: they survive a re-analysis.
+  const verdicts = await prisma.findingFeedback.findMany({
     where: { repositoryId: pr.repository.id },
-    select: { fingerprint: true },
+    select: { fingerprint: true, verdict: true },
   });
+  const dismissed = new Set(verdicts.filter((v) => v.verdict === "false_positive").map((v) => v.fingerprint));
+  const confirmed = new Set(verdicts.filter((v) => v.verdict === "confirmed").map((v) => v.fingerprint));
+  // .codegateignore is read from the default branch, never from the PR head:
+  // a PR must not be able to exempt itself (see ignore.ts).
+  let ignoreFile: string | null = null;
+  if (!gitlab) {
+    try {
+      ignoreFile = await fetchDefaultBranchFile(
+        config,
+        Number(pr.repository.installationId),
+        pr.repository.name,
+        IGNORE_FILE,
+      );
+    } catch {
+      ignoreFile = null;
+    }
+  }
   // The analysis pipeline (docs/ARCHITECTURE-ANALYSE.md): every engine with
   // its status, the organization/repository parameters, the human
   // false-positive verdicts. Binary engines (Semgrep, Trivy, native taint
@@ -113,7 +133,8 @@ export async function processPrAnalysis(
       pr.repository.organization.analysisSettings,
       pr.repository.analysisSettings,
     ),
-    suppressed: new Set(suppressions.map((s) => s.fingerprint)),
+    suppressed: dismissed,
+    ...(ignoreFile ? { isIgnored: parseIgnoreFile(ignoreFile) } : {}),
     runtime: { worker: config.ANALYSIS_MODE === "queue" },
   });
 
@@ -127,7 +148,10 @@ export async function processPrAnalysis(
       prisma.secretFinding.deleteMany({ where: { pullRequestId: pr.id } }),
       prisma.finding.createMany({
         data: [
-          ...result.findings.map((f) => ({ f, status: "open" as const })),
+          ...result.findings.map((f) => ({
+            f,
+            status: confirmed.has(f.fingerprint ?? "") ? ("acknowledged" as const) : ("open" as const),
+          })),
           // Human-confirmed false positives: kept for the record, not scored.
           ...result.suppressed.map((f) => ({ f, status: "false_positive" as const })),
         ].map(({ f, status }) => ({
@@ -141,6 +165,7 @@ export async function processPrAnalysis(
           ruleId: f.ruleId ?? null,
           remediation: f.remediation ?? null,
           status,
+          fingerprint: f.fingerprint ?? null,
         })),
       }),
       prisma.dependency.createMany({
@@ -338,7 +363,7 @@ export async function processPrAnalysis(
     pr.repository.protectionLevel,
     policies,
   );
-  const comment = buildPrComment(result);
+  const comment = buildPrComment(result, { suppressed: result.suppressed.length });
   const installationId = Number(pr.repository.installationId);
 
   try {

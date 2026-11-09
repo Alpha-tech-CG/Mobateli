@@ -1,0 +1,19 @@
+{
+  "name": "golden-deps",
+  "version": "1.0.0",
+  "dependencies": {
+    "expresss": "4.19.2", // VULN: DEP
+    "reqeusts": "2.0.0", // VULN: DEP
+    "lodahs": "4.17.21", // VULN: DEP
+    "react-router-domm": "6.0.0", // VULN: DEP
+    "crossenv": "7.0.3", // VULN: DEP
+    "express": "4.19.2", // SAFE: DEP
+    "react": "18.3.1", // SAFE: DEP
+    "preact": "10.22.0", // SAFE: DEP
+    "redux": "5.0.1", // SAFE: DEP
+    "knex": "3.1.0", // SAFE: DEP
+    "zod": "3.23.8", // SAFE: DEP
+    "date-fns": "3.6.0", // SAFE: DEP
+    "nanoid": "5.0.7" // SAFE: DEP
+  }
+}

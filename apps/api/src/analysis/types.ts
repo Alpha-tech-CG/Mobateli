@@ -30,6 +30,8 @@ export interface FindingResult {
   /** OWASP Top 10 category, e.g. "A03:2021-Injection". */
   owasp?: string;
   confidence?: Confidence;
+  /** Identity of the alert for human verdicts (see fingerprint.ts). */
+  fingerprint?: string;
 }
 
 /** A detected secret, with its value masked. */

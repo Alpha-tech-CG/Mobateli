@@ -15,6 +15,8 @@
     "corpus": "node --import tsx src/analysis/fixtures/corpus-cli.ts",
     "measure": "node --import tsx scripts/measure-project.ts",
     "test:integration": "node --import tsx --test --test-force-exit \"src/**/*.itest.ts\"",
+    "bench": "node --import tsx bench/run.ts",
+    "bench:typecheck": "tsc -p bench/tsconfig.json",
     "build:vercel": "node scripts/build-vercel.mjs",
     "lint": "eslint src --ext .ts"
   },

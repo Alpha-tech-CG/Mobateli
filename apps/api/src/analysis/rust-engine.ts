@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ParsedDiff } from "./diff.js";
+import { isMinified } from "./sast.js";
 import { describeFailure, type Confidence, type EngineStatusFn, type FindingResult } from "./types.js";
 import type { FindingType, Severity } from "@codegate/shared";
 
@@ -76,10 +77,11 @@ function isEnabled(opts: RustEngineOptions): boolean {
 const spawnRunner: EngineRunner = (manifest, { binaryPath, timeoutMs }) =>
   new Promise((resolve, reject) => {
     let settled = false;
-    const done = (out: string) => {
+    const done = (out: string | null) => {
       if (!settled) {
         settled = true;
-        resolve(out);
+        if (out === null) reject(new Error("codegate-scan failed"));
+        else resolve(out);
       }
     };
     const fail = (err: unknown) => {
@@ -146,13 +148,14 @@ function toFinding(raw: unknown): FindingResult | null {
   return finding;
 }
 
-function parseOutput(stdout: string): FindingResult[] {
+/** Parsed findings, or null when the output is not a JSON array. */
+function parseOutput(stdout: string): FindingResult[] | null {
   try {
     const data = JSON.parse(stdout);
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) return null;
     return data.map(toFinding).filter((f): f is FindingResult => f !== null);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -165,6 +168,7 @@ function parseOutput(stdout: string): FindingResult[] {
 export function filesFromDiff(parsed: ParsedDiff): EngineFile[] {
   const byFile = new Map<string, Map<number, string>>();
   for (const { file, line, content } of parsed.addedLines) {
+    if (isMinified(file)) continue; // generated bundles: see sast.ts
     let lines = byFile.get(file);
     if (!lines) {
       lines = new Map();
@@ -175,7 +179,11 @@ export function filesFromDiff(parsed: ParsedDiff): EngineFile[] {
 
   const files: EngineFile[] = [];
   for (const [path, lines] of byFile) {
-    const max = Math.max(...lines.keys());
+    // Not `Math.max(...lines.keys())`: spreading ~100k+ arguments overflows
+    // the call stack, which crashed the whole analysis of a PR adding a huge
+    // file (PR left without a verdict).
+    let max = 0;
+    for (const line of lines.keys()) if (line > max) max = line;
     const buffer: string[] = new Array(max).fill("");
     for (const [line, content] of lines) buffer[line - 1] = content;
     files.push({ path, content: buffer.join("\n") });
@@ -184,17 +192,23 @@ export function filesFromDiff(parsed: ParsedDiff): EngineFile[] {
 }
 
 /** Run the engine over a set of files. Always resolves (fails open to `[]`). */
-export async function runRustEngine(
+/** Outcome of one engine run: `ran` is true only for a complete, valid run. */
+export interface RustRun {
+  findings: FindingResult[];
+  ran: boolean;
+}
+
+export async function runRustEngineDetailed(
   files: EngineFile[],
   opts: RustEngineOptions = {},
-): Promise<FindingResult[]> {
+): Promise<RustRun> {
   if (!isEnabled(opts)) {
     opts.onStatus?.("skipped", "désactivé");
-    return [];
+    return { findings: [], ran: false };
   }
   if (files.length === 0) {
     opts.onStatus?.("skipped", "aucun fichier");
-    return [];
+    return { findings: [], ran: false };
   }
   const runner = opts.runner ?? spawnRunner;
   const manifest = JSON.stringify({ files });
@@ -204,12 +218,66 @@ export async function runRustEngine(
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
     const findings = parseOutput(stdout);
+    if (findings === null) {
+      opts.onStatus?.("failed", "sortie illisible");
+      return { findings: [], ran: false };
+    }
     opts.onStatus?.("ok");
-    return findings;
+    return { findings, ran: true };
   } catch (err) {
     opts.onStatus?.("failed", describeFailure(err));
-    return [];
+    return { findings: [], ran: false };
   }
+}
+
+export async function runRustEngine(
+  files: EngineFile[],
+  opts: RustEngineOptions = {},
+): Promise<FindingResult[]> {
+  return (await runRustEngineDetailed(files, opts)).findings;
+}
+
+/** Languages the engine parses (keep in sync with services/taint-engine/src/lang.rs). */
+const ENGINE_LANGUAGE = /\.(js|jsx|mjs|cjs|ts|mts|cts|tsx|py|pyi)$/i;
+
+/**
+ * Regex rules that only APPROXIMATE a dataflow question ("does user input
+ * reach this sink?") that the taint engine answers properly.
+ */
+const TAINT_APPROXIMATIONS = new Set([
+  // eval of something the engine sees no untrusted input reaching (a startup
+  // file, a constant) is a smell, not a confirmed code injection.
+  "DANGEROUS_EVAL",
+  "SQL_STRING_CONCAT",
+  "CHILD_PROCESS_INJECTION",
+  "PYTHON_SHELL_INJECTION",
+  "PATH_TRAVERSAL",
+  "SSRF_REQUEST",
+]);
+
+/**
+ * After a complete engine run, a taint-approximating regex finding that the
+ * engine did not confirm (no engine finding of that family on that line) is
+ * downgraded to low confidence: still reported — the input may come from a
+ * source the engine does not model (a DB value, a message queue) — but it no
+ * longer weighs like a confirmed injection. Never applied when the engine did
+ * not run (timeout, missing binary): that must not weaken the regex net.
+ */
+export function corroborate(
+  findings: FindingResult[],
+  engineFindings: FindingResult[],
+  ran: boolean,
+): FindingResult[] {
+  if (!ran) return findings;
+  const confirmed = new Set(engineFindings.map(dedupeKey));
+  return findings.map((f) =>
+    f.ruleId !== undefined &&
+    TAINT_APPROXIMATIONS.has(f.ruleId) &&
+    ENGINE_LANGUAGE.test(f.filePath ?? "") &&
+    !confirmed.has(dedupeKey(f))
+      ? { ...f, confidence: "low" }
+      : f,
+  );
 }
 
 /**
@@ -218,6 +286,22 @@ export async function runRustEngine(
  * issue on the same line, instead of both being reported.
  */
 function family(f: FindingResult): string {
+  // The CWE is authoritative; text heuristics only for findings without one
+  // (a code-injection title mentioning "exec()" is not a command injection).
+  const byCwe: Record<string, string> = {
+    "CWE-89": "sqli",
+    "CWE-78": "cmdi",
+    "CWE-77": "cmdi",
+    "CWE-94": "code",
+    "CWE-95": "code",
+    "CWE-22": "path",
+    "CWE-918": "ssrf",
+    "CWE-79": "xss",
+    "CWE-943": "nosql",
+    "CWE-601": "redirect",
+  };
+  const cwe = f.cwe?.match(/CWE-\d+/)?.[0];
+  if (cwe && byCwe[cwe]) return byCwe[cwe];
   const s = `${f.ruleId ?? ""} ${f.cwe ?? ""} ${f.title}`.toUpperCase();
   if (s.includes("CWE-89") || s.includes("SQL")) return "sqli";
   if (
@@ -228,6 +312,9 @@ function family(f: FindingResult): string {
   )
     return "cmdi";
   if (s.includes("CWE-94") || s.includes("EVAL") || s.includes("CODE INJECT")) return "code";
+  if (s.includes("CWE-22")) return "path";
+  if (s.includes("CWE-918")) return "ssrf";
+  if (s.includes("CWE-79")) return "xss";
   return `${f.ruleId ?? f.title}`;
 }
 

@@ -73,15 +73,19 @@ export function failedEngines(
     .map(([name, r]) => ({ name, label: ENGINE_LABELS[name], detail: r.detail ?? "échec" }));
 }
 
-export function buildPrComment(result: {
-  riskScore: number;
-  decision: string;
-  status: string;
-  findings: FindingResult[];
-  secrets: SecretResult[];
-  dependencies: DependencyResult[];
-  engines?: AnalysisResult["engines"];
-}): string {
+export function buildPrComment(
+  result: {
+    riskScore: number;
+    decision: string;
+    status: string;
+    findings: FindingResult[];
+    secrets: SecretResult[];
+    dependencies: DependencyResult[];
+    engines?: AnalysisResult["engines"];
+  },
+  /** suppressed: alerts the team already marked as false positives. */
+  extra: { suppressed?: number } = {},
+): string {
   const emoji =
     result.status === "blocked" ? "🛑" : result.status === "warning" ? "⚠️" : "✅";
   const lines: string[] = [];
@@ -106,9 +110,17 @@ export function buildPrComment(result: {
   }
   const risks = result.findings.filter((f) => f.severity !== "info");
   const notes = result.findings.filter((f) => f.severity === "info");
-  if (risks.length) {
-    lines.push(`### 🔎 Problèmes de code (${risks.length})`);
-    for (const f of risks) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+  const firm = risks.filter((f) => f.confidence !== "low");
+  const toReview = risks.filter((f) => f.confidence === "low");
+  if (firm.length) {
+    lines.push(`### 🔎 Problèmes de code (${firm.length})`);
+    for (const f of firm) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
+    lines.push("");
+  }
+  if (toReview.length) {
+    // Weak signals: listed for a human look, they do not drive the verdict.
+    lines.push(`### 🔍 À vérifier — confiance basse (${toReview.length})`);
+    for (const f of toReview) lines.push(`- **[${f.severity}]** ${explainFinding(f)}`);
     lines.push("");
   }
   const failed = failedEngines(result.engines);
@@ -136,7 +148,17 @@ export function buildPrComment(result: {
     lines.push("");
     lines.push("</details>");
   }
+
+  if (extra.suppressed) {
+    lines.push(
+      `🙈 ${extra.suppressed} alerte(s) masquée(s) : déjà signalée(s) comme fausse(s) alerte(s) par l'équipe sur ce dépôt.`,
+    );
+    lines.push("");
+  }
+
   lines.push("");
-  lines.push("<sub>CodeGate vérifie chaque PR générée par IA avant la production.</sub>");
+  lines.push(
+    "<sub>CodeGate vérifie chaque PR générée par IA avant la production. Une alerte vous semble fausse ? Signalez-la depuis la page de la PR dans le tableau de bord CodeGate : elle ne comptera plus dans le verdict de ce dépôt.</sub>",
+  );
   return lines.join("\n");
 }

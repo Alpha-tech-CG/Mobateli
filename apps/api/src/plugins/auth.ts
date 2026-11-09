@@ -65,7 +65,13 @@ async function authPlugin(
     loadAccount?: (principal: AuthPrincipal) => Promise<SessionAccount | null>;
   },
 ) {
-  await app.register(fastifyJwt, { secret: opts.jwtSecret, sign: { expiresIn: SESSION_TTL } });
+  // Pin the algorithm on both sides: tokens are only ever HS256-signed by
+  // this API, so nothing else (`none`, RS*/ES* key confusion) is accepted.
+  await app.register(fastifyJwt, {
+    secret: opts.jwtSecret,
+    sign: { algorithm: "HS256", expiresIn: SESSION_TTL },
+    verify: { algorithms: ["HS256"] },
+  });
   const loadAccount = opts.loadAccount ?? loadAccountFromDb;
 
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {

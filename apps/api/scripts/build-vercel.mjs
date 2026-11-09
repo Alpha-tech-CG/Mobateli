@@ -5,7 +5,7 @@
 // packages stay external and are installed by Vercel with npm from a
 // generated package.json (no pnpm workspace needed on Vercel's side).
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,9 +49,27 @@ cpSync(join(apiDir, "src", "analysis", "engine", "codegate_scan.wasm"), join(out
 // Audit report branding, loaded next to the bundle (new URL("./assets/…", import.meta.url)).
 cpSync(join(apiDir, "src", "lib", "assets"), join(out, "api", "assets"), { recursive: true });
 cpSync(join(repo, "packages", "db", "prisma", "schema.prisma"), join(out, "prisma", "schema.prisma"));
-cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), {
-  recursive: true,
-});
+// Migrations are applied by the Vercel build (see `scripts.build` below).
+cpSync(join(repo, "packages", "db", "prisma", "migrations"), join(out, "prisma", "migrations"), { recursive: true });
+
+// The Rust taint engine. Without it the deployed bot runs the regex rules
+// only — far lower recall (0/5 of Juice Shop's SQL injections) and no
+// corroboration. It must be a STATIC Linux x86_64 build (CI artifact
+// `codegate-scan-linux-musl`): `CODEGATE_SCAN_LINUX_BIN=/path/to/codegate-scan`.
+const engine = process.env.CODEGATE_SCAN_LINUX_BIN;
+let engineBundled = false;
+if (engine && existsSync(engine)) {
+  mkdirSync(join(out, "bin"), { recursive: true });
+  cpSync(engine, join(out, "bin", "codegate-scan"));
+  chmodSync(join(out, "bin", "codegate-scan"), 0o755);
+  engineBundled = true;
+} else if (process.env.CODEGATE_ALLOW_NO_ENGINE !== "1") {
+  console.error(
+    "✖ Moteur Rust absent : définissez CODEGATE_SCAN_LINUX_BIN (artefact CI codegate-scan-linux-musl),\n" +
+      "  ou CODEGATE_ALLOW_NO_ENGINE=1 pour déployer volontairement sans lui (règles regex seules).",
+  );
+  process.exit(1);
+}
 writeFileSync(join(out, "public", "robots.txt"), "User-agent: *\nDisallow: /\n");
 
 writeFileSync(
@@ -62,11 +80,16 @@ writeFileSync(
       private: true,
       type: "module",
       engines: { node: "22.x" },
-      // Sensitive Neon vars can't be pulled locally, so migrations run here,
-      // on Vercel, against the direct (non-PgBouncer) endpoint.
+      // The build applies pending migrations BEFORE the new code goes live:
+      // the production database URL is a sensitive variable only Vercel's
+      // build/runtime can read. A failing migration fails the build, and the
+      // previous deployment stays in production. Neon's pooled URL does not
+      // suit migrations, hence the unpooled one when present.
       scripts: {
+        // Production builds only: a preview must never migrate a database
+        // that production may share.
         build:
-          'DATABASE_URL="${DATABASE_URL_UNPOOLED:-$DATABASE_URL}" prisma migrate deploy && prisma generate',
+          'if [ "$VERCEL_ENV" = "production" ]; then DATABASE_URL="${DATABASE_URL_UNPOOLED:-$DATABASE_URL}" prisma migrate deploy || exit 1; fi; prisma generate',
       },
       dependencies: deps,
       // Same security overrides as the monorepo (see pnpm-workspace.yaml).
@@ -92,7 +115,9 @@ writeFileSync(
         "api/index.js": {
           // Whole-repository scans run after the response (waitUntil).
           maxDuration: 60,
-          includeFiles: "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm,api/assets/**}",
+          includeFiles: engineBundled
+            ? "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm,api/assets/**,bin/**}"
+            : "{node_modules/pdfkit/js/data/**,api/codegate_scan.wasm,api/assets/**}",
         },
       },
       rewrites: [{ source: "/(.*)", destination: "/api" }],
@@ -104,4 +129,4 @@ writeFileSync(
   ),
 );
 
-console.log(`Vercel bundle ready in ${out}`);
+console.log(`Vercel bundle ready in ${out} — moteur Rust ${engineBundled ? "embarqué" : "ABSENT (règles regex seules)"}`);

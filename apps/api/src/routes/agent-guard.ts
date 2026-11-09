@@ -184,7 +184,9 @@ export async function agentGuardRoutes(app: FastifyInstance, config: AppConfig) 
         },
       });
 
-      return reply.send(result);
+      // Fastify serializes this object as JSON (application/json): no HTML
+      // rendering, so Semgrep's Express XSS rule does not apply.
+      return reply.send(result); // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     },
   );
 }

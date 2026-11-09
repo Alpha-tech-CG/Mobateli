@@ -15,6 +15,14 @@ const POPULAR_NPM = [
   "zod", "prisma", "@prisma/client", "typescript", "eslint", "jest", "vitest",
   "webpack", "vite", "rollup", "babel", "moment", "dayjs", "uuid", "bcrypt",
   "jsonwebtoken", "cors", "body-parser", "mongoose", "pg", "redis", "ioredis",
+  // Frequent typosquatting targets (names ≥ 6 chars to keep short-name
+  // collisions out — see the length rule in nearestPopular).
+  "cross-env", "request", "node-fetch", "nodemon", "rimraf", "mkdirp", "semver",
+  "yargs", "inquirer", "minimist", "underscore", "jquery", "socket.io", "mysql2",
+  "sequelize", "typeorm", "graphql", "nodemailer", "multer", "passport", "helmet",
+  "cookie-parser", "express-session", "tailwindcss", "postcss", "autoprefixer",
+  "prettier", "ts-node", "electron", "puppeteer", "playwright", "cheerio",
+  "coffee-script", "event-stream", "discord.js", "web3", "ethers",
 ];
 
 // Well-known, legitimate packages whose names happen to sit a short edit
@@ -51,6 +59,12 @@ export function levenshtein(a: string, b: string): number {
   return d[m]![n]!;
 }
 
+/** Same edit distance under main's name (benchmarks and tests use it). */
+export const editDistance = levenshtein;
+
+/** Name with separators dropped: `crossenv` and `cross-env` collide. */
+const squash = (name: string) => name.replace(/[-_.]/g, "");
+
 /** Closest popular package within a small edit distance (a typosquat target). */
 export function nearestPopular(
   name: string,
@@ -63,6 +77,13 @@ export function nearestPopular(
   let best: { target: string; distance: number } | null = null;
   for (const pkg of popular) {
     if (pkg === normalized) return null; // exact match ⇒ legitimate, not a squat
+  }
+  for (const pkg of popular) {
+    // Same name once separators are dropped (`crossenv` vs `cross-env`): the
+    // classic squat of a hyphenated package — one edit, whatever the length.
+    if (squash(pkg) === squash(normalized) && pkg.length >= 5) {
+      return { target: pkg, distance: 1 };
+    }
     const d = levenshtein(normalized, pkg);
     const shortest = Math.min(normalized.length, pkg.length);
     // ≤ 4 letters: any two names are a couple of edits apart — no signal.

@@ -177,6 +177,23 @@ export function analyzeConfig(addedLines: AddedLine[], files: string[]): Finding
         remediation: "Retirez-le (`git rm --cached`), ajoutez-le au .gitignore, faites tourner les secrets qu'il contenait ; gardez un `.env.example` sans valeurs.",
       });
     }
+    // Widening it exempts code from analysis: a reviewer must see it. (The
+    // analysis reads it from the default branch, never from this PR.)
+    if (/(^|\/)\.codegateignore$/.test(file)) {
+      findings.push({
+        type: "config",
+        severity: "low",
+        confidence: "high",
+        cwe: "CWE-732",
+        owasp: "A05:2021-Security Misconfiguration",
+        title: "Fichier sensible modifié : .codegateignore",
+        description:
+          "Cette PR modifie la liste des chemins exclus de l'analyse. Une fois fusionnée, le code de ces chemins ne sera plus analysé (les secrets, si).",
+        filePath: file,
+        ruleId: "SENSITIVE_FILE_CHANGED",
+        remediation: "Vérifiez que chaque chemin ajouté est vraiment du code de test, généré ou tiers — jamais du code de production.",
+      });
+    }
   }
   return findings;
 }

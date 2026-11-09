@@ -29,6 +29,9 @@ function confidenceFactor(c: FindingResult["confidence"] | SecretResult["confide
   return c ? CONFIDENCE_FACTOR[c] : 1;
 }
 
+/** Low-confidence signals alone warn only once they add up to this score. */
+const LOW_SIGNAL_THRESHOLD = 20;
+
 export interface DecisionInput {
   findings: FindingResult[];
   secrets: SecretResult[];
@@ -37,30 +40,48 @@ export interface DecisionInput {
 
 /**
  * Risk Decision Engine (cahier §1, §4). Deterministic scoring → decision.
- * A secret or a critical finding/dependency always blocks.
+ * A secret, a critical finding/dependency or a confirmed high-severity
+ * finding always blocks.
  */
 export function decide(input: DecisionInput): Pick<
   AnalysisResult,
   "riskScore" | "decision" | "status"
 > {
+  // A low-confidence signal is reported "to review" but never decides on its
+  // own: only firm (medium/high) findings set the verdict, unless many weak
+  // signals add up (LOW_SIGNAL_THRESHOLD). Otherwise a clean PR would be
+  // warned for a checksum MD5 or an eval the taint engine cleared.
+  const firm = (c: FindingResult["confidence"] | SecretResult["confidence"]) => c !== "low";
+  const firmFindings = input.findings.filter((f) => firm(f.confidence));
+
   let score = 0;
+  let firmScore = 0;
   // Repeats of the same rule are one weakness to fix, not N independent risks:
   // the first hit counts in full, each repeat a quarter, capped at 2× a single
   // hit. Linear summing pushed whole codebases to 100 on hygiene warnings
   // (e.g. 8 unpinned GitHub Actions = 64 points).
-  const perRule = new Map<string, { weight: number; repeats: number }>();
+  const perRule = new Map<string, { weight: number; repeats: number; firm: boolean }>();
   for (const f of input.findings) {
     const w = SEVERITY_WEIGHT[f.severity] * confidenceFactor(f.confidence);
-    const key = `${f.ruleId ?? f.title}:${f.severity}`;
+    const key = `${f.ruleId ?? f.title}:${f.severity}:${firm(f.confidence)}`;
     const seen = perRule.get(key);
-    if (!seen) perRule.set(key, { weight: w, repeats: 0 });
+    if (!seen) perRule.set(key, { weight: w, repeats: 0, firm: firm(f.confidence) });
     else seen.repeats++;
   }
-  for (const { weight, repeats } of perRule.values()) {
-    score += Math.min(weight * (1 + 0.25 * repeats), weight * 2);
+  for (const { weight, repeats, firm: isFirm } of perRule.values()) {
+    const w = Math.min(weight * (1 + 0.25 * repeats), weight * 2);
+    score += w;
+    if (isFirm) firmScore += w;
   }
-  for (const s of input.secrets) score += (SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity]) * confidenceFactor(s.confidence);
-  for (const d of input.dependencies) score += DEP_RISK_WEIGHT[d.riskLevel];
+  for (const s of input.secrets) {
+    const w = (SECRET_WEIGHT + SEVERITY_WEIGHT[s.severity]) * confidenceFactor(s.confidence);
+    score += w;
+    if (firm(s.confidence)) firmScore += w;
+  }
+  for (const d of input.dependencies) {
+    score += DEP_RISK_WEIGHT[d.riskLevel];
+    firmScore += DEP_RISK_WEIGHT[d.riskLevel];
+  }
   score = Math.round(Math.min(100, score));
 
   // A low-confidence secret (e.g. a provider-shaped value in a sample file) is
@@ -69,23 +90,30 @@ export function decide(input: DecisionInput): Pick<
   const hasCritical =
     input.findings.some((f) => f.severity === "critical") ||
     input.dependencies.some((d) => d.riskLevel === "critical");
+  // A high-severity issue that is CONFIRMED — a near-certain match (high
+  // confidence) or a source→sink path proven by the taint engine — blocks:
+  // a proven SQL/command/code injection must not merely warn. An unconfirmed
+  // regex hit of the same severity still only warns.
+  const hasConfirmedHigh = firmFindings.some(
+    (f) => f.severity === "high" && (f.confidence === "high" || (f.ruleId ?? "").startsWith("RUST-")),
+  );
   const hasHigh =
-    input.findings.some((f) => f.severity === "high") ||
+    firmFindings.some((f) => f.severity === "high") ||
     input.dependencies.some((d) => d.riskLevel === "high");
   const hasMedium =
-    input.findings.some((f) => f.severity === "medium") ||
+    firmFindings.some((f) => f.severity === "medium") ||
     input.dependencies.some((d) => d.riskLevel === "medium");
 
   let decision: Decision;
   let status: PullRequestStatus;
 
-  if (hasSecret || hasCritical || score >= 70) {
+  if (hasSecret || hasCritical || hasConfirmedHigh || score >= 70) {
     decision = "block";
     status = "blocked";
   } else if (hasHigh || score >= 40) {
     decision = "fix";
     status = "warning";
-  } else if (hasMedium || score > 0) {
+  } else if (hasMedium || firmScore > 0 || score >= LOW_SIGNAL_THRESHOLD) {
     decision = "fix";
     status = "warning";
   } else {

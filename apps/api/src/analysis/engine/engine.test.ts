@@ -94,3 +94,11 @@ test("line-rule fallback: rule sources and regex literals are data, real usage i
   );
   assert.deepEqual(r.findings.filter((f) => f.type === "sast").map((f) => `${f.ruleId}:${f.line}`), ["XSS_INNERHTML:4"]);
 });
+
+test("AST_RULE_IDS lists exactly the rules of services/scan-engine", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { AST_RULE_IDS } = await import("./index.js");
+  const rs = readFileSync(new URL("../../../../../services/scan-engine/src/rules.rs", import.meta.url), "utf8");
+  const ids = new Set([...rs.matchAll(/id: "([A-Z_]+)"/g)].map((m) => m[1]!));
+  assert.deepEqual([...AST_RULE_IDS].sort(), [...ids].sort());
+});

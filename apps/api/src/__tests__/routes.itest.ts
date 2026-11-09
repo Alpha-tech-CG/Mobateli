@@ -194,6 +194,52 @@ test("github webhook: bad signature 401, signed PR 202 and persisted", async () 
   assert.ok(repoId);
 });
 
+test("finding feedback: mark false positive, propagate by fingerprint, metrics, clear", async () => {
+  const mkPr = (n: number) =>
+    prisma.pullRequest.create({
+      data: { repositoryId: repoId, externalId: `fb-${n}`, number: 900 + n, title: "t", author: "a" },
+    });
+  const [pr1, pr2] = [await mkPr(1), await mkPr(2)];
+  const base = { type: "sast" as const, severity: "medium" as const, title: "Hash", description: "d", ruleId: "WEAK_HASH" };
+  const f1 = await prisma.finding.create({ data: { ...base, pullRequestId: pr1.id, filePath: "a.ts", line: 3, fingerprint: "fp-hash" } });
+  const f2 = await prisma.finding.create({ data: { ...base, pullRequestId: pr2.id, filePath: "a.ts", line: 9, fingerprint: "fp-hash" } });
+  const legacy = await prisma.finding.create({ data: { ...base, pullRequestId: pr1.id, fingerprint: null } });
+
+  const bad = await app.inject({ method: "PUT", url: `/api/v1/findings/${f1.id}/feedback`, headers: auth(), payload: { verdict: "maybe" } });
+  assert.equal(bad.statusCode, 400);
+  const noFp = await app.inject({ method: "PUT", url: `/api/v1/findings/${legacy.id}/feedback`, headers: auth(), payload: { verdict: "false_positive" } });
+  assert.equal(noFp.statusCode, 409);
+  const unknown = await app.inject({ method: "PUT", url: `/api/v1/findings/${randomUUID()}/feedback`, headers: auth(), payload: { verdict: "false_positive" } });
+  assert.equal(unknown.statusCode, 404);
+
+  const ok = await app.inject({
+    method: "PUT",
+    url: `/api/v1/findings/${f1.id}/feedback`,
+    headers: auth(),
+    payload: { verdict: "false_positive", note: "checksum, not a password" },
+  });
+  assert.equal(ok.statusCode, 200);
+  // Same fingerprint in another PR of the repo gets the verdict too.
+  assert.equal((await prisma.finding.findUnique({ where: { id: f2.id } }))!.status, "false_positive");
+  const stored = await prisma.findingFeedback.findMany({ where: { repositoryId: repoId } });
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0]!.note, "checksum, not a password");
+
+  const metrics = await app.inject({ method: "GET", url: "/api/v1/metrics/rule-quality?days=30", headers: auth() });
+  assert.equal(metrics.statusCode, 200);
+  const weak = metrics.json().rules.find((r: { ruleId: string }) => r.ruleId === "WEAK_HASH");
+  assert.equal(weak.falsePositives, 2);
+  assert.equal(weak.falsePositiveRate, 1);
+
+  const audit = await prisma.auditEvent.findFirst({ where: { action: "finding.feedback" } });
+  assert.ok(audit, "verdict audited");
+
+  const cleared = await app.inject({ method: "DELETE", url: `/api/v1/findings/${f1.id}/feedback`, headers: auth() });
+  assert.equal(cleared.statusCode, 204);
+  assert.equal((await prisma.finding.findUnique({ where: { id: f2.id } }))!.status, "open");
+  assert.equal(await prisma.findingFeedback.count({ where: { repositoryId: repoId } }), 0);
+});
+
 test("agent guard: secrets locked, allowlist governs network", async () => {
   const secret = await app.inject({
     method: "POST",
@@ -1168,8 +1214,11 @@ test("backup shield: job, run report, integrity, restore test, token required", 
   assert.equal(report.json().backups[0].status, "critical");
 });
 
-test("findings: false positive is suppressed for future analyses and rescored", async () => {
+test("findings: a verdict is kept per alert, survives re-analysis and rescores", async () => {
   const pr = await prisma.pullRequest.findFirstOrThrow({ where: { repository: { provider: "github" } } });
+  const { findingFingerprint } = await import("../analysis/fingerprint.js");
+  const code = "const r = eval('1+1');";
+  const fingerprint = findingFingerprint({ ruleId: "DANGEROUS_EVAL", title: "", filePath: "src/sandbox.ts" }, code);
   const finding = await prisma.finding.create({
     data: {
       pullRequestId: pr.id,
@@ -1180,6 +1229,7 @@ test("findings: false positive is suppressed for future analyses and rescored", 
       filePath: "src/sandbox.ts",
       line: 4,
       ruleId: "DANGEROUS_EVAL",
+      fingerprint,
     },
   });
   const list = await app.inject({ method: "GET", url: "/api/v1/findings?status=open", headers: auth() });
@@ -1193,20 +1243,35 @@ test("findings: false positive is suppressed for future analyses and rescored", 
   });
   assert.equal(fp.statusCode, 200);
   assert.equal(fp.json().pullRequest.riskScore, 0, "a false positive no longer counts");
-  const sup = await prisma.findingSuppression.findFirst({ where: { repositoryId: pr.repositoryId } });
-  assert.equal(sup?.fingerprint, "DANGEROUS_EVAL|src/sandbox.ts");
+  const verdict = await prisma.findingFeedback.findFirst({ where: { repositoryId: pr.repositoryId, fingerprint } });
+  assert.equal(verdict?.verdict, "false_positive");
+  assert.equal(verdict?.note, "eval sur une constante de test");
 
   const { analyzeDiff } = await import("../analysis/analyzer.js");
-  const diff = [
-    "diff --git a/src/sandbox.ts b/src/sandbox.ts",
-    "--- a/src/sandbox.ts",
-    "+++ b/src/sandbox.ts",
-    "@@ -1,0 +10,1 @@",
-    "+const r = eval('1+1');",
-  ].join("\n");
-  const again = analyzeDiff(diff, new Set([sup!.fingerprint]));
-  assert.equal(again.findings.length, 0, "suppressed on re-analysis even if the line moved");
+  const diffWith = (lines: string[]) =>
+    [
+      "diff --git a/src/sandbox.ts b/src/sandbox.ts",
+      "--- a/src/sandbox.ts",
+      "+++ b/src/sandbox.ts",
+      `@@ -1,0 +10,${lines.length} @@`,
+      ...lines.map((l) => `+${l}`),
+    ].join("\n");
+  const again = analyzeDiff(diffWith([code]), new Set([fingerprint]));
+  assert.equal(again.findings.filter((f) => f.ruleId === "DANGEROUS_EVAL").length, 0, "suppressed even if the line moved");
   assert.equal(again.suppressed.length, 1);
+  // A new eval elsewhere in the same file is a different alert: not hidden.
+  const other = analyzeDiff(diffWith([code, "const s = eval(userInput);"]), new Set([fingerprint]));
+  assert.equal(other.findings.filter((f) => f.ruleId === "DANGEROUS_EVAL").length, 1);
+
+  // Confirmed as real, then the verdict is cleared.
+  const confirm = await app.inject({
+    method: "PUT",
+    url: `/api/v1/findings/${finding.id}/feedback`,
+    headers: auth(),
+    payload: { verdict: "confirmed" },
+  });
+  assert.equal(confirm.statusCode, 200);
+  assert.equal((await prisma.finding.findUniqueOrThrow({ where: { id: finding.id } })).status, "acknowledged");
 
   const reopen = await app.inject({
     method: "PATCH",
@@ -1215,7 +1280,12 @@ test("findings: false positive is suppressed for future analyses and rescored", 
     payload: { status: "open" },
   });
   assert.equal(reopen.statusCode, 200);
-  assert.equal(await prisma.findingSuppression.count({ where: { repositoryId: pr.repositoryId } }), 0);
+  const cleared = await app.inject({ method: "DELETE", url: `/api/v1/findings/${finding.id}/feedback`, headers: auth() });
+  assert.equal(cleared.statusCode, 204);
+  assert.equal(await prisma.findingFeedback.count({ where: { repositoryId: pr.repositoryId, fingerprint } }), 0);
+
+  const quality = await app.inject({ method: "GET", url: "/api/v1/metrics/rule-quality", headers: auth() });
+  assert.equal(quality.statusCode, 200);
 });
 
 test("linear webhook: signed 'completed' resolves the PR findings", async () => {

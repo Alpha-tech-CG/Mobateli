@@ -8,7 +8,7 @@ import { api, ApiError } from "@/lib/api";
 import { Shell } from "@/components/shell";
 import { ReportButton } from "@/components/report-button";
 import { Card, SeverityBadge, StatusBadge } from "@/components/ui";
-import type { LastAnalysis, PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
+import type { Finding, LastAnalysis, PullRequestDetail, RevocationGuide, SecretFinding } from "@/lib/types";
 
 export default function PullRequestDetailPage() {
   return (
@@ -44,6 +44,40 @@ function Detail() {
   }
   useEffect(load, [id]);
 
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+
+  // Team verdict on an alert (pilot false-positive tracking). A false
+  // positive stops counting in later verdicts for the same code on this repo.
+  async function giveFeedback(f: Finding, verdict: "false_positive" | "confirmed" | null) {
+    setFeedbackError(null);
+    // Dismissing an alert is a security decision: its reason goes to the audit trail.
+    const note =
+      verdict === "false_positive"
+        ? prompt("Pourquoi est-ce une fausse alerte ? (conservé dans le journal d'audit)")
+        : undefined;
+    if (verdict === "false_positive" && note === null) return;
+    try {
+      if (verdict) {
+        await api(`/api/v1/findings/${f.id}/feedback`, {
+          method: "PUT",
+          body: JSON.stringify({ verdict, ...(note ? { note } : {}) }),
+        });
+      } else {
+        await api(`/api/v1/findings/${f.id}/feedback`, { method: "DELETE", body: "{}" });
+      }
+      load();
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : "";
+      setFeedbackError(
+        code === "forbidden"
+          ? "Seuls les rôles owner, admin et security_manager peuvent qualifier une alerte."
+          : code === "rescan_required"
+            ? "Alerte antérieure au suivi : relancez l'analyse de la PR puis réessayez."
+            : "Impossible d'enregistrer le retour.",
+      );
+    }
+  }
+
   async function rescan() {
     setRescanning(true);
     try {
@@ -51,27 +85,6 @@ function Detail() {
       setTimeout(load, 2000);
     } finally {
       setTimeout(() => setRescanning(false), 2000);
-    }
-  }
-
-  async function triage(findingId: string, status: "open" | "false_positive") {
-    const reason =
-      status === "false_positive"
-        ? prompt("Pourquoi est-ce un faux positif ? (conservé dans le journal d'audit)") ?? undefined
-        : undefined;
-    if (status === "false_positive" && reason === undefined) return;
-    try {
-      await api(`/api/v1/findings/${findingId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status, ...(reason ? { reason } : {}) }),
-      });
-      load();
-    } catch (err) {
-      setError(
-        err instanceof ApiError && err.status === 403
-          ? "Seuls les rôles Owner, Admin et Security Manager (avec MFA) peuvent qualifier un faux positif."
-          : "Mise à jour impossible.",
-      );
     }
   }
 
@@ -168,6 +181,7 @@ function Detail() {
       </Section>
 
       <Section title={`🔎 Problèmes de code (${pr.findings.length})`}>
+        {feedbackError ? <p className="px-4 pt-3 text-sm text-destructive">{feedbackError}</p> : null}
         {pr.findings.length ? (
           <ul className="divide-y divide-border">
             {pr.findings.map((f) => (
@@ -177,7 +191,12 @@ function Detail() {
               >
                 <div className="flex items-center gap-2">
                   <SeverityBadge severity={f.severity} />
-                  <span className="font-medium">{f.title}</span>
+                  <span className={`font-medium ${f.status === "false_positive" ? "line-through" : ""}`}>{f.title}</span>
+                  {f.status === "false_positive" ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs">fausse alerte</span>
+                  ) : f.status === "acknowledged" ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs">confirmée</span>
+                  ) : null}
                   {f.filePath ? (
                     <span className="font-mono text-xs text-muted-foreground">
                       {f.filePath}
@@ -191,27 +210,33 @@ function Detail() {
                     <span className="font-medium">Correctif :</span> {f.remediation}
                   </p>
                 ) : null}
-                <div className="mt-2 flex items-center gap-3 text-xs">
-                  {f.status === "false_positive" ? (
+                <div className="mt-2 flex gap-2 text-xs">
+                  {f.status === "open" ? (
                     <>
-                      <span className="text-muted-foreground">Marqué faux positif — exclu du score</span>
                       <button
                         type="button"
-                        onClick={() => triage(f.id, "open")}
-                        className="cursor-pointer text-primary hover:underline"
+                        onClick={() => giveFeedback(f, "false_positive")}
+                        className="rounded border border-border px-2 py-0.5 hover:bg-muted"
                       >
-                        Rouvrir
+                        Fausse alerte
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => giveFeedback(f, "confirmed")}
+                        className="rounded border border-border px-2 py-0.5 hover:bg-muted"
+                      >
+                        Confirmée
                       </button>
                     </>
-                  ) : (
+                  ) : f.status === "false_positive" || f.status === "acknowledged" ? (
                     <button
                       type="button"
-                      onClick={() => triage(f.id, "false_positive")}
-                      className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
+                      onClick={() => giveFeedback(f, null)}
+                      className="rounded border border-border px-2 py-0.5 hover:bg-muted"
                     >
-                      Marquer comme faux positif
+                      Annuler le retour
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </li>
             ))}

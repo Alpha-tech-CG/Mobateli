@@ -9,6 +9,20 @@ import type { FindingResult, SecretResult } from "../types.js";
  * TypeScript rules then do the whole analysis.
  */
 
+/**
+ * Rules the syntax-tree engine implements (services/scan-engine/src/rules.rs;
+ * kept in sync by engine.test.ts). On the files it parsed, these come from the
+ * engine; every other line rule still runs on them (NoSQL, JWT, CORS…).
+ */
+export const AST_RULE_IDS: ReadonlySet<string> = new Set([
+  "CHILD_PROCESS_INJECTION",
+  "DANGEROUS_EVAL",
+  "SQL_STRING_CONCAT",
+  "TLS_VERIFICATION_DISABLED",
+  "WEAK_HASH",
+  "XSS_INNERHTML",
+]);
+
 export interface EngineOutput {
   engine: string;
   version: string;
